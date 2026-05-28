@@ -1,0 +1,264 @@
+name: Build TextureSynth Wheels
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  version:
+    name: Read version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: get_version
+        run: |
+          VERSION=$(grep '^version' ADDON/blender_manifest.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+  build:
+    name: Build ${{ matrix.os }} - py${{ matrix.python-version }}
+    needs: [version]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, python-version: "3.11.9", python_tag: cp311-cp311, wheel_platform: win_amd64, artifact_suffix: py311-windows-x64 }
+          - { os: windows-latest, python-version: "3.13.9", python_tag: cp313-cp313, wheel_platform: win_amd64, artifact_suffix: py313-windows-x64 }
+          # - { os: ubuntu-22.04,   python-version: "3.11.9", python_tag: cp311-cp311, wheel_platform: manylinux_2_34_x86_64, artifact_suffix: py311-linux-x64 }
+          # - { os: ubuntu-22.04,   python-version: "3.13.9", python_tag: cp313-cp313, wheel_platform: manylinux_2_34_x86_64, artifact_suffix: py313-linux-x64 }
+          # - { os: macos-latest,   python-version: "3.11.9", python_tag: cp311-cp311, wheel_platform: macosx_11_0_universal2, artifact_suffix: py311-macos-universal }
+          # - { os: macos-latest,   python-version: "3.13.9", python_tag: cp313-cp313, wheel_platform: macosx_11_0_universal2, artifact_suffix: py313-macos-universal }
+
+    env:
+      TEXTURESYNTH_VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python-version }}"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install wheel setuptools build pybind11
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: latest
+          cache: true
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          mkdir -p build
+          cd build
+          PYTHON_EXE="$(python -c 'import sys; print(sys.executable)')"
+          echo "Using Python: $PYTHON_EXE"
+          python --version
+
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake .. -G "Visual Studio 17 2022" -A x64 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_PYTHON_BINDINGS=ON \
+              -DPython3_EXECUTABLE="$PYTHON_EXE"
+          else
+            cmake .. \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_PYTHON_BINDINGS=ON \
+              -DPython3_EXECUTABLE="$PYTHON_EXE"
+          fi
+
+      - name: Build C++ module
+        shell: bash
+        run: |
+          cd build
+          cmake --build . --config Release --target texturesynth_core --verbose
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          python -m build --wheel
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+      - name: Bundle MSVC CRT with delvewheel (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pip install delvewheel
+          cd dist || exit 1
+          mkdir -p repaired
+          for whl in *.whl; do
+            echo "--- Showing dependencies for $whl ---"
+            delvewheel show "$whl"
+            echo "--- Repairing $whl ---"
+            delvewheel repair --add-dll "msvcp140.dll" -v -w repaired/ "$whl"
+          done
+          mv repaired/*.whl ./
+          rm -rf repaired
+
+      - name: Rename wheel with correct platform tag
+        shell: bash
+        run: |
+          cd dist
+          python - <<'PY'
+          import os, re
+          py_tag   = "${{ matrix.python_tag }}"
+          plat_tag = "${{ matrix.wheel_platform }}"
+          for wheel in os.listdir('.'):
+              if not wheel.endswith('.whl'):
+                  continue
+              m = re.match(r'^(texturesynth)-([^-]+)-([^-]+)-([^-]+)-(.+)\.whl$', wheel)
+              if not m:
+                  continue
+              dist, version, _, _, _ = m.groups()
+              new_name = f"{dist}-{version}-{py_tag}-{plat_tag}.whl"
+              if wheel != new_name:
+                  os.rename(wheel, new_name)
+          PY
+          ls -la
+
+      - name: Upload wheel artifact
+        if: hashFiles('dist/*.whl') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-texturesynth-${{ matrix.artifact_suffix }}
+          path: dist/*.whl
+          retention-days: 1
+
+  package:
+    name: Package Addon
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: wheels-temp
+          pattern: wheel-texturesynth-*
+
+      - name: Create platform-specific packages
+        run: |
+          set -euo pipefail
+
+          create_package() {
+            local OS_NAME="$1"
+            local ARTIFACT_GLOB="$2"
+            local PLAT_GLOB="$3"
+            local ZIP_NAME="$4"
+
+            echo "=== ${OS_NAME} -> ${ZIP_NAME} ==="
+
+            local BUILD_DIR="build_${OS_NAME}"
+            mkdir -p "${BUILD_DIR}/ADDON"
+            cp -r ADDON/* "${BUILD_DIR}/ADDON/"
+            mkdir -p "${BUILD_DIR}/ADDON/shader_assets"
+            cp -r shader_assets/* "${BUILD_DIR}/ADDON/shader_assets/"
+            rm -rf "${BUILD_DIR}/ADDON/wheels"
+            mkdir -p "${BUILD_DIR}/ADDON/wheels"
+
+            local TMP_LIST
+            TMP_LIST=$(mktemp)
+
+            find wheels-temp \
+              -type f -path "*/${ARTIFACT_GLOB}/*.whl" -name "*${PLAT_GLOB}*.whl" \
+              -print > "$TMP_LIST"
+
+            if [ ! -s "$TMP_LIST" ]; then
+              echo "No wheels matched for ${OS_NAME}. Skipping."
+              rm -f "$TMP_LIST"
+              return 0
+            fi
+
+            while IFS= read -r whl; do
+              cp "$whl" "${BUILD_DIR}/ADDON/wheels/"
+            done < "$TMP_LIST"
+            rm -f "$TMP_LIST"
+
+            local WHEEL_LIST=""
+            for whl in "${BUILD_DIR}"/ADDON/wheels/*.whl; do
+              [ -f "$whl" ] || continue
+              local BN
+              BN=$(basename "$whl")
+              if [ -n "$WHEEL_LIST" ]; then
+                WHEEL_LIST="${WHEEL_LIST}, \"./wheels/${BN}\""
+              else
+                WHEEL_LIST="\"./wheels/${BN}\""
+              fi
+            done
+
+            echo "" >> "${BUILD_DIR}/ADDON/blender_manifest.toml"
+            echo "wheels = [${WHEEL_LIST}]" >> "${BUILD_DIR}/ADDON/blender_manifest.toml"
+
+            ( cd "${BUILD_DIR}/ADDON" && \
+              zip -rq "../../${ZIP_NAME}" . \
+                -x "*.pyc" -x "__pycache__/*" -x ".DS_Store" )
+
+            echo "OK ${ZIP_NAME}"
+          }
+
+          V="${VERSION}"
+          create_package windows "wheel-texturesynth-*-windows-x64" "win_amd64"  "texturesynth-${V}-windows-x64.zip"
+          # create_package linux   "wheel-texturesynth-*-linux-x64"   "manylinux"  "texturesynth-${V}-linux-x64.zip"
+          # create_package macos   "wheel-texturesynth-*-macos-universal" "universal2" "texturesynth-${V}-macos-universal.zip"
+
+          echo ""
+          echo "Final release packages:"
+          ls -lh texturesynth-*.zip || true
+
+      - name: Create Release
+        if: hashFiles('texturesynth-*.zip') != ''
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.VERSION }}-build-${{ github.run_number }}
+          name: "TextureSynth v${{ env.VERSION }}"
+          body: |
+            **TextureSynth v${{ env.VERSION }} - Node-based Vulkan Procedural Texture Generator**
+            
+            ### Features
+            - Blazing fast Vulkan GPU compute backend
+            - Procedural Perlin noise, Blending, and filtering nodes
+            - Sverchok-style decoupled async evaluation UI
+            - Blender 4.2+ native extension packaging
+
+            ### Python Support
+            | Wheel | Python | Blender |
+            |-------|--------|---------|
+            | `cp311-cp311` | 3.11.9 | 4.2 - 4.4 |
+            | `cp313-cp313` | 3.13.9 | 4.5+ |
+
+            ### Installation
+            1. Download the `.zip` for your OS.
+            2. In Blender: `Edit -> Preferences -> Extensions -> Install from Disk`
+            3. Enable `TextureSynth`.
+          files: |
+            texturesynth-${{ env.VERSION }}-windows-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

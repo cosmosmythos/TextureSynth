@@ -1,0 +1,15 @@
+build/
+DEV_LOG/
+.deps/
+__pycache__/
+*.whl
+*.pyd
+*.so
+*.exp
+*.lib
+*.exe
+.vs/
+dist/
+*.egg-info/
+shader_cache/
+imgui.ini

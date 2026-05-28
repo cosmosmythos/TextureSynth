@@ -1,0 +1,23 @@
+{
+    "id": "worley",
+    "display_name": "Worley (Cellular)",
+    "description": "Tileable cellular/Voronoi noise. R=F1 distance, G=edge mask (F2-F1), B=cell ID hash.",
+    "includes": ["math_common", "noise_common"],
+    "inputs": [],
+    "outputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "params": [
+        { "name": "period", "display_name": "Period", "default": 8.0, "min": 1.0, "max": 64.0, "step": 1.0, "integer": true },
+        { "name": "octaves", "display_name": "Octaves", "default": 1.0, "min": 1.0, "max": 8.0, "step": 1.0, "integer": true },
+        { "name": "lacunarity", "display_name": "Lacunarity", "default": 2.0, "min": 1.0, "max": 4.0, "step": 1.0, "integer": true },
+        { "name": "gain", "display_name": "Gain", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01 },
+        { "name": "jitter", "display_name": "Jitter", "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01 },
+        { "name": "offsetX", "default": 0.0, "min": -50.0, "max": 50.0, "step": 0.01 },
+        { "name": "offsetY", "default": 0.0, "min": -50.0, "max": 50.0, "step": 0.01 },
+        { "name": "speed", "default": 0.0, "min": 0.0, "max": 5.0, "step": 0.01 },
+        { "name": "seed", "default": 0.0, "min": 0.0, "max": 65535.0, "step": 1.0, "integer": true }
+    ],
+    "shader": "worley.glsl",
+    "entry": "node_worley"
+}

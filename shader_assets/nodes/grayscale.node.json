@@ -1,0 +1,26 @@
+{
+    "id": "grayscale",
+    "display_name": "Grayscale",
+    "description": "Convert a color input to grayscale. Mode 0=Luminance(Rec.709) 1=Average 2=Max 3=Min",
+    "includes": [],
+    "inputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "outputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "params": [
+        {
+            "name": "mode",
+            "display_name": "Mode",
+            "description": "0=Luminance(Rec709) 1=Average 2=Max 3=Min",
+            "default": 0.0,
+            "min": 0.0,
+            "max": 3.0,
+            "step": 1.0,
+            "integer": true
+        }
+    ],
+    "shader": "grayscale.glsl",
+    "entry": "node_grayscale"
+}

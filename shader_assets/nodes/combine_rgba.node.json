@@ -1,0 +1,18 @@
+{
+    "id": "combine_rgba",
+    "display_name": "Combine RGBA",
+    "description": "Combine grayscale inputs into a single RGBA color output",
+    "includes": [],
+    "inputs": [
+        { "name": "r", "type": "vec4" },
+        { "name": "g", "type": "vec4" },
+        { "name": "b", "type": "vec4" },
+        { "name": "a", "type": "vec4" }
+    ],
+    "outputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "params": [],
+    "shader": "combine_rgba.glsl",
+    "entry": "node_combine_rgba"
+}
