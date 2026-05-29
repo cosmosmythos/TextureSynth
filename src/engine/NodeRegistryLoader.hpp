@@ -12,4 +12,6 @@ public:
                                    const std::string& glsl_dir,
                                    std::string* error_out = nullptr);
 };
+
+
 } // namespace te

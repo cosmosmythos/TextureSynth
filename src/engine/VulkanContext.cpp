@@ -1,4 +1,4 @@
-﻿#define VMA_IMPLEMENTATION
+#define VMA_IMPLEMENTATION
 #include "engine/VulkanContext.hpp"
 #include "engine/Logging.hpp"
 #include <fstream>
@@ -40,8 +40,13 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
     f12.runtimeDescriptorArray                            = VK_TRUE;
     f12.bufferDeviceAddress                               = VK_TRUE;
 
+    VkPhysicalDeviceFeatures f10{};
+    f10.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    f10.shaderStorageImageExtendedFormats    = VK_TRUE;
+
     vkb::PhysicalDeviceSelector ps{vkb_instance_};
     ps.set_minimum_version(1, 3)
+      .set_required_features(f10)
       .set_required_features_13(f13)
       .set_required_features_12(f12);
     if (desc.surface != VK_NULL_HANDLE) ps.set_surface(desc.surface);
@@ -57,6 +62,22 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
     if (!dev_ret) { log_error(dev_ret.error().message()); return false; }
     vkb_device_ = dev_ret.value();
     device_     = vkb_device_.device;
+
+    // Verify storage support for our target formats
+    auto check_storage = [&](VkFormat fmt, const char* name) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(physical_device_, fmt, &props);
+        if (!(props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+            log_error(std::string("Format ") + name + " lacks STORAGE_IMAGE_BIT");
+            return false;
+        }
+        return true;
+    };
+    bool ok = true;
+    ok &= check_storage(VK_FORMAT_R16_SFLOAT,             "R16_SFLOAT");
+    ok &= check_storage(VK_FORMAT_R16G16_SFLOAT,           "R16G16_SFLOAT");
+    ok &= check_storage(VK_FORMAT_R16G16B16A16_SFLOAT,     "R16G16B16A16_SFLOAT");
+    if (!ok) { log_error("Required storage formats not supported"); return false; }
 
     // ── Graphics queue ─────────────────────────────────────────────
     auto gq  = vkb_device_.get_queue(vkb::QueueType::graphics);

@@ -1,4 +1,5 @@
 build/
+out/
 DEV_LOG/
 .deps/
 __pycache__/

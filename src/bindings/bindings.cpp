@@ -107,10 +107,20 @@ PYBIND11_MODULE(texturesynth_core, m) {
         .value("Sampler2D", SocketType::Sampler2D)
         .export_values();
 
+    py::enum_<ChannelFormat>(m, "ChannelFormat")
+        .value("Mono", ChannelFormat::Mono)
+        .value("UV", ChannelFormat::UV)
+        .value("RGB", ChannelFormat::RGB)
+        .value("RGBA", ChannelFormat::RGBA)
+        .value("ID", ChannelFormat::ID)
+        .value("Metadata", ChannelFormat::Metadata)
+        .export_values();
+
     py::class_<Socket>(m, "Socket")
         .def(py::init<>())
-        .def_readwrite("name", &Socket::name)
-        .def_readwrite("type", &Socket::type);
+        .def_readwrite("name",   &Socket::name)
+        .def_readwrite("type",   &Socket::type)
+        .def_readwrite("format", &Socket::format);
 
     py::class_<NodeParam>(m, "NodeParam")
         .def(py::init<>())

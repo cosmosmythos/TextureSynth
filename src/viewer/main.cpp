@@ -21,7 +21,7 @@ int main() {
         const char** glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
 
         Engine engine;
-        if (!engine.init(VK_NULL_HANDLE, glfw_exts, glfw_ext_count)) {
+        if (!engine.init(VK_NULL_HANDLE, glfw_exts, glfw_ext_count, false, "", "", "")) {
             return -1;
         }
 
@@ -55,22 +55,7 @@ int main() {
         graph.connections.push_back({0, 0, 1, 0}); // perlin output -> invert input
         graph.output_node = 1;                       // invert is the final output
 
-        // Set default parameter values from node library
-        {
-            int slot = 0;
-            for (auto& node : graph.nodes) {
-                auto* type = engine.node_library().find(node.type_id);
-                if (type) {
-                    for (size_t i = 0; i < type->params.size(); i++) {
-                        pc.hot_params[slot + i] = type->params[i].default_value;
-                    }
-                    slot += (int)type->params.size();
-                }
-            }
-        }
-
         // Initial graph compile
-        engine.set_graph(graph);
 
         while (!window.should_close()) {
             window.poll_events();

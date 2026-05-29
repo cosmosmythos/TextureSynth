@@ -13,7 +13,12 @@ class TextureSynthSocket(bpy.types.NodeSocket):
     bl_label = "Texture Socket"
 
     def draw(self, context, layout, node, text):
-        layout.label(text=text)
+        if self.is_linked:
+            layout.label(text=text)
+        elif node and hasattr(node, self.name):
+            layout.prop(node, self.name, text=text)
+        else:
+            layout.label(text=text)
 
     @classmethod
     def draw_color_simple(cls):

@@ -1,14 +1,17 @@
 #pragma once
+#include <vulkan/vulkan.h>
 #include <cstdint>
 #include <string>
 #include <vector>
 #include <functional>
 
+
 namespace te {
+
 
 using NodeId = uint64_t;
 
-// === Phase 6: Resource identity ===
+
 struct ResourceUUID {
     uint64_t node_id      = 0;
     uint32_t output_index = 0;
@@ -18,6 +21,7 @@ struct ResourceUUID {
     }
     bool operator!=(const ResourceUUID& o) const noexcept { return !(*this == o); }
 };
+
 
 struct ResourceUUIDHash {
     size_t operator()(const ResourceUUID& r) const noexcept {
@@ -34,18 +38,30 @@ struct ResourceUUIDHash {
     }
 };
 
+
 // Shared upper bound for the per-graph parameter SSBO. Defined here so
 // GraphCompiler can bounds-check without pulling in Engine.hpp.
 constexpr uint32_t MAX_NODE_PARAMS = 8192;
-
-// --- Node type definitions (the "blueprint") ---
-
 enum class SocketType { Float, Vec4, Sampler2D };
+enum class ChannelFormat { Mono, UV, RGB, RGBA, ID, Metadata };
+
+
+inline VkFormat channel_to_vk_format(ChannelFormat fmt) {
+    if (fmt == ChannelFormat::Mono)      return VK_FORMAT_R16_SFLOAT;
+    if (fmt == ChannelFormat::UV)        return VK_FORMAT_R16G16_SFLOAT;
+    if (fmt == ChannelFormat::RGB)       return VK_FORMAT_R16G16B16A16_SFLOAT; // 3-channel not supported for storage
+    if (fmt == ChannelFormat::RGBA)      return VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (fmt == ChannelFormat::ID)        return VK_FORMAT_R32_UINT;
+    return VK_FORMAT_R16G16B16A16_SFLOAT;
+}
+
 
 struct Socket {
-    std::string name;   // e.g. "color", "height"
+    std::string name;   // "color", "height"
     SocketType type = SocketType::Vec4;
+    ChannelFormat format = ChannelFormat::RGBA;
 };
+
 
 struct NodeParam {
     std::string name;
@@ -58,6 +74,7 @@ struct NodeParam {
     bool  is_integer    = false;
     bool  as_socket     = false;
 };
+
 
 struct NodeType {
     std::string id;
@@ -73,12 +90,12 @@ struct NodeType {
     std::vector<std::string> variant_flags;
 };
 
-// --- Graph instance (the "scene") ---
 
 struct NodeInstance {
     NodeId id = 0;
     std::string type_id;                // references NodeType::id
 };
+
 
 struct Connection {
     NodeId src_node = 0;
@@ -87,10 +104,12 @@ struct Connection {
     uint32_t dst_socket = 0;            // index into NodeType::inputs
 };
 
+
 struct Graph {
     std::vector<NodeInstance> nodes;
     std::vector<Connection> connections;
     NodeId output_node = 0;             // which node's output[0] goes to imageStore
 };
+
 
 } // namespace te

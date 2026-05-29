@@ -1,20 +1,40 @@
 #include "engine/ResourceManager.hpp"
 #include "engine/VulkanContext.hpp"
 #include "engine/Logging.hpp"
+#include "engine/NodeLibrary.hpp"
+#include "engine/Graph.hpp"
 #include <algorithm>
 
 namespace te {
 
+
 constexpr uint32_t RETIRE_FRAMES = 4; // MAX_FRAMES_IN_FLIGHT + safety
+
 
 size_t ResourceManager::pixel_bytes_(VkFormat f) const {
     switch (f) {
+        // 32-bit
         case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
+        case VK_FORMAT_R32G32B32_SFLOAT:    return 12;
+        case VK_FORMAT_R32G32_SFLOAT:       return 8;
+        case VK_FORMAT_R32_SFLOAT:          return 4;
+        case VK_FORMAT_R32_UINT:            return 4;
+        // 16-bit
         case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
+        case VK_FORMAT_R16G16B16_SFLOAT:    return 6;
+        case VK_FORMAT_R16G16_SFLOAT:       return 4;
+        case VK_FORMAT_R16_SFLOAT:          return 2;
+        case VK_FORMAT_R16_UINT:            return 2;
+        // 8-bit
         case VK_FORMAT_R8G8B8A8_UNORM:      return 4;
-        default: return 16;
+        case VK_FORMAT_R8G8B8_UNORM:        return 3;
+        case VK_FORMAT_R8G8_UNORM:          return 2;
+        case VK_FORMAT_R8_UNORM:            return 1;
+        case VK_FORMAT_R8_UINT:             return 1;
+        default: return 4;
     }
 }
+
 
 bool ResourceManager::create_image_(VulkanContext& ctx, NodeResource& r,
                                     uint32_t w, uint32_t h,
@@ -59,21 +79,29 @@ bool ResourceManager::create_image_(VulkanContext& ctx, NodeResource& r,
     return true;
 }
 
+
 void ResourceManager::destroy_image_(VulkanContext& ctx, NodeResource& r) {
     if (r.view)  { vkDestroyImageView(ctx.device(), r.view, nullptr); r.view = VK_NULL_HANDLE; }
     if (r.image) { vmaDestroyImage(ctx.allocator(), r.image, r.alloc);
                    r.image = VK_NULL_HANDLE; r.alloc = nullptr; }
 }
 
+
 bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
-                                         const GraphIR& ir,
+                                         const GraphIR& ir, const NodeLibrary& lib,
                                          uint32_t width, uint32_t height,
-                                         VkFormat format,
+                                         VkFormat default_format,
                                          std::string* error) {
     retire_all(ctx); // previous graph's images become retired
 
-    const size_t per_image = (size_t)width * height * pixel_bytes_(format);
-    const size_t total = per_image * ir.nodes.size();
+    size_t total = 0;
+    for (const auto& vn : ir.nodes) {
+        VkFormat node_format = default_format;
+        auto* type = lib.find(vn.type_id);
+        if (type && !type->outputs.empty()) { node_format = channel_to_vk_format(type->outputs[0].format); }
+        total += (size_t)width * height * pixel_bytes_(node_format);
+    }
+
     if (total > budget_bytes_) {
         std::string e = "memory budget exceeded: need "
                         + std::to_string(total / (1024 * 1024)) + " MB, budget "
@@ -87,18 +115,22 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         NodeResource r;
         r.node_id      = vn.id;
         r.output_index = 0;
-        r.format       = format;
+        VkFormat node_format = default_format;
+        auto* type = lib.find(vn.type_id);
+        if (type && !type->outputs.empty()) { node_format = channel_to_vk_format(type->outputs[0].format); }
+        r.format = node_format;
         if (!create_image_(ctx, r, width, height, vn.debug_name)) {
             if (error) *error = "image allocation failed for " + vn.debug_name;
             return false;
         }
         live_[{vn.id, 0}] = std::move(r);
-        current_bytes_ += per_image;
+        current_bytes_ += (size_t)width * height * pixel_bytes_(node_format);
     }
     log_info("ResourceManager: allocated " + std::to_string(live_.size())
              + " images, " + std::to_string(current_bytes_ / (1024 * 1024)) + " MB");
     return true;
 }
+
 
 void ResourceManager::retire_all(VulkanContext& ctx) {
     for (auto& kv : live_) {
@@ -108,6 +140,7 @@ void ResourceManager::retire_all(VulkanContext& ctx) {
     current_bytes_ = 0;
     (void)ctx;
 }
+
 
 void ResourceManager::tick(VulkanContext& ctx) {
     for (auto& r : retired_) if (r.frames_remaining > 0) --r.frames_remaining;
@@ -123,6 +156,7 @@ void ResourceManager::tick(VulkanContext& ctx) {
         retired_.end());
 }
 
+
 void ResourceManager::shutdown(VulkanContext& ctx) {
     for (auto& kv : live_)    destroy_image_(ctx, kv.second);
     for (auto& r  : retired_) destroy_image_(ctx, r.res);
@@ -130,5 +164,6 @@ void ResourceManager::shutdown(VulkanContext& ctx) {
     retired_.clear();
     current_bytes_ = 0;
 }
+
 
 } // namespace te

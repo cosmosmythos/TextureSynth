@@ -13,12 +13,10 @@ namespace te {
 // Tomorrow: feature_flags will be populated from node params (e.g. "use_mask").
 static ShaderVariantKey build_variant_key(const NodeType& type,
                                           uint32_t input_count,
-                                          uint32_t param_socket_count,
-                                          uint32_t output_format) {
+                                          uint32_t param_socket_count) {
     ShaderVariantKey key;
     key.node_type_id   = type.id;
     key.input_count    = input_count;
-    key.output_format  = output_format;
 
     // Pack socket-driven params into a bitfield.
     // Bit i = 1 means param[i] is socket-driven (as_socket=true).
@@ -38,22 +36,12 @@ static ShaderVariantKey build_variant_key(const NodeType& type,
 }
 
 
-static const char* format_qualifier_for(uint32_t vk_format) {
-    // Mirrors Engine::set_precision mapping.
-    switch (vk_format) {
-        case VK_FORMAT_R8G8B8A8_UNORM:      return "rgba8";
-        case VK_FORMAT_R16G16B16A16_SFLOAT: return "rgba16f";
-        case VK_FORMAT_R32G32B32A32_SFLOAT: return "rgba32f";
-        default:                            return "rgba32f";
-    }
-}
-
 static std::string emit_node_shader(const ValidatedNode& vn,
                                     const NodeType& type,
                                     const ShaderVariantKey& key,
                                     int param_base,
                                     uint32_t input_count) {
-    (void)vn; (void)param_base; (void)input_count;
+    (void)vn; (void)key; (void)param_base; (void)input_count;
     std::ostringstream s;
 
     s << "#version 460\n";
@@ -62,9 +50,8 @@ static std::string emit_node_shader(const ValidatedNode& vn,
     s << "layout(local_size_x = 8, local_size_y = 8) in;\n\n";
 
     // ── Bindless set 0 (forever-bound) ─────────────────────────────
-    const char* fmt_q = format_qualifier_for(key.output_format);
     s << "layout(set = 0, binding = 0) uniform texture2D u_sampled[];\n";
-    s << "layout(set = 0, binding = 1, " << fmt_q << ") uniform image2D u_storage[];\n";
+    s << "layout(set = 0, binding = 1) writeonly uniform image2D u_storage[];\n";
     s << "layout(set = 0, binding = 2) uniform sampler samp_repeat;\n";
     s << "layout(set = 0, binding = 3) uniform sampler samp_clamp;\n";
     s << "layout(set = 0, binding = 4) uniform sampler samp_mirror;\n";
@@ -175,8 +162,7 @@ static std::string emit_node_shader(const ValidatedNode& vn,
 
 
 CompileGraphResult GraphCompiler::compile(const GraphIR& ir,
-                                          const NodeLibrary& lib,
-                                          VkFormat output_format) {
+                                          const NodeLibrary& lib) {
     CompileGraphResult result;
     if (ir.nodes.empty()) { result.error = "Graph has no nodes"; return result; }
 
@@ -227,7 +213,7 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir,
     
         if (pass.kind == PassKind::Dispatch) {
             // Build variant key BEFORE emitting GLSL — cache lookup uses this.
-            pass.variant_key = build_variant_key(*type, total_slots, param_socket_count, output_format);
+            pass.variant_key = build_variant_key(*type, total_slots, param_socket_count);
             pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots);
         }
         pass.input_socket_count = total_slots;

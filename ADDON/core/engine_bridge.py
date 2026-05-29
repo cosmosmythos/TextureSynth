@@ -314,7 +314,7 @@ def _get_render_resolution(res):
 
 
 def _blit_to_image(pixels, width, height):
-    img_name = "TextureSynth_Output"
+    img_name = "TS_Preview2D"
     img = bpy.data.images.get(img_name)
     if img is None:
         img = bpy.data.images.new(
@@ -334,7 +334,7 @@ def _blit_to_image(pixels, width, height):
 def _invalidate_output_image():
     """Clear the output image to black so artists see a failed render clearly."""
     import numpy as np
-    img = bpy.data.images.get("TextureSynth_Output")
+    img = bpy.data.images.get("TS_Preview2D")
     if img is None:
         return
     w, h = img.size

@@ -8,6 +8,7 @@
 namespace te {
 
 class VulkanContext;
+class NodeLibrary;
 
 class ResourceManager {
 public:
@@ -18,8 +19,9 @@ public:
     // Returns false if budget would be exceeded; populates `error`.
     bool allocate_for_graph(VulkanContext& ctx,
                             const GraphIR& ir,
+                            const NodeLibrary& lib,
                             uint32_t width, uint32_t height,
-                            VkFormat format,
+                            VkFormat default_format,
                             std::string* error = nullptr);
 
     // Defer destruction; caller must call tick() each frame.

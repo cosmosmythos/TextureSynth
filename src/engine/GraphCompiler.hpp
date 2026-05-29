@@ -21,8 +21,7 @@ struct CompileGraphResult {
 class GraphCompiler {
 public:
     static CompileGraphResult compile(const GraphIR& ir,
-                                      const NodeLibrary& lib,
-                                      VkFormat output_format = VK_FORMAT_R32G32B32A32_SFLOAT);
+                                      const NodeLibrary& lib);
 };
 
 

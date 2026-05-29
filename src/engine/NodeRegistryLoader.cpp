@@ -10,6 +10,7 @@ namespace te {
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
+
 static std::string slurp(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     std::ostringstream ss; ss << f.rdbuf();
@@ -24,11 +25,24 @@ static std::string slurp(const fs::path& p) {
     return s;
 }
 
+
 static SocketType parse_socket_type(const std::string& s) {
     if (s == "float") return SocketType::Float;
     if (s == "sampler2D") return SocketType::Sampler2D;
     return SocketType::Vec4;
 }
+
+
+static ChannelFormat parse_channel_format(const std::string& s) {
+    if (s == "mono") return ChannelFormat::Mono;
+    if (s == "uv")   return ChannelFormat::UV;
+    if (s == "rgb")  return ChannelFormat::RGB;
+    if (s == "rgba") return ChannelFormat::RGBA;
+    if (s == "id")   return ChannelFormat::ID;
+    if (s == "metadata")   return ChannelFormat::Metadata;
+    return ChannelFormat::RGBA;
+}
+
 
 // Resolve includes once per node, dedup symbols globally via #ifndef guards.
 static std::string assemble_glsl(const json& manifest,
@@ -56,6 +70,7 @@ static std::string assemble_glsl(const json& manifest,
     return out.str();
 }
 
+
 int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                                             const std::string& nodes_dir,
                                             const std::string& glsl_dir,
@@ -67,7 +82,7 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
     }
     for (auto& entry : fs::directory_iterator(nodes_dir)) {
         if (entry.path().extension() != ".json") continue;
-        if (entry.path().stem().extension() != ".node") continue; // *.node.json
+        if (entry.path().stem().extension() != ".node") continue;
 
         try {
             json m = json::parse(slurp(entry.path()));
@@ -91,11 +106,19 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
             }           
             for (auto& s : m.value("inputs", json::array())) {
                 if (!s.contains("name")) { log_error("Input missing name in " + n.id); continue; }
-                n.inputs.push_back({ s.at("name").get<std::string>(), parse_socket_type(s.value("type","vec4")) });
+                Socket socket;
+                socket.name   = s.at("name").get<std::string>();
+                socket.type   = parse_socket_type(s.value("type", "vec4"));
+                socket.format = parse_channel_format(s.value("format", "rgba"));
+                n.inputs.push_back(std::move(socket));
             }
             for (auto& s : m.value("outputs", json::array())) {
                 if (!s.contains("name")) { log_error("Output missing name in " + n.id); continue; }
-                n.outputs.push_back({ s.at("name").get<std::string>(), parse_socket_type(s.value("type","vec4")) });
+                Socket socket;
+                socket.name = s.at("name").get<std::string>();
+                socket.type = parse_socket_type(s.value("type", "vec4"));
+                socket.format = parse_channel_format(s.value("format", "rgba"));
+                n.outputs.push_back(std::move(socket));
             }
 
             for (auto& f : m.value("variant_flags", json::array())) {
@@ -116,4 +139,6 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
     log_info("NodeRegistryLoader: loaded " + std::to_string(count) + " nodes");
     return count;
 }
+
+
 } // namespace te

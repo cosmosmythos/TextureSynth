@@ -270,7 +270,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
         return 0;
     }
 
-    auto compile_result = GraphCompiler::compile(ir_result.ir, node_lib_, texture_format_);
+    auto compile_result = GraphCompiler::compile(ir_result.ir, node_lib_);
     if (!compile_result.success) {
         last_error_ = compile_result.error;
         log_error("Graph compile failed: " + compile_result.error);
@@ -298,7 +298,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
     res_storage_slot_.clear();
 
     std::string rerr;
-    if (!resources_.allocate_for_graph(ctx_, current_ir_, output_w_, output_h_,
+    if (!resources_.allocate_for_graph(ctx_, current_ir_, node_lib_, output_w_, output_h_,
                                        texture_format_, &rerr)) {
         last_error_ = rerr;
         return 0;

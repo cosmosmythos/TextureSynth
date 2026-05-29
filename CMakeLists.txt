@@ -38,6 +38,7 @@ add_library(engine STATIC
     src/engine/AsyncReadback.cpp
     src/engine/ImageUploader.cpp
     src/engine/BindlessTable.cpp
+    src/engine/ImageUploader.cpp
 )
 target_include_directories(engine PUBLIC src)
 target_link_libraries(engine PUBLIC
@@ -48,7 +49,9 @@ target_link_libraries(engine PUBLIC
     nlohmann_json::nlohmann_json
 )
 
-# ---- Viewer executable ----
+# ---- Viewer executable (optional) ----
+option(BUILD_VIEWER "Build standalone viewer" OFF)
+if(BUILD_VIEWER)
 add_executable(viewer
     src/viewer/main.cpp
     src/viewer/Window.cpp
@@ -64,6 +67,7 @@ add_custom_command(TARGET viewer POST_BUILD
         ${CMAKE_SOURCE_DIR}/shader_assets
         $<TARGET_FILE_DIR:viewer>/shader_assets
 )
+endif()
 
 # ---- Python Extension (TextureSynth Addon) ----
 option(BUILD_PYTHON_BINDINGS "Build PyBind11 extension" OFF)

@@ -105,15 +105,13 @@ def generate_node_classes(core_module):
             return init_func
         class_dict['init'] = make_init(node_type)
 
-        # 3. draw_buttons — hide sliders when their socket is linked
+        # 3. draw_buttons — hide socket-driven params from node body
         def make_draw_buttons(p_names, p_as_socket):
             def draw_buttons_func(self, context, layout):
                 self.draw_error_ui(layout)
                 for p_name, is_sock in zip(p_names, p_as_socket):
                     if is_sock:
-                        sock = self.inputs.get(p_name)
-                        if sock and sock.is_linked:
-                            continue
+                        continue  # drawn inline by socket.draw() now
                     layout.prop(self, p_name)
             return draw_buttons_func
         p_as_socket = [getattr(p, 'as_socket', False) for p in node_type.params]

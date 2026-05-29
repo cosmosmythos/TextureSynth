@@ -20,8 +20,9 @@ TEST(ResourceManager, RespectsMemoryBudget) {
         ir.nodes.push_back(n);
     }
 
+    te::NodeLibrary lib;
     std::string err;
-    EXPECT_FALSE(rm.allocate_for_graph(ctx, ir, 2048, 2048,
+    EXPECT_FALSE(rm.allocate_for_graph(ctx, ir, lib, 2048, 2048,
                                         VK_FORMAT_R32G32B32A32_SFLOAT, &err));
     EXPECT_FALSE(err.empty());
 
