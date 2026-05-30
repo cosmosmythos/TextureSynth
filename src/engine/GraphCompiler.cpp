@@ -11,9 +11,8 @@ namespace te {
 // Build a ShaderVariantKey for a node pass.
 // Today: keyed by (node_type, input_count, socket_param_mask, output_format).
 // Tomorrow: feature_flags will be populated from node params (e.g. "use_mask").
-static ShaderVariantKey build_variant_key(const NodeType& type,
-                                          uint32_t input_count,
-                                          uint32_t param_socket_count) {
+static ShaderVariantKey build_variant_key(const NodeType& type, uint32_t input_count, uint32_t param_socket_count) {
+
     ShaderVariantKey key;
     key.node_type_id   = type.id;
     key.input_count    = input_count;
@@ -58,13 +57,13 @@ static std::string emit_node_shader(const ValidatedNode& vn,
     s << "layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } "
     "node_params[" << BindlessTable::PARAM_RING_SIZE << "];\n\n";
 
-    // ── Push constants — MUST mirror PassPushConstants (64 bytes) ──
+    // ── Push constants ─────────────────────────────────────────────
     s << "layout(push_constant) uniform PC {\n"
       << "    uint  resolution_x;\n"
       << "    uint  resolution_y;\n"
       << "    uint  seed;\n"
       << "    float time;\n"
-      << "    uint  out_storage_slot;\n"
+      << "    uint  out_storage_slots[" << MAX_PASS_OUTPUTS << "];\n"
       << "    uint  param_base_slot;\n"
       << "    uint  input_count;\n"
       << "    uint  param_ring_idx;\n"
@@ -79,6 +78,8 @@ static std::string emit_node_shader(const ValidatedNode& vn,
     //   indices [type.inputs.size() .. total_slots)    -> socket-driven params
     // So the local index for `type.inputs[i]` is exactly `i`.
     const uint32_t inputs_n = static_cast<uint32_t>(type.inputs.size());
+    const uint32_t outputs_n = static_cast<uint32_t>(type.outputs.size());
+    const bool multi_output = outputs_n > 1;
 
     bool any_sampler = false;
     for (const auto& sock : type.inputs)
@@ -130,7 +131,14 @@ static std::string emit_node_shader(const ValidatedNode& vn,
     }
 
     // Call node function: node_<id>(uv, inputs..., params...)
-    s << "    vec4 result = node_" << type.id << "(uv";
+    if (multi_output) {
+        s << "    vec4 out0, out1, out2, out3;\n";
+        s << "    node_" << type.id << "(uv";
+    }
+    else {
+        s << "    vec4 result = node_" << type.id << "(uv";
+    }
+
     for (uint32_t i = 0; i < inputs_n; ++i) {
         s << ", ";
         if (type.inputs[i].type == SocketType::Sampler2D)
@@ -139,8 +147,7 @@ static std::string emit_node_shader(const ValidatedNode& vn,
             s << "in" << i;
     }
 
-    // Params: socket-driven ones live in in_sampled_slots[inputs_n + k] in
-    // the order they appear in type.params (matching GraphCompiler::compile()).
+    // Params: socket-driven ones live in in_sampled_slots[inputs_n + k] in the order they appear in type.params (matching GraphCompiler::compile()).
     uint32_t param_socket_local = inputs_n;
     for (size_t i = 0; i < type.params.size(); ++i) {
         s << ", ";
@@ -152,17 +159,27 @@ static std::string emit_node_shader(const ValidatedNode& vn,
             s << "node_params[pc.param_ring_idx].v[pc.param_base_slot + " << i << "]";
         }
     }
+    if (multi_output) {
+        for (uint32_t i = 0; i < outputs_n; ++i) {
+            s << ", out" << i;
+        }
+    }
     s << ");\n";
-
-    s << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slot)], coord, result);\n"
-      << "}\n";
-
+    if (multi_output) {
+        for (uint32_t i = 0; i < outputs_n; ++i)
+            s << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots["
+            << i << "])], coord, out" << i << ");\n";
+    }
+    else {
+        s << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, result);\n";
+    }
+    s << "}\n";  // close main()
     return s.str();
 }
 
 
-CompileGraphResult GraphCompiler::compile(const GraphIR& ir,
-                                          const NodeLibrary& lib) {
+CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& lib) {
+
     CompileGraphResult result;
     if (ir.nodes.empty()) { result.error = "Graph has no nodes"; return result; }
 
@@ -187,7 +204,8 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir,
         ComputePass pass;
         pass.node_id         = id;
         pass.type_id         = type->id;
-        pass.output_resource = {id, 0};
+		pass.output_resources.clear();
+		for (uint32_t i = 0; i < type->outputs.size(); ++i) { pass.output_resources.push_back({ id, i }); }
         pass.param_base_slot = param_base_slot[id];
         pass.input_mode      = InputMode::PreSampled;
     
@@ -208,7 +226,7 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir,
         for (auto& c : ir.connections) {
             if (c.dst_node != id) continue;
             if (c.dst_socket < total_slots)
-                pass.input_resources[c.dst_socket] = {c.src_node, 0};
+                pass.input_resources[c.dst_socket] = {c.src_node, c.src_socket};
         }
     
         if (pass.kind == PassKind::Dispatch) {
@@ -242,11 +260,13 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir,
     }
     std::unordered_set<ResourceUUID, ResourceUUIDHash> seen;
     for (auto& p : plan.passes) {
-        if (!seen.insert(p.output_resource).second) {
-            result.success = false;
-            result.error = "internal: duplicate output_resource for node "
-                         + std::to_string(p.output_resource.node_id);
-            return result;
+        for (auto& rid : p.output_resources) {
+            if (!seen.insert(rid).second) {
+                result.error = "internal: duplicate output_resource for node "
+                    + std::to_string(rid.node_id)
+                    + " output " + std::to_string(rid.output_index);
+                return result;
+            }
         }
     }
 

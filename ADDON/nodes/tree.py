@@ -79,7 +79,7 @@ class TS_IntSocket(bpy.types.NodeSocket):
         return (0.12, 0.6, 0.12, 1.0)
 
 
-# Backwards-compatible alias — existing code references TextureSynthSocketType
+# Backwards-compatible alias
 TextureSynthSocket = TS_DefaultSocket
 
 
@@ -95,9 +95,10 @@ FORMAT_SOCKET_MAP = {
 }
 
 def _get_channel_format():
-    """Lazy import ch_fmt enum from module"""
+    """Lazy import ChannelFormat enum from C++ module."""
     from ..core import cpp_module
-    return cpp_module.ChannelFormat
+    core = cpp_module.get_core()
+    return core.ChannelFormat
 
 FORMAT_CHANNEL_MAP = {
     'DEFAULT': None,
@@ -120,9 +121,8 @@ def replace_socket(socket, new_type, new_name=None):
     Returns the new socket. The old socket reference becomes invalid.
     """
     socket_name = new_name or socket.name
-    socket_pos = socket.index
-    ng = socket.id_data
-    ng.freeze()
+    sockets = socket.node.outputs if socket.is_output else socket.node.inputs
+    socket_pos = list(sockets).index(socket)
 
     if socket.is_output:
         to_sockets = [l.to_socket for l in socket.links]
@@ -130,16 +130,15 @@ def replace_socket(socket, new_type, new_name=None):
         new_socket = socket.node.outputs.new(new_type, socket_name)
         socket.node.outputs.move(len(socket.node.outputs) - 1, socket_pos)
         for to_socket in to_sockets:
-            ng.links.new(new_socket, to_socket)
+            socket.id_data.links.new(new_socket, to_socket)
     else:
         from_socket = socket.links[0].from_socket if socket.is_linked else None
         socket.node.inputs.remove(socket)
         new_socket = socket.node.inputs.new(new_type, socket_name)
         socket.node.inputs.move(len(socket.node.inputs) - 1, socket_pos)
         if from_socket:
-            ng.links.new(from_socket, new_socket)
+            socket.id_data.links.new(from_socket, new_socket)
 
-    ng.unfreeze()
     return new_socket
 
 

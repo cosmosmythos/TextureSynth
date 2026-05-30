@@ -1,0 +1,18 @@
+{
+    "id": "split_rgba",
+    "display_name": "Separate RGBA",
+    "description": "Splits a color texture into four Mono channels.",
+    "includes": [],
+    "inputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "outputs": [
+        { "name": "R", "type": "vec4", "format": "mono" },
+        { "name": "G", "type": "vec4", "format": "mono" },
+        { "name": "B", "type": "vec4", "format": "mono" },
+        { "name": "A", "type": "vec4", "format": "mono" }
+    ],
+    "params": [],
+    "shader": "split_rgba.glsl",
+    "entry": "node_split_rgba"
+}

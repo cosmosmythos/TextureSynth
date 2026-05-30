@@ -28,12 +28,13 @@ constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 struct PassExec {
     std::unique_ptr<ComputePipeline> pipeline;
     NodeId                           node_id = 0;
-    ResourceUUID                     output_resource = {};
     std::vector<ResourceUUID>        input_resources;
+    std::vector<ResourceUUID>        output_resources;
     int                              param_base_slot = 0;
 
     // Bindless: precomputed push-constant payload (slots only).
-    uint32_t out_storage_slot = 0;
+    uint32_t out_storage_slots[MAX_PASS_OUTPUTS] = {};
+	uint32_t output_count = 0;
     uint32_t in_sampled_slots[MAX_PASS_INPUTS] = {};
     uint32_t input_count = 0;
 
@@ -211,7 +212,7 @@ private:
 
     std::vector<PassExec> passes_;
     std::vector<RetiredPass> retired_passes_;
-    ResourceUUID final_output_resource_ = {};
+    ResourceUUID  final_output_resource_ = {};
 
     std::unordered_map<uint64_t, std::unique_ptr<Image>> image_registry_;
     VkImageLayout dummy_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -222,7 +223,7 @@ private:
         std::future<CompileResult> fut;
         std::string                name;
         uint32_t                   input_count = 0;
-        ResourceUUID               output_resource = {};
+        std::vector<ResourceUUID>  output_resources;
         std::vector<ResourceUUID>  input_resources;
         NodeId                     node_id = 0;
         PassKind                   kind = PassKind::Dispatch;

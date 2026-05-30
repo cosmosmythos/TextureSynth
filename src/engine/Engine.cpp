@@ -190,22 +190,29 @@ void Engine::destroy_global_samplers_() {
 
 void Engine::assign_bindless_slots_(PassExec& pe) {
 
-    uint32_t out_slot;
-    auto it_o = res_storage_slot_.find(pe.output_resource);
-    if (it_o == res_storage_slot_.end()) {
-        out_slot = bindless_.alloc_storage_slot();
-        if (out_slot == BindlessTable::INVALID_SLOT) {
-            log_error("Bindless storage exhausted at pass node " + std::to_string(pe.node_id));
-            out_slot = 0;  // will write to slot 0; visible debug failure, not crash
-        } else {
-            res_storage_slot_[pe.output_resource] = out_slot;
-            if (auto* r = resources_.get(pe.output_resource))
-                bindless_.write_storage(ctx_, out_slot, r->view);
+    // Outputs
+    pe.output_count = static_cast<uint32_t>(pe.output_resources.size());
+    for (uint32_t t = 0; t < pe.output_count && t < MAX_PASS_OUTPUTS; ++t) {
+        const ResourceUUID& rid = pe.output_resources[t];
+        auto it_o = res_storage_slot_.find(rid);
+        if (it_o == res_storage_slot_.end()) {
+            uint32_t slot = bindless_.alloc_storage_slot();
+            if (slot == BindlessTable::INVALID_SLOT) {
+                log_error("Bindless storage exhausted");
+                slot = 0;
+            }
+            else {
+                res_storage_slot_[rid] = slot;
+                if (auto* r = resources_.get(rid))
+                    bindless_.write_storage(ctx_, slot, r->view);
+            }
+            pe.out_storage_slots[t] = slot;
         }
-    } else {
-        out_slot = it_o->second;
+        else {
+            pe.out_storage_slots[t] = it_o->second;
+        }
     }
-    pe.out_storage_slot = out_slot;
+
 
     // Inputs: sampled slot per input resource.
     pe.input_count = static_cast<uint32_t>(pe.input_resources.size());
@@ -337,10 +344,10 @@ uint64_t Engine::set_graph(const Graph& graph) {
         for (size_t i = 0; i < compile_result.pass_plan.passes.size(); ++i) {
             const auto& pass = compile_result.pass_plan.passes[i];
             PassExec pe;
-            pe.node_id         = pass.node_id;
-            pe.output_resource = pass.output_resource;
-            pe.input_resources = pass.input_resources;
-            pe.param_base_slot = pass.param_base_slot;
+            pe.node_id          = pass.node_id;
+            pe.output_resources = pass.output_resources;
+            pe.input_resources  = pass.input_resources;
+            pe.param_base_slot  = pass.param_base_slot;
             pe.output_layout_is_general = false;
 
             if (pass.kind == PassKind::Dispatch) {
@@ -366,13 +373,13 @@ uint64_t Engine::set_graph(const Graph& graph) {
     pending_passes_.reserve(compile_result.pass_plan.passes.size());
     for (auto& pass : compile_result.pass_plan.passes) {
         PendingPass pp;
-        pp.name            = "node_" + std::to_string(pass.node_id);
-        pp.input_count     = pass.input_socket_count;
-        pp.output_resource = pass.output_resource;
-        pp.input_resources = pass.input_resources;
-        pp.node_id         = pass.node_id;
-        pp.kind            = pass.kind;
-        pp.variant_key     = pass.variant_key;
+        pp.name             = "node_" + std::to_string(pass.node_id);
+        pp.input_count      = pass.input_socket_count;
+        pp.output_resources = pass.output_resources;
+        pp.input_resources  = pass.input_resources;
+        pp.node_id          = pass.node_id;
+        pp.kind             = pass.kind;
+        pp.variant_key      = pass.variant_key;
         if (pass.kind == PassKind::Dispatch) {
             pp.fut = compiler_.compile_compute_async(pass.shader_glsl, pp.name);
         }
@@ -461,9 +468,9 @@ void Engine::poll_pending_compiles() {
 
     for (auto& pp : pending_passes_) {
         PassExec pe;
-        pe.node_id         = pp.node_id;
-        pe.output_resource = pp.output_resource;
-        pe.input_resources = std::move(pp.input_resources);
+        pe.node_id          = pp.node_id;
+        pe.output_resources = pp.output_resources;
+        pe.input_resources  = std::move(pp.input_resources);
         pe.output_layout_is_general = false;
 
         if (pp.kind == PassKind::Dispatch) {
@@ -527,6 +534,18 @@ void Engine::tick_retired() {
                 return false;
             }),
         retired_images_.end());
+
+	for (auto& r : retired_passes_) if (r.frames_remaining > 0) --r.frames_remaining;
+	retired_passes_.erase(
+		std::remove_if(retired_passes_.begin(), retired_passes_.end(),
+			[&](RetiredPass& r) {
+				if (r.frames_remaining == 0) {
+					if (r.pipeline) r.pipeline->destroy(ctx_);
+					return true;
+				}
+				return false;
+			}),
+		retired_passes_.end());
 }
 
 
@@ -578,16 +597,19 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
     //    Clean passes' images stay in their current layout (GENERAL or SAMPLED).
     for (auto& pe : passes_) {
         if (!dirty_set_.is_dirty(pe.node_id)) continue;
-        auto* r = resources_.get(pe.output_resource);
-        if (!r) continue;
-        if (r->layout != VK_IMAGE_LAYOUT_GENERAL) {
-            transition(r->image,
-                       r->layout, VK_IMAGE_LAYOUT_GENERAL,
-                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-            r->layout = VK_IMAGE_LAYOUT_GENERAL;
+        for (uint32_t i = 0; i < pe.output_count; ++i) {
+            const ResourceUUID& rid = pe.output_resources[i];
+            auto* r = resources_.get(rid);
+            if (!r) continue;
+            if (r->layout != VK_IMAGE_LAYOUT_GENERAL) {
+                transition(r->image,
+                            r->layout, VK_IMAGE_LAYOUT_GENERAL,
+                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                            VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+                r->layout = VK_IMAGE_LAYOUT_GENERAL;
+            }
         }
         pe.output_layout_is_general = true;
     }
@@ -650,8 +672,6 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         auto& pe = passes_[i];
         if (!dirty_set_.is_dirty(pe.node_id)) continue;
 
-        auto* out_res = resources_.get(pe.output_resource);
-
         // Emit input barriers ONLY for inputs whose source pass is dirty this frame
         // or whose layout isn't already GENERAL (readable by compute).
         for (const auto& inp : pe.input_resources) {
@@ -677,6 +697,12 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
             dep.pImageMemoryBarriers    = &b;
             vkCmdPipelineBarrier2(cmd, &dep);
         }
+        // Emit output
+        for (uint32_t o = 0; o < pe.output_count; ++o) {
+            const ResourceUUID& rid = pe.output_resources[o];
+            auto* out_res = resources_.get(rid);
+            if (out_res) { out_res->is_dirty = false; out_res->layout = VK_IMAGE_LAYOUT_GENERAL; }
+        }
 
         // Dispatch.
         if (pe.pipeline) {
@@ -687,12 +713,13 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
 
             PassPushConstants ppc{};
             ppc.global           = pc;
-            ppc.out_storage_slot = pe.out_storage_slot;
             ppc.param_base_slot  = (uint32_t)pe.param_base_slot;
             ppc.input_count      = pe.input_count;
-            ppc.param_ring_idx   = param_write_idx_;          
             for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
                 ppc.in_sampled_slots[k] = pe.in_sampled_slots[k];
+            for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
+                ppc.out_storage_slots[t] = pe.out_storage_slots[t];
+            ppc.param_ring_idx = param_write_idx_;
 
             vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
                                VK_SHADER_STAGE_COMPUTE_BIT,
@@ -700,14 +727,9 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
             vkCmdDispatch(cmd, gx, gy, 1);
         }
 
-        // Mark output as readable for downstream passes.
-        if (out_res) {
-            out_res->is_dirty = false;
-            out_res->layout = VK_IMAGE_LAYOUT_GENERAL;
-        }
         pe.output_layout_is_general = true;
 
-        if (pe.output_resource == final_output_resource_) {
+        if (std::find(pe.output_resources.begin(), pe.output_resources.end(), final_output_resource_) != pe.output_resources.end()) {
             final_pass_was_dirty = true;
         }
     }

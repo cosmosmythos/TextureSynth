@@ -1,12 +1,11 @@
 schema_version = "1.0.0"
-
 id = "texturesynth"
 version = "1.0.0"
 name = "TextureSynth"
-tagline = "Node-based Vulkan Procedural Texture Generator"
-maintainer = "User"
+tagline = "Procedural Texture Generator"
+maintainer = "cosmosmythos"
 type = "add-on"
 blender_version_min = "4.2.0"
 license = [
-  "SPDX-License-Identifier: GPL-2.0-or-later"
+  "SPDX-License-Identifier: GPL-3.0-or-later"
 ]

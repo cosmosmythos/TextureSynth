@@ -135,8 +135,10 @@ class TextureSynthNode(bpy.types.Node):
         self._ts_output_meta = meta
 
     def get_format_override(self):
-        """Return ChannelFormat enum value for engine. None if no override (use JSON default)."""
-        from .tree import FORMAT_CHANNEL_MAP
+        """Return ChannelFormat enum value for engine."""
+        from .tree import FORMAT_CHANNEL_MAP, _get_channel_format
         fmt = getattr(self, 'format_override', 'DEFAULT')
         getter = FORMAT_CHANNEL_MAP.get(fmt)
-        return getter if getter else None
+        if getter:
+            return getter()
+        return _get_channel_format().RGBA

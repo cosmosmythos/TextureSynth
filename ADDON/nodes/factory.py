@@ -18,7 +18,7 @@ def _channel_format_to_override(cf):
     global _cf
     if _cf is None:
         from ..core import cpp_module
-        _cf = cpp_module.ChannelFormat
+        _cf = cpp_module.get_core().ChannelFormat
     if cf == _cf.Mono:
         return 'MONO'
     if cf == _cf.UV:
@@ -37,7 +37,8 @@ _CATEGORY_BY_SVTYPE = {
     'value':'NOISE','white':'NOISE',
     'color_const':'INPUT','image':'INPUT',
     'blend':'BLEND',
-    'invert':'FILTER','grayscale':'FILTER','rgba_merge':'FILTER',
+    'invert':'FILTER','grayscale':'FILTER',
+    'combine_rgba':'COLOR','split_rgba':'COLOR',
 }
 
 _generated_classes = []

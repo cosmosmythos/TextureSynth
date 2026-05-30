@@ -5,6 +5,7 @@
 #include "engine/Graph.hpp"
 #include <algorithm>
 
+
 namespace te {
 
 
@@ -111,12 +112,16 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
 
     size_t total = 0;
     for (const auto& vn : ir.nodes) {
-        VkFormat node_format = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
-        total += (size_t)width * height * pixel_bytes_(node_format);
+        const auto* type = lib.find(vn.type_id);
+        const uint32_t num_outputs = type ? std::max(1u, (uint32_t)type->outputs.size()) : 1;
+        for (uint32_t output_id = 0; output_id < num_outputs; ++output_id) {
+            VkFormat format_ = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
+            total += (size_t)width * height * pixel_bytes_(format_);
+        }
     }
 
     if (total > budget_bytes_) {
-        std::string e = "memory budget exceeded: need "
+        std::string e = "Memory Budget Exceeded: Need "
                         + std::to_string(total / (1024 * 1024)) + " MB, budget "
                         + std::to_string(budget_bytes_ / (1024 * 1024)) + " MB";
         if (error) *error = e;
@@ -125,18 +130,30 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
     }
 
     for (const auto& vn : ir.nodes) {
-        NodeResource r;
-        r.node_id      = vn.id;
-        r.output_index = 0;
-        r.format       = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
-        if (!create_image_(ctx, r, width, height, vn.debug_name)) {
-            if (error) *error = "image allocation failed for " + vn.debug_name;
-            return false;
+        const auto& type = lib.find(vn.type_id);
+        if (!type) continue;
+        const uint32_t num_outputs = std::max(1u, (uint32_t)type->outputs.size());
+        for (uint32_t output_id = 0; output_id < num_outputs; ++output_id) {
+            NodeResource r;
+            r.node_id = vn.id;
+            r.output_index = output_id;
+            VkFormat format_ = default_format;
+            if (output_id < type->outputs.size()) {
+                format_ = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
+                if (type->outputs[output_id].format != ChannelFormat::RGBA) {
+                    format_ = channel_to_vk_format(type->outputs[output_id].format);
+                }
+            }
+            r.format = format_;
+            if (!create_image_(ctx, r, width, height, vn.debug_name + "_out" + std::to_string(output_id))) {
+                if (error) *error = "image allocation failed for " + vn.debug_name;
+                return false;
+            }
+            live_[{vn.id, output_id}] = std::move(r);
+            current_bytes_ += (size_t)width * height * pixel_bytes_(format_);
         }
-        live_[{vn.id, 0}] = std::move(r);
-        current_bytes_ += (size_t)width * height * pixel_bytes_(r.format);
     }
-    log_info("ResourceManager: allocated " + std::to_string(live_.size())
+    log_info("ResourceManager: Allocated " + std::to_string(live_.size())
              + " images, " + std::to_string(current_bytes_ / (1024 * 1024)) + " MB");
     return true;
 }
