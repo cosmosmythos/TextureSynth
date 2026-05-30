@@ -50,10 +50,11 @@ class TS_ColorConst_Node(TextureSynthNode):
 
     def init(self, context):
         super().init(context)              # assigns ts_uuid
-        self.outputs.new('TextureSynthSocketType', "")
+        self.outputs.new('TS_DefaultSocketType', "")
 
     def draw_buttons(self, context, layout):
         self.draw_error_ui(layout)
+        layout.prop(self, 'format_override', text="")
         layout.prop(self, "mode", expand=True)
         if self.mode == 'RGBA':
             layout.template_color_picker(self, "color_data", value_slider=True)

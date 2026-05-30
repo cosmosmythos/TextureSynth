@@ -68,10 +68,11 @@ class TS_Image_Node(TextureSynthNode):
 
     def init(self, context):
         super().init(context)              # assigns ts_uuid
-        self.outputs.new('TextureSynthSocketType', "Color")
+        self.outputs.new('TS_DefaultSocketType', "Color")
 
     def draw_buttons(self, context, layout):
         self.draw_error_ui(layout)
+        layout.prop(self, 'format_override', text="")
         layout.template_ID(self, "image", open="image.open")
         
         col = layout.column(align=True)

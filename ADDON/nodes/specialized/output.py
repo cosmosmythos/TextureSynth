@@ -14,7 +14,7 @@ class TS_Output_Node(TextureSynthNode):
 
     def init(self, context):
         super().init(context)
-        self.inputs.new('TextureSynthSocketType', "Result")
+        self.inputs.new('TS_DefaultSocketType', "Result")
 
 
 NODE_CLASS = TS_Output_Node

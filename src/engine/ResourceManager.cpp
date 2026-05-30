@@ -11,6 +11,21 @@ namespace te {
 constexpr uint32_t RETIRE_FRAMES = 4; // MAX_FRAMES_IN_FLIGHT + safety
 
 
+static VkFormat resolve_node_format(ChannelFormat override_format,
+                                    const NodeLibrary& lib,
+                                    const std::string& type_id,
+                                    VkFormat default_format) {
+	if (override_format != ChannelFormat::RGBA) {
+		return channel_to_vk_format(override_format);
+	}
+	auto* type = lib.find(type_id);
+	if (type && !type->outputs.empty()) {
+		return channel_to_vk_format(type->outputs[0].format);
+	}
+	return default_format;
+}
+
+
 size_t ResourceManager::pixel_bytes_(VkFormat f) const {
     switch (f) {
         // 32-bit
@@ -96,9 +111,7 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
 
     size_t total = 0;
     for (const auto& vn : ir.nodes) {
-        VkFormat node_format = default_format;
-        auto* type = lib.find(vn.type_id);
-        if (type && !type->outputs.empty()) { node_format = channel_to_vk_format(type->outputs[0].format); }
+        VkFormat node_format = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
         total += (size_t)width * height * pixel_bytes_(node_format);
     }
 
@@ -115,16 +128,13 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         NodeResource r;
         r.node_id      = vn.id;
         r.output_index = 0;
-        VkFormat node_format = default_format;
-        auto* type = lib.find(vn.type_id);
-        if (type && !type->outputs.empty()) { node_format = channel_to_vk_format(type->outputs[0].format); }
-        r.format = node_format;
+        r.format       = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
         if (!create_image_(ctx, r, width, height, vn.debug_name)) {
             if (error) *error = "image allocation failed for " + vn.debug_name;
             return false;
         }
         live_[{vn.id, 0}] = std::move(r);
-        current_bytes_ += (size_t)width * height * pixel_bytes_(node_format);
+        current_bytes_ += (size_t)width * height * pixel_bytes_(r.format);
     }
     log_info("ResourceManager: allocated " + std::to_string(live_.size())
              + " images, " + std::to_string(current_bytes_ / (1024 * 1024)) + " MB");

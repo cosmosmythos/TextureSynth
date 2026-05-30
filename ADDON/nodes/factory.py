@@ -5,7 +5,31 @@ here (by sv_type), then appended to _generated_classes after the loop.
 """
 import bpy
 from .base import TextureSynthNode
+from .tree import socket_type_for_format
 from . import specialized
+
+
+# Reverse map: C++ ChannelFormat enum → format_override EnumProperty value.
+# Import cpp_module lazily so this module can be imported at build time.
+_cf = None
+
+def _channel_format_to_override(cf):
+    """Map a ChannelFormat enum value to a format_override string."""
+    global _cf
+    if _cf is None:
+        from ..core import cpp_module
+        _cf = cpp_module.ChannelFormat
+    if cf == _cf.Mono:
+        return 'MONO'
+    if cf == _cf.UV:
+        return 'UV'
+    if cf == _cf.RGB:
+        return 'RGB'
+    if cf == _cf.ID:
+        return 'ID'
+    if cf == _cf.Metadata:
+        return 'DEFAULT'
+    return 'DEFAULT'  # RGBA or unknown → default
 
 
 _CATEGORY_BY_SVTYPE = {
@@ -90,25 +114,41 @@ def generate_node_classes(core_module):
                 super(type(self), self).init(context)
                 single_in = len(node_type_ref.inputs) == 1 and not any(
                     getattr(p, 'as_socket', False) for p in node_type_ref.params)
+
+                # ── Input sockets (color from JSON format) ─────────
                 for sock in node_type_ref.inputs:
                     label = "" if single_in else sock.name.capitalize()
-                    self.inputs.new('TextureSynthSocketType', label)
+                    in_type = socket_type_for_format(
+                        _channel_format_to_override(sock.format))
+                    self.inputs.new(in_type, label)
                 for p in node_type_ref.params:
                     if getattr(p, 'as_socket', False):
-                        s = self.inputs.new('TextureSynthSocketType',
+                        s = self.inputs.new('TS_DefaultSocketType',
                                             getattr(p, 'display_name', None) or p.name)
                         s.name = p.name
-                single_out = len(node_type_ref.outputs) == 1        
-                for sock in node_type_ref.outputs:
+
+                # ── Output sockets (from JSON format, editable at runtime) ──
+                if node_type_ref.outputs:
+                    fmt_override = _channel_format_to_override(
+                        node_type_ref.outputs[0].format)
+                    self.format_override = fmt_override
+                out_type = socket_type_for_format(
+                    getattr(self, 'format_override', 'DEFAULT'))
+                meta = {}
+                single_out = len(node_type_ref.outputs) == 1
+                for i, sock in enumerate(node_type_ref.outputs):
                     label = "" if single_out else sock.name.capitalize()
-                    self.outputs.new('TextureSynthSocketType', label)
+                    self.outputs.new(out_type, label)
+                    meta[i] = (sock.name, out_type)
+                self._ts_output_meta = meta
             return init_func
         class_dict['init'] = make_init(node_type)
 
-        # 3. draw_buttons — hide socket-driven params from node body
+        # 3. draw_buttons — format override + hide socket-driven params
         def make_draw_buttons(p_names, p_as_socket):
             def draw_buttons_func(self, context, layout):
                 self.draw_error_ui(layout)
+                layout.prop(self, 'format_override', text="")
                 for p_name, is_sock in zip(p_names, p_as_socket):
                     if is_sock:
                         continue  # drawn inline by socket.draw() now

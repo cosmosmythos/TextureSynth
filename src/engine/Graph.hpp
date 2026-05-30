@@ -49,7 +49,7 @@ enum class ChannelFormat { Mono, UV, RGB, RGBA, ID, Metadata };
 inline VkFormat channel_to_vk_format(ChannelFormat fmt) {
     if (fmt == ChannelFormat::Mono)      return VK_FORMAT_R16_SFLOAT;
     if (fmt == ChannelFormat::UV)        return VK_FORMAT_R16G16_SFLOAT;
-    if (fmt == ChannelFormat::RGB)       return VK_FORMAT_R16G16B16A16_SFLOAT; // 3-channel not supported for storage
+    if (fmt == ChannelFormat::RGB)       return VK_FORMAT_R16G16B16A16_SFLOAT;
     if (fmt == ChannelFormat::RGBA)      return VK_FORMAT_R16G16B16A16_SFLOAT;
     if (fmt == ChannelFormat::ID)        return VK_FORMAT_R32_UINT;
     return VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -93,7 +93,8 @@ struct NodeType {
 
 struct NodeInstance {
     NodeId id = 0;
-    std::string type_id;                // references NodeType::id
+    std::string type_id;
+    ChannelFormat format_override = ChannelFormat::RGBA;
 };
 
 

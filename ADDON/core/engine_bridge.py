@@ -209,7 +209,8 @@ def _build_graph_and_params(tree):
             continue        
         if getattr(node, 'sv_type', None) is None:
             continue
-        graph.add_node(nid, node.sv_type)
+        fmt_override = node.get_format_override() if hasattr(node, 'get_format_override') else None
+        graph.add_node(nid, node.sv_type, fmt_override)
 
     # Collect parameters in same topological order
     node_params = []

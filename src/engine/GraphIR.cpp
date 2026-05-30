@@ -167,6 +167,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
             ValidatedNode vn;
             vn.id       = n.id;
             vn.type_id  = n.type_id;
+            vn.format_override = n.format_override;
             // debug_name can be set by caller later; default to type+id
             vn.debug_name = n.type_id + "_" + std::to_string(n.id);
             ir.nodes.push_back(vn);

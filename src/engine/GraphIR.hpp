@@ -29,6 +29,7 @@ struct ValidatedNode {
     NodeId      id       = 0;
     std::string type_id;          // references NodeType::id
     std::string debug_name;       // human-readable label for logging/debugging
+    ChannelFormat format_override = ChannelFormat::RGBA;
 };
 
 struct ValidatedConnection {

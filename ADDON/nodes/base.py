@@ -11,6 +11,27 @@ TS_CATEGORY_COLORS = {
     'OUTPUT':  (0.15, 0.15, 0.15),   # neutral dark
 }
 
+# Format override items — order matches FORMAT_SOCKET_MAP in tree.py
+FORMAT_OVERRIDE_ITEMS = [
+    ('DEFAULT', "Auto",    "Use the node type's declared output format"),
+    ('MONO',    "Mono",    "Single-channel grayscale (R16_SFLOAT)"),
+    ('UV',      "UV",      "Two-channel vector (R16G16_SFLOAT)"),
+    ('RGB',     "RGB",     "Three-channel color (R16G16B16A16_SFLOAT)"),
+    ('RGBA',    "RGBA",    "Full four-channel color (R16G16B16A16_SFLOAT)"),
+    ('ID',      "Integer", "Integer identifier (R32_UINT)"),
+]
+
+
+def _on_format_override_change(self, context):
+    """Rebuild output sockets when format_override changes."""
+    self.rebuild_output_sockets()
+    try:
+        from ..core.evaluation import request_topology_update
+        request_topology_update()
+    except Exception:
+        pass
+
+
 class TextureSynthNode(bpy.types.Node):
     """Base class for all TextureSynth nodes."""
 
@@ -26,6 +47,15 @@ class TextureSynthNode(bpy.types.Node):
         description="Last shader compilation error for this node",
         default="",
         options={'HIDDEN'},
+    )
+
+    format_override: bpy.props.EnumProperty(
+        name="Format",
+        description="Override the output texture format for this node. "
+                    "Changes the socket color and the GPU allocation.",
+        items=FORMAT_OVERRIDE_ITEMS,
+        default='DEFAULT',
+        update=_on_format_override_change,
     )
 
     def draw_error_ui(self, layout):
@@ -58,6 +88,10 @@ class TextureSynthNode(bpy.types.Node):
 
     ts_category: str = 'INPUT'
 
+    # Stored output socket metadata — populated by factory.py's init.
+    # Maps socket_index -> (original_name, original_type).
+    _ts_output_meta: dict = {}
+
     def init(self, context):
         """Called when the node is first created. Subclasses should call super()."""
         if not getattr(self, "ts_uuid", ""):
@@ -78,3 +112,31 @@ class TextureSynthNode(bpy.types.Node):
             request_param_update()
         except Exception:
             pass
+
+    # ── Dynamic socket management ──────────────────────────────────
+
+    def rebuild_output_sockets(self):
+        """Replace all output sockets to match the current format_override.
+
+        Called automatically when the format_override EnumProperty changes.
+        Preserves links on each socket by index.
+        """
+        from .tree import socket_type_for_format, replace_socket
+
+        fmt = getattr(self, 'format_override', 'DEFAULT')
+        new_type = socket_type_for_format(fmt)
+        meta = getattr(self, '_ts_output_meta', {})
+
+        for i, sock in enumerate(list(self.outputs)):
+            orig_name, _ = meta.get(i, (sock.name, sock.bl_idname))
+            if sock.bl_idname != new_type:
+                replace_socket(sock, new_type, orig_name)
+            meta[i] = (orig_name, new_type)
+        self._ts_output_meta = meta
+
+    def get_format_override(self):
+    """Return ChannelFormat enum value for engine. None if no override (use JSON default)."""
+        from .tree import FORMAT_CHANNEL_MAP
+        fmt = getattr(self, 'format_override', 'DEFAULT')
+        getter = FORMAT_CHANNEL_MAP.get(fmt)
+        return getter if getter else None

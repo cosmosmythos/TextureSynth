@@ -90,9 +90,9 @@ PYBIND11_MODULE(texturesynth_core, m) {
 
     py::class_<Graph>(m, "Graph")
         .def(py::init<>())
-        .def("add_node",       [](Graph& g, uint64_t id, const std::string& type) {
-            g.nodes.push_back({id, type});
-        })
+        .def("add_node",       [](Graph& g, uint64_t id, const std::string& type, ChannelFormat format_override) {
+            g.nodes.push_back({id, type, format_override});
+        }, py::arg("id"), py::arg("type"), py::arg("format_override") = ChannelFormat::RGBA)
         .def("add_connection", [](Graph& g, uint64_t src_node, uint32_t src_sock,
                                            uint64_t dst_node, uint32_t dst_sock) {
             g.connections.push_back({src_node, src_sock, dst_node, dst_sock});

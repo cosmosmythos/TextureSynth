@@ -44,12 +44,13 @@ class TS_Blend_Node(TextureSynthNode):
 
     def init(self, context):
         super().init(context)
-        self.inputs.new('TextureSynthSocketType', "A")
-        self.inputs.new('TextureSynthSocketType', "B")
-        self.outputs.new('TextureSynthSocketType', "")
+        self.inputs.new('TS_DefaultSocketType', "A")
+        self.inputs.new('TS_DefaultSocketType', "B")
+        self.outputs.new('TS_DefaultSocketType', "")
 
     def draw_buttons(self, context, layout):
         self.draw_error_ui(layout)
+        layout.prop(self, 'format_override', text="")
         layout.prop(self, "mode", text="")
         layout.prop(self, "factor", slider=True)
 
