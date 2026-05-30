@@ -88,6 +88,15 @@ PYBIND11_MODULE(texturesynth_core, m) {
         .def_readwrite("seed",         &PushConstants::seed)
         .def_readwrite("time",         &PushConstants::time);
 
+    py::enum_<ChannelFormat>(m, "ChannelFormat")
+        .value("Mono", ChannelFormat::Mono)
+        .value("UV", ChannelFormat::UV)
+        .value("RGB", ChannelFormat::RGB)
+        .value("RGBA", ChannelFormat::RGBA)
+        .value("ID", ChannelFormat::ID)
+        .value("Metadata", ChannelFormat::Metadata)
+        .export_values();
+
     py::class_<Graph>(m, "Graph")
         .def(py::init<>())
         .def("add_node",       [](Graph& g, uint64_t id, const std::string& type, ChannelFormat format_override) {
@@ -105,15 +114,6 @@ PYBIND11_MODULE(texturesynth_core, m) {
         .value("Float", SocketType::Float)
         .value("Vec4", SocketType::Vec4)
         .value("Sampler2D", SocketType::Sampler2D)
-        .export_values();
-
-    py::enum_<ChannelFormat>(m, "ChannelFormat")
-        .value("Mono", ChannelFormat::Mono)
-        .value("UV", ChannelFormat::UV)
-        .value("RGB", ChannelFormat::RGB)
-        .value("RGBA", ChannelFormat::RGBA)
-        .value("ID", ChannelFormat::ID)
-        .value("Metadata", ChannelFormat::Metadata)
         .export_values();
 
     py::class_<Socket>(m, "Socket")

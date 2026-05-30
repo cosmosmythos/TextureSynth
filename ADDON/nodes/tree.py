@@ -96,7 +96,7 @@ FORMAT_SOCKET_MAP = {
 
 def _get_channel_format():
     """Lazy import ch_fmt enum from module"""
-    from ...core import cpp_module
+    from ..core import cpp_module
     return cpp_module.ChannelFormat
 
 FORMAT_CHANNEL_MAP = {
