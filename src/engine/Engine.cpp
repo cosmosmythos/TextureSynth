@@ -21,7 +21,7 @@ namespace te {
 // "return without doing anything" path both thread-safe.
 // ---------------------------------------------------------------------------
 #define TE_GUARD_READY(call)                                                     \
-    std::lock_guard<std::mutex> te_lk(entry_mu_);                                \
+    std::lock_guard<std::recursive_mutex> te_lk(entry_mu_);                       \
     if (state_.load(std::memory_order_acquire) != EngineState::Ready) {          \
         set_error_(EngineErrorCode::UseAfterShutdown,                            \
                    std::string("engine not Ready (state=")                       \
@@ -52,7 +52,7 @@ bool Engine::init(VkSurfaceKHR surface,
 
     // entry_mu_ held for the entire body. A concurrent Engine::shutdown
     // will block here until this function returns.
-    std::lock_guard<std::mutex> lk(entry_mu_);
+    std::lock_guard<std::recursive_mutex> lk(entry_mu_);
 
     const EngineState s = state_.load(std::memory_order_acquire);
     if (s == EngineState::Initializing || s == EngineState::ShuttingDown) {
@@ -206,7 +206,7 @@ bool Engine::ensure_dummy_image_() {
 //   Initializing  / ShuttingDown: unreachable (we hold the lock).
 // ---------------------------------------------------------------------------
 void Engine::shutdown() {
-    std::lock_guard<std::mutex> lk(entry_mu_);
+    std::lock_guard<std::recursive_mutex> lk(entry_mu_);
 
     const EngineState s = state_.load(std::memory_order_acquire);
     if (s == EngineState::ShutDown) return;  // idempotent

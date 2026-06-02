@@ -614,7 +614,7 @@ TEST(EngineLifecycle, ShutdownDuringInFlightWorkDrains) {
     pc.resolution_x = 64; pc.resolution_y = 64; pc.seed = 1;
     engine.set_resolution(64, 64);
     {
-        std::lock_guard<std::mutex> lk(engine.entry_mutex());
+            std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
         engine.async_readback().submit(engine.ctx(), engine, pc, gen);
     }
     engine.shutdown();
@@ -650,7 +650,7 @@ TEST(EngineLifecycle, ConcurrentSubmitAndShutdown) {
         while (!go.load(std::memory_order_acquire)) {}
         for (int i = 0; i < 200; ++i) {
             if (!engine.is_ready()) { ++rejected; continue; }
-            std::lock_guard<std::mutex> lk(engine.entry_mutex());
+        std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
             if (!engine.is_ready()) { ++rejected; continue; }
             pc.seed = static_cast<uint32_t>(i + 1);
             engine.mark_node_dirty(1);

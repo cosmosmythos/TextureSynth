@@ -8,10 +8,10 @@
         { "name": "color", "type": "vec4" }
     ],
     "params": [
-        { "name": "resolution", "default": 512.0, "min": 1.0, "max": 4096.0, "step": 1.0, "integer": true, "as_socket": true },
-        { "name": "offsetX", "default": 0.0, "min": -50.0, "max": 50.0, "step": 0.01, "as_socket": true },
-        { "name": "offsetY", "default": 0.0, "min": -50.0, "max": 50.0, "step": 0.01, "as_socket": true },
-        { "name": "seed", "default": 0.0, "min": 0.0, "max": 65535.0, "step": 1.0, "integer": true, "as_socket": true }
+        { "name": "resolution", "default": 512.0, "min": 1.0, "max": 4096.0, "step": 1.0, "integer": true },
+        { "name": "offsetX", "default": 0.0, "min": -50.0, "max": 50.0, "step": 0.01 },
+        { "name": "offsetY", "default": 0.0, "min": -50.0, "max": 50.0, "step": 0.01 },
+        { "name": "seed", "default": 0.0, "min": 0.0, "max": 65535.0, "step": 1.0, "integer": true }
     ],
     "shader": "white_noise.glsl",
     "entry": "node_white"

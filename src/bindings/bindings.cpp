@@ -30,7 +30,7 @@ using namespace te;
 // it explicitly because lambdas can't use the macro. The lock pattern
 // for every guarded function is:
 //
-//     std::lock_guard<std::mutex> lk(engine.entry_mutex());
+//     std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
 //     check_engine_ready(engine, EnginePhase::Foo);
 //     // ... body ...
 //
@@ -51,7 +51,7 @@ static void check_engine_ready(Engine& engine, EnginePhase phase) {
 // Returns ticket > 0 on success, 0 if all slots busy (retry next tick).
 // NEVER blocks the main thread.
 static uint64_t submit_render(Engine& engine, PushConstants pc, uint64_t generation) {
-    std::lock_guard<std::mutex> lk(engine.entry_mutex());
+    std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
     check_engine_ready(engine, EnginePhase::Submit);
     if (!engine.has_pipeline()) {
         engine.set_error_record(EngineError{
@@ -87,7 +87,7 @@ static uint64_t submit_render(Engine& engine, PushConstants pc, uint64_t generat
 // poll_readback: non-blocking. Returns None if nothing ready,
 // else (numpy[H,W,4], generation).
 static nb::object poll_readback(Engine& engine) {
-    std::lock_guard<std::mutex> lk(engine.entry_mutex());
+    std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
     check_engine_ready(engine, EnginePhase::Readback);
     std::vector<float> pixels;
     uint32_t w = 0, h = 0;
@@ -298,14 +298,14 @@ NB_MODULE(texturesynth_core, m) {
 
         // Submit a new graph for async compilation. Returns generation id, or 0 on failure.
         .def("set_graph", [](Engine& e, const Graph& g) -> uint64_t {
-            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::GraphSubmit);
             return e.set_graph(g);
         })
 
         // Call once per timer tick (main thread). Installs pipeline if compile finished.
         .def("poll_pending_compiles", [](Engine& e) {
-            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::GraphCompileFinish);
             e.poll_pending_compiles();
         })
@@ -327,7 +327,7 @@ NB_MODULE(texturesynth_core, m) {
             return (uint64_t)e.resources().budget_bytes();
         })
         .def("set_memory_budget_mb", [](Engine& e, size_t mb) {
-            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::Idle);
             e.resources().set_memory_budget_mb(mb);
         })
@@ -339,7 +339,7 @@ NB_MODULE(texturesynth_core, m) {
         .def("set_precision", &Engine::set_precision)
         .def("precision", &Engine::precision)
         .def("set_resolution", [](Engine& e, uint32_t w, uint32_t h) {
-            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::Idle);
             e.set_resolution(w, h);
         })
@@ -360,7 +360,7 @@ NB_MODULE(texturesynth_core, m) {
         // Replaces the old push-constant hot_params approach -- no 28-float limit.
         .def("update_node_params_by_id",
             [](Engine& e, uint64_t id, const std::vector<float>& p) {
-                std::lock_guard<std::mutex> lk(e.entry_mutex());
+                std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
                 check_engine_ready(e, EnginePhase::ParamUpdate);
                 e.update_node_params_by_id(id, p);
             })
@@ -368,7 +368,7 @@ NB_MODULE(texturesynth_core, m) {
         .def("update_node_params_by_name",
             [](Engine& e, uint64_t id,
                const std::unordered_map<std::string, float>& kv) {
-                std::lock_guard<std::mutex> lk(e.entry_mutex());
+                std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
                 check_engine_ready(e, EnginePhase::ParamUpdate);
                 e.update_node_params_by_name(id, kv);
             },
@@ -378,7 +378,7 @@ NB_MODULE(texturesynth_core, m) {
             [](Engine& e, uint64_t node_id,
                nb::ndarray<const float, nb::ndim<3>, nb::c_contig, nb::device::cpu> pixels,
                uint32_t width, uint32_t height) -> bool {
-                std::lock_guard<std::mutex> lk(e.entry_mutex());
+                std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
                 check_engine_ready(e, EnginePhase::ImageUpload);
                 if (pixels.shape(0) != height ||
                     pixels.shape(1) != width  ||
@@ -388,7 +388,7 @@ NB_MODULE(texturesynth_core, m) {
                 return e.upload_image(node_id, pixels.data(), width, height);
             })
         .def("release_image", [](Engine& e, uint64_t node_id) -> bool {
-            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::ImageRelease);
             return e.release_image(node_id);
         })

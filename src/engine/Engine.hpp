@@ -162,7 +162,7 @@ public:
     // bindings layer (and for tests) so they can hold the lock for the
     // full duration of a multi-step operation, eliminating the window
     // where Engine::shutdown could interleave with an in-flight call.
-    std::mutex& entry_mutex() noexcept { return entry_mu_; }
+    std::recursive_mutex& entry_mutex() noexcept { return entry_mu_; }
 
     GraphRevisionId current_revision() const { return current_revision_; }
     const GraphIR&  current_ir()       const { return current_ir_; }
@@ -308,7 +308,7 @@ private:
 
     // Lifecycle state machine (see public EngineState enum above).
     std::atomic<EngineState> state_{EngineState::Uninitialized};
-    std::mutex               entry_mu_;
+    std::recursive_mutex     entry_mu_;
     uint64_t          last_presented_generation_{0};
     std::vector<float> last_presented_pixels_;
     uint32_t           last_presented_w_{0};
