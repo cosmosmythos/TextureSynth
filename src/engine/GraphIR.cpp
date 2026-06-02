@@ -16,6 +16,42 @@ static bool has_node(const Graph& g, NodeId id) {
     return false;
 }
 
+static bool is_muted(const std::vector<NodeInstance>& nodes, NodeId id) {
+    for (auto& n : nodes)
+        if (n.id == id) return n.muted;
+    return false;
+}
+
+// Resolve the effective source of a muted node M's input[0].
+//   - If M is itself a source (no incoming connection at input[0]),
+//     returns {0, 0} meaning "severed" (downstream reads dummy).
+//   - If M's input[0] is fed by a non-muted node, returns that connection.
+//   - If the source is also muted, recurse until a non-muted ancestor is
+//     found or we hit a source (severed).
+// Safety: bounded by node count to defend against pathological chains.
+static std::pair<NodeId, uint32_t> resolve_muted_source(
+    NodeId M,
+    const std::vector<NodeInstance>& nodes,
+    const std::vector<Connection>& conns)
+{
+    NodeId cur = M;
+    for (size_t step = 0; step < nodes.size() + 1; ++step) {
+        bool found = false;
+        for (auto& c : conns) {
+            if (c.dst_node == cur && c.dst_socket == 0) {
+                if (!is_muted(nodes, c.src_node)) {
+                    return {c.src_node, c.src_socket};
+                }
+                cur = c.src_node;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return {0, 0};  // severed
+    }
+    return {0, 0};  // chain too deep — treat as severed
+}
+
 // Topological sort via Kahn's algorithm over the validated node set.
 // Returns node IDs in evaluation order (sources first).
 // On cycle: returns false.
@@ -160,26 +196,72 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         }
     }
 
-    // ── 7. Populate validated nodes (active subgraph only) ────────
-    GraphIR& ir = result.ir;
+    // ── 6.5. Rewire connections around muted nodes (Phase 1c) ─────
+    // For each muted node M in the active subgraph, redirect all of M's
+    // outgoing connections to M's effective input[0] source (chasing
+    // through other muted ancestors). If the effective source is severed
+    // (no input[0] upstream), the connection is dropped entirely. We work
+    // on a local copy so the caller's Graph is untouched.
+    //
+    // After rewire, muted nodes are excluded from the validated node
+    // list (step 7); their input connections are also dropped (they no
+    // longer participate). Bypassed nodes, by contrast, stay in the IR
+    // and the compiler emits a clear-to-zero pass for them.
+    std::vector<Connection> rewired_conns = graph.connections;
     for (auto& n : graph.nodes) {
-        if (reachable.count(n.id)) {
-            ValidatedNode vn;
-            vn.id       = n.id;
-            vn.type_id  = n.type_id;
-            vn.format_override = n.format_override;
-            // debug_name can be set by caller later; default to type+id
-            vn.debug_name = n.type_id + "_" + std::to_string(n.id);
-            ir.nodes.push_back(vn);
+        if (!n.muted) continue;
+        if (!reachable.count(n.id)) continue;  // not active — already pruned
+        auto eff = resolve_muted_source(n.id, graph.nodes, graph.connections);
+        for (auto& c : rewired_conns) {
+            if (c.src_node != n.id) continue;
+            if (eff.first == 0) {
+                // Severed: mark for removal (filtered out in step 7).
+                c.src_node = 0;
+            } else {
+                c.src_node   = eff.first;
+                c.src_socket = eff.second;
+            }
         }
     }
 
-    // Populate validated connections (both endpoints in active subgraph)
-    for (auto& c : graph.connections) {
-        if (reachable.count(c.src_node) && reachable.count(c.dst_node)) {
-            ir.connections.push_back({c.src_node, c.src_socket,
-                                      c.dst_node, c.dst_socket});
-        }
+    // ── 7. Populate validated nodes (active subgraph, not muted) ──
+    GraphIR& ir = result.ir;
+    for (auto& n : graph.nodes) {
+        if (!reachable.count(n.id)) continue;  // not reachable
+        if (n.muted) continue;                  // rewired out
+        ValidatedNode vn;
+        vn.id       = n.id;
+        vn.type_id  = n.type_id;
+        vn.format_override = n.format_override;
+        // Prefer the user-supplied debug_name when set (Phase 1d);
+        // fall back to "type_id_id" so logs are still meaningful.
+        vn.debug_name = n.debug_name.empty()
+                      ? (n.type_id + "_" + std::to_string(n.id))
+                      : n.debug_name;
+        // Muted is always false here (muted nodes are excluded above);
+        // bypassed mirrors the user's flag.
+        vn.muted    = false;
+        vn.bypassed = n.bypassed;
+        ir.nodes.push_back(vn);
+    }
+
+    // Build node_index up front so we can use it as the authoritative
+    // "validated node IDs" set when filtering connections below. A
+    // connection's endpoints must both be in ir.nodes — this excludes
+    // edges pointing at muted nodes (which were rewired out) and any
+    // unreachable node that may have slipped through the rewire.
+    for (size_t i = 0; i < ir.nodes.size(); ++i) {
+        ir.node_index[ir.nodes[i].id] = i;
+    }
+
+    // Populate validated connections (both endpoints in ir.nodes, and
+    // the source isn't the severed sentinel from rewire).
+    for (auto& c : rewired_conns) {
+        if (c.src_node == 0) continue;                                // severed
+        if (!ir.node_index.count(c.src_node)) continue;               // not in IR
+        if (!ir.node_index.count(c.dst_node)) continue;               // not in IR
+        ir.connections.push_back({c.src_node, c.src_socket,
+                                  c.dst_node, c.dst_socket});
     }
 
     ir.output_node = graph.output_node;
@@ -190,10 +272,8 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         return result;
     }
 
-    // ── 9. Build index map ────────────────────────────────────────
-    for (size_t i = 0; i < ir.nodes.size(); ++i) {
-        ir.node_index[ir.nodes[i].id] = i;
-    }
+    // (node_index was built earlier in step 7 so it could be used as
+    // the authoritative validated-node-IDs set when filtering ir.connections.)
 
     result.success = true;
     return result;

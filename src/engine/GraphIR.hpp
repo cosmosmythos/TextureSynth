@@ -30,6 +30,11 @@ struct ValidatedNode {
     std::string type_id;          // references NodeType::id
     std::string debug_name;       // human-readable label for logging/debugging
     ChannelFormat format_override = ChannelFormat::RGBA;
+    // Phase 1c: mirror of NodeInstance flags. muted nodes should be absent
+    // from the active subgraph after validation rewires; bypassed nodes
+    // remain so the compiler can emit a clear pass for them.
+    bool muted    = false;
+    bool bypassed = false;
 };
 
 struct ValidatedConnection {

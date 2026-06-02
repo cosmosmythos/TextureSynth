@@ -39,6 +39,14 @@ struct ComputePass {
     mutable bool dirty = true;
     mutable uint64_t last_executed_gen = 0;
     bool output_layout_is_general = false;
+
+    // Phase 1c: mirrors ValidatedNode::bypassed. A bypassed pass is
+    // retained in the plan (so the active-subgraph and resource layout
+    // stay stable when the user toggles the flag) but the executor
+    // will emit a clear-to-zero dispatch instead of the node's normal
+    // shader. Bypassed = "logical pass that produces a known-empty
+    // output", not a removal.
+    bool bypassed = false;
 };
 
 

@@ -1,16 +1,34 @@
+# Production build outputs.
 build/
 out/
-DEV_LOG/
-.deps/
-__pycache__/
+dist/
 *.whl
 *.pyd
 *.so
 *.exp
 *.lib
-*.exe
-.vs/
-dist/
+*.dll
 *.egg-info/
+
+# Local-only development artifacts (NOT shipped with the addon).
+DEV_LOG/
+*.bat
+docs/
+src/bindings/*.bak
+
+# Editor / IDE.
+.vs/
+.vscode/
+*.user
+CMakeUserPresets.json
+
+# Python tooling (top-level only — test-local Python is in tests/.gitignore).
+__pycache__/
+
+# Vulkan shader cache for the production build. Test shader cache is in
+# tests/.gitignore alongside the rest of the test scaffolding.
 shader_cache/
+shader_assets/glslViewer_tests/
+
+# ImGui persists UI layout to this file.
 imgui.ini

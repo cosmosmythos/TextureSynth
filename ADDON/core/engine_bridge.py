@@ -210,7 +210,18 @@ def _build_graph_and_params(tree):
         if getattr(node, 'sv_type', None) is None:
             continue
         fmt_override = node.get_format_override() if hasattr(node, 'get_format_override') else None
-        graph.add_node(nid, node.sv_type, fmt_override)
+        # node.name is the Blender user-visible label ("Perlin Noise.001");
+        # pass it as debug_name so engine logs and error messages refer to the
+        # operator's actual node, not "perlin_42".
+        # mute (bpy.types.Node.mute) maps to the engine's bypassed flag: both
+        # mean "node body is disabled, output becomes zero". The engine's
+        # muted flag (rewire to input[0]) is a distinct concept not exposed
+        # in Blender and stays False here.
+        graph.add_node(
+            nid, node.sv_type, fmt_override, node.name,
+            muted=False,
+            bypassed=bool(getattr(node, 'mute', False)),
+        )
 
     # Collect parameters in same topological order
     node_params = []
@@ -391,10 +402,14 @@ def _active_subgraph_fingerprint(tree):
     name_to_id, id_to_name = _build_id_maps(tree)
     order, reachable = _get_active_subgraph_topo_order(
         tree, output_node, name_to_id)
-    # node identity: stable_id + sv_type
+    # node identity: stable_id + sv_type + mute (engine bypassed)
+    # Including mute in the fingerprint ensures a mute-toggle triggers a
+    # topology resubmit. Mute maps to the engine's bypassed flag, which
+    # changes the dispatch path (clear-to-zero vs normal pipeline).
     node_part = tuple(
         (nid,
-         getattr(_node_by_name(tree, id_to_name.get(nid, '')), 'sv_type', None))
+         getattr(_node_by_name(tree, id_to_name.get(nid, '')), 'sv_type', None),
+         bool(getattr(_node_by_name(tree, id_to_name.get(nid, '')), 'mute', False)))
         for nid in order
     )
     # active links only (using stable IDs)

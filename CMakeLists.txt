@@ -70,15 +70,49 @@ add_custom_command(TARGET viewer POST_BUILD
 endif()
 
 # ---- Python Extension (TextureSynth Addon) ----
-option(BUILD_PYTHON_BINDINGS "Build PyBind11 extension" OFF)
+option(BUILD_PYTHON_BINDINGS "Build nanobind extension" OFF)
 if(BUILD_PYTHON_BINDINGS)
-    include(FetchContent)
-    FetchContent_Declare(pybind11
-        GIT_REPOSITORY https://github.com/pybind/pybind11.git
-        GIT_TAG v2.13.6)
-    FetchContent_MakeAvailable(pybind11)
+    # nanobind requires find_package(Python ...) with Development (not Development.Module
+    # alone) per its config error message. Accept the Python3_* hints passed by
+    # build_whl_both.bat so the right interpreter is locked in.
+    if(NOT Python_FOUND)
+        if(DEFINED Python3_EXECUTABLE AND NOT DEFINED Python_EXECUTABLE)
+            set(Python_EXECUTABLE   "${Python3_EXECUTABLE}")
+        endif()
+        if(DEFINED Python3_LIBRARY AND NOT DEFINED Python_LIBRARY)
+            set(Python_LIBRARY      "${Python3_LIBRARY}")
+        endif()
+        if(DEFINED Python3_INCLUDE_DIR AND NOT DEFINED Python_INCLUDE_DIR)
+            set(Python_INCLUDE_DIR  "${Python3_INCLUDE_DIR}")
+        endif()
+        find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development)
+    endif()
 
-    pybind11_add_module(texturesynth_core src/bindings/bindings.cpp)
+    # Locate nanobind. Two viable strategies:
+    #   1) pip-installed nanobind:  python -m nanobind --cmake_dir
+    #   2) FetchContent_Declare:    pulls from GitHub
+    # We try (1) first (fast, version-pinned by the active interpreter), fall back to (2).
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+        OUTPUT_VARIABLE _nb_cmake_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _nb_pip_rc)
+    if(_nb_pip_rc EQUAL 0 AND _nb_cmake_dir)
+        message(STATUS "Found nanobind via pip at: ${_nb_cmake_dir}")
+        set(nanobind_DIR "${_nb_cmake_dir}")
+        find_package(nanobind CONFIG REQUIRED)
+    else()
+        message(STATUS "nanobind not found via pip; falling back to FetchContent")
+        include(FetchContent)
+        FetchContent_Declare(nanobind
+            GIT_REPOSITORY https://github.com/wjakob/nanobind.git
+            GIT_TAG v2.12.0)
+        FetchContent_MakeAvailable(nanobind)
+    endif()
+
+    # NOMINSIZE: don't override our /O2 with -Os; engine dwarfs binding overhead.
+    # STABLE_ABI deferred until Python 3.12+ is the floor (Blender 5.0 ships 3.13 ABI-stable).
+    nanobind_add_module(texturesynth_core NOMINSIZE src/bindings/bindings.cpp)
     target_link_libraries(texturesynth_core PRIVATE engine)
 endif()
 

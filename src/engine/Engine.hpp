@@ -15,6 +15,7 @@
 #include "engine/PassPlan.hpp"
 #include "engine/AsyncReadback.hpp"
 #include "engine/DirtySet.hpp"
+#include "engine/EngineError.hpp"
 #include <future>
 #include <memory>
 #include <string>
@@ -39,6 +40,14 @@ struct PassExec {
     uint32_t input_count = 0;
 
     bool output_layout_is_general = false;
+
+    // Phase 1c: mirror of ComputePass::bypassed. When true, the executor
+    // skips the compute dispatch and issues vkCmdClearColorImage on each
+    // output resource (writes zero, leaves image in VK_IMAGE_LAYOUT_GENERAL).
+    // Bypassed passes still allocate output storage / sampled bindless
+    // slots (assign_bindless_slots_ runs) so downstream passes that read
+    // the bypassed output get a valid (zeroed) source.
+    bool bypassed = false;
 };
 
 struct RetiredPass {
@@ -120,6 +129,20 @@ public:
     const std::string& last_error() const { return last_error_; }
     NodeId failed_node() const { return failed_node_id_; }
 
+    // Phase 0: structured error channel. Survives until the next successful op.
+    const EngineError& last_error_record() const { return last_error_record_; }
+    void set_error_record(EngineError e) {
+        last_error_record_ = std::move(e);
+        // Mirror to legacy fields for callers that still read the old API.
+        last_error_     = last_error_record_.message;
+        failed_node_id_ = last_error_record_.failed_node;
+    }
+    void clear_error() {
+        last_error_record_.clear();
+        last_error_.clear();
+        failed_node_id_ = 0;
+    }
+
     GraphRevisionId current_revision() const { return current_revision_; }
     const GraphIR&  current_ir()       const { return current_ir_; }
 
@@ -160,6 +183,14 @@ private:
     // Bindless slot assignment for a pass (sampled inputs + storage output).
     void assign_bindless_slots_(PassExec& pe);
     void release_bindless_slots_(PassExec& pe);
+
+    // Phase 0: single point of truth for failure reporting. Mirrors to the
+    // legacy last_error_/failed_node_id_ fields for backward compat and logs.
+    void set_error_(EngineErrorCode code,
+                    std::string message,
+                    EnginePhase phase,
+                    NodeId failed_node = 0,
+                    uint64_t graph_generation = 0);
 
     VulkanContext   ctx_;
     ShaderCompiler  compiler_;
@@ -228,6 +259,9 @@ private:
         NodeId                     node_id = 0;
         PassKind                   kind = PassKind::Dispatch;
         ShaderVariantKey           variant_key;
+        // Phase 1c: mirror ComputePass::bypassed so the install path can
+        // copy it onto the PassExec once the future resolves.
+        bool                       bypassed = false;
     };
     std::vector<PendingPass> pending_passes_;
     bool                     pending_active_ = false;
@@ -237,6 +271,7 @@ private:
     int total_param_floats_ = 0;
     std::string last_error_;
     NodeId failed_node_id_ = 0;
+    EngineError last_error_record_;
 
     VkSampler sampler_repeat_ = VK_NULL_HANDLE;
     VkSampler sampler_clamp_  = VK_NULL_HANDLE;

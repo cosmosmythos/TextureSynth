@@ -25,7 +25,12 @@ bool Engine::init(VkSurfaceKHR surface,
     d.surface = surface;
     d.extra_instance_extensions = extra_inst_exts;
     d.extra_instance_extension_count = extra_inst_ext_count;
-    if (!ctx_.init(d)) return false;
+    if (!ctx_.init(d)) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "Vulkan context init failed (no compatible device or surface?)",
+                   EnginePhase::Init);
+        return false;
+    }
 
     cache_ = std::make_unique<ShaderCache>(cache_dir);
 
@@ -35,10 +40,30 @@ bool Engine::init(VkSurfaceKHR surface,
     }
 
     output_storage_ = std::make_unique<Image>();
-    if (!output_storage_->create(ctx_, output_w_, output_h_)) return false;
-    if (!async_.init(ctx_, 4096, 4096)) { log_error("AsyncReadback init failed"); return false; }
-    if (!uploader_.init(ctx_)) { log_error("ImageUploader init failed"); return false; }
-    if (!ensure_dummy_image_()) return false;
+    if (!output_storage_->create(ctx_, output_w_, output_h_)) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "output storage image creation failed",
+                   EnginePhase::Init);
+        return false;
+    }
+    if (!async_.init(ctx_, 4096, 4096)) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "AsyncReadback init failed",
+                   EnginePhase::Init);
+        return false;
+    }
+    if (!uploader_.init(ctx_)) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "ImageUploader init failed",
+                   EnginePhase::Init);
+        return false;
+    }
+    if (!ensure_dummy_image_()) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "dummy image creation failed",
+                   EnginePhase::Init);
+        return false;
+    }
 
     // ── Create param SSBO ring buffers (host-visible, persistently mapped) ──
     {
@@ -54,7 +79,9 @@ bool Engine::init(VkSurfaceKHR surface,
             VmaAllocationInfo ai{};
             if (vmaCreateBuffer(ctx_.allocator(), &bci, &aci,
                                 &param_buf_[i], &param_alloc_[i], &ai) != VK_SUCCESS) {
-                log_error("Engine: param SSBO alloc failed");
+                set_error_(EngineErrorCode::InitFailed,
+                           "param SSBO alloc failed (VMA out of memory?)",
+                           EnginePhase::Init);
                 return false;
             }
             param_mapped_[i] = ai.pMappedData;
@@ -63,12 +90,19 @@ bool Engine::init(VkSurfaceKHR surface,
         }
     }
 
-    if (!create_global_samplers_()) return false;
+    if (!create_global_samplers_()) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "global sampler creation failed",
+                   EnginePhase::Init);
+        return false;
+    }
 
     // Bindless table — ONE descriptor set for the whole engine lifetime.
     if (!bindless_.init(ctx_, sampler_repeat_, sampler_clamp_, sampler_mirror_,
                         sizeof(PassPushConstants))) {
-        log_error("BindlessTable init failed");
+        set_error_(EngineErrorCode::InitFailed,
+                   "BindlessTable init failed",
+                   EnginePhase::Init);
         return false;
     }
 
@@ -163,19 +197,31 @@ bool Engine::create_global_samplers_() {
     sci.unnormalizedCoordinates = VK_FALSE;
 
     // Repeat
-    if (vkCreateSampler(ctx_.device(), &sci, nullptr, &sampler_repeat_) != VK_SUCCESS) return false;
+    if (vkCreateSampler(ctx_.device(), &sci, nullptr, &sampler_repeat_) != VK_SUCCESS) {
+        set_error_(EngineErrorCode::InitFailed, "vkCreateSampler(repeat) failed",
+                   EnginePhase::Init);
+        return false;
+    }
 
     // Clamp
     sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    if (vkCreateSampler(ctx_.device(), &sci, nullptr, &sampler_clamp_) != VK_SUCCESS) return false;
+    if (vkCreateSampler(ctx_.device(), &sci, nullptr, &sampler_clamp_) != VK_SUCCESS) {
+        set_error_(EngineErrorCode::InitFailed, "vkCreateSampler(clamp) failed",
+                   EnginePhase::Init);
+        return false;
+    }
 
     // Mirror
     sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
     sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
     sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-    if (vkCreateSampler(ctx_.device(), &sci, nullptr, &sampler_mirror_) != VK_SUCCESS) return false;
+    if (vkCreateSampler(ctx_.device(), &sci, nullptr, &sampler_mirror_) != VK_SUCCESS) {
+        set_error_(EngineErrorCode::InitFailed, "vkCreateSampler(mirror) failed",
+                   EnginePhase::Init);
+        return false;
+    }
 
     return true;
 }
@@ -263,8 +309,7 @@ void Engine::release_bindless_slots_(PassExec& pe) {
 
 
 uint64_t Engine::set_graph(const Graph& graph) {
-    last_error_.clear();
-    failed_node_id_ = 0;
+    clear_error();
 
     // Topology change must drain in-flight async work before we tear down
     // descriptor sets, pipelines, or per-node images.
@@ -272,15 +317,15 @@ uint64_t Engine::set_graph(const Graph& graph) {
 
     auto ir_result = validate_graph(graph, node_lib_);
     if (!ir_result.success) {
-        last_error_ = ir_result.error;
-        log_error("Graph validation failed: " + ir_result.error);
+        set_error_(EngineErrorCode::GraphValidation, ir_result.error,
+                   EnginePhase::GraphSubmit);
         return 0;
     }
 
     auto compile_result = GraphCompiler::compile(ir_result.ir, node_lib_);
     if (!compile_result.success) {
-        last_error_ = compile_result.error;
-        log_error("Graph compile failed: " + compile_result.error);
+        set_error_(EngineErrorCode::GraphCompile, compile_result.error,
+                   EnginePhase::GraphSubmit);
         return 0;
     }
 
@@ -307,7 +352,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
     std::string rerr;
     if (!resources_.allocate_for_graph(ctx_, current_ir_, node_lib_, output_w_, output_h_,
                                        texture_format_, &rerr)) {
-        last_error_ = rerr;
+        set_error_(EngineErrorCode::GraphCompile, rerr, EnginePhase::GraphSubmit);
         return 0;
     }
 
@@ -349,15 +394,26 @@ uint64_t Engine::set_graph(const Graph& graph) {
             pe.input_resources  = pass.input_resources;
             pe.param_base_slot  = pass.param_base_slot;
             pe.output_layout_is_general = false;
+            pe.bypassed         = pass.bypassed;
 
             if (pass.kind == PassKind::Dispatch) {
-                auto pipe = std::make_unique<ComputePipeline>();
-                if (!pipe->create(ctx_, cached_spv[i], bindless_.pipeline_layout())) {
-                    last_error_ = "pipeline creation failed for node "
-                                + std::to_string(pass.node_id);
-                    return 0;
+                // Phase 1c: bypassed passes don't need a compute pipeline —
+                // the executor will clear their output to zero via
+                // vkCmdClearColorImage. We still call assign_bindless_slots_
+                // so downstream passes that read this output can resolve
+                // its bindless slot.
+                if (!pass.bypassed) {
+                    auto pipe = std::make_unique<ComputePipeline>();
+                    if (!pipe->create(ctx_, cached_spv[i], bindless_.pipeline_layout())) {
+                        set_error_(EngineErrorCode::PipelineCreation,
+                                   "pipeline creation failed for node "
+                                   + std::to_string(pass.node_id),
+                                   EnginePhase::GraphCompileFinish,
+                                   pass.node_id);
+                        return 0;
+                    }
+                    pe.pipeline = std::move(pipe);
                 }
-                pe.pipeline = std::move(pipe);
                 assign_bindless_slots_(pe);
             }
             passes_.push_back(std::move(pe));
@@ -380,7 +436,10 @@ uint64_t Engine::set_graph(const Graph& graph) {
         pp.node_id          = pass.node_id;
         pp.kind             = pass.kind;
         pp.variant_key      = pass.variant_key;
-        if (pass.kind == PassKind::Dispatch) {
+        pp.bypassed         = pass.bypassed;
+        if (pass.kind == PassKind::Dispatch && !pass.bypassed) {
+            // Phase 1c: bypassed passes skip the async shader compile —
+            // the executor clears their output to zero.
             pp.fut = compiler_.compile_compute_async(pass.shader_glsl, pp.name);
         }
         pending_passes_.push_back(std::move(pp));
@@ -447,6 +506,7 @@ void Engine::poll_pending_compiles() {
     // Wait until every future is ready (non-blocking peek).
     for (auto& pp : pending_passes_) {
         if (pp.kind != PassKind::Dispatch) continue;
+        if (pp.bypassed) continue;             // Phase 1c: no shader compile
         if (!pp.fut.valid()) continue;
         if (pp.fut.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
             return; // still compiling — try next tick
@@ -472,25 +532,35 @@ void Engine::poll_pending_compiles() {
         pe.output_resources = pp.output_resources;
         pe.input_resources  = std::move(pp.input_resources);
         pe.output_layout_is_general = false;
+        pe.bypassed         = pp.bypassed;
 
         if (pp.kind == PassKind::Dispatch) {
-            CompileResult r = pp.fut.get();
-            if (!r.success) {
-                last_error_ = "Node " + pp.name + ": " + r.error_log;
-                log_error("pass compile failed for " + pp.name + ": " + r.error_log);
-                failed_node_id_ = pp.node_id;
-                pending_passes_.clear();
-                pending_active_     = false;
-                pending_generation_ = 0;
-                return;
+            if (pp.bypassed) {
+                // Phase 1c: bypassed pass — no shader, no pipeline. The
+                // executor will clear the output to zero at dispatch time.
+                // We still allocate bindless slots (below) so downstream
+                // passes can resolve this output's slot.
+            } else {
+                CompileResult r = pp.fut.get();
+                if (!r.success) {
+                    set_error_(EngineErrorCode::ShaderCompile,
+                               "Node " + pp.name + ": " + r.error_log,
+                               EnginePhase::GraphCompileFinish, pp.node_id);
+                    pending_passes_.clear();
+                    pending_active_     = false;
+                    pending_generation_ = 0;
+                    return;
+                }
+                cache_->store(pp.variant_key, r.spirv);
+                auto pipe = std::make_unique<ComputePipeline>();
+                if (!pipe->create(ctx_, r.spirv, bindless_.pipeline_layout())) {
+                    set_error_(EngineErrorCode::PipelineCreation,
+                               "pipeline creation failed for " + pp.name,
+                               EnginePhase::GraphCompileFinish, pp.node_id);
+                    return;
+                }
+                pe.pipeline = std::move(pipe);
             }
-            cache_->store(pp.variant_key, r.spirv);
-            auto pipe = std::make_unique<ComputePipeline>();
-            if (!pipe->create(ctx_, r.spirv, bindless_.pipeline_layout())) {
-                last_error_ = "pipeline creation failed for " + pp.name;
-                return;
-            }
-            pe.pipeline = std::move(pipe);
             assign_bindless_slots_(pe);
         }
         new_passes.push_back(std::move(pe));
@@ -501,7 +571,7 @@ void Engine::poll_pending_compiles() {
     passes_                = std::move(new_passes);
     final_output_resource_ = pending_final_output_;
     installed_generation_  = pending_generation_;
-    last_error_.clear();
+    clear_error();
 
     pending_passes_.clear();
     pending_active_     = false;
@@ -672,30 +742,35 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         auto& pe = passes_[i];
         if (!dirty_set_.is_dirty(pe.node_id)) continue;
 
-        // Emit input barriers ONLY for inputs whose source pass is dirty this frame
-        // or whose layout isn't already GENERAL (readable by compute).
-        for (const auto& inp : pe.input_resources) {
-            if (inp.node_id == 0) continue;  // unconnected → bound to dummy
-            auto* src = resources_.get(inp);
-            if (!src) continue;
-            // If upstream didn't run this frame and is already in GENERAL,
-            // no barrier needed — it's stable from last frame.
-            if (src->layout == VK_IMAGE_LAYOUT_GENERAL &&
-                !dirty_set_.is_dirty(inp.node_id)) {
-                continue;
+        // Phase 1c: bypassed passes don't read inputs — skip input barriers
+        // and skip the pipeline bind. The output state is updated below as
+        // usual; the clear-to-zero is issued in the dispatch branch.
+        if (!pe.bypassed) {
+            // Emit input barriers ONLY for inputs whose source pass is dirty this frame
+            // or whose layout isn't already GENERAL (readable by compute).
+            for (const auto& inp : pe.input_resources) {
+                if (inp.node_id == 0) continue;  // unconnected → bound to dummy
+                auto* src = resources_.get(inp);
+                if (!src) continue;
+                // If upstream didn't run this frame and is already in GENERAL,
+                // no barrier needed — it's stable from last frame.
+                if (src->layout == VK_IMAGE_LAYOUT_GENERAL &&
+                    !dirty_set_.is_dirty(inp.node_id)) {
+                    continue;
+                }
+                VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+                b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+                b.image     = src->image;
+                b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                dep.imageMemoryBarrierCount = 1;
+                dep.pImageMemoryBarriers    = &b;
+                vkCmdPipelineBarrier2(cmd, &dep);
             }
-            VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-            b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-            b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-            b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-            b.image     = src->image;
-            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-            dep.imageMemoryBarrierCount = 1;
-            dep.pImageMemoryBarriers    = &b;
-            vkCmdPipelineBarrier2(cmd, &dep);
         }
         // Emit output
         for (uint32_t o = 0; o < pe.output_count; ++o) {
@@ -704,8 +779,21 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
             if (out_res) { out_res->is_dirty = false; out_res->layout = VK_IMAGE_LAYOUT_GENERAL; }
         }
 
-        // Dispatch.
-        if (pe.pipeline) {
+        // Phase 1c: bypassed pass — clear each output to zero via
+        // vkCmdClearColorImage. Image stays in VK_IMAGE_LAYOUT_GENERAL,
+        // which is a valid layout for the clear call. No pipeline, no
+        // dispatch, no push constants.
+        if (pe.bypassed) {
+            VkClearColorValue zero{};  // all four components = 0
+            VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            for (uint32_t o = 0; o < pe.output_count; ++o) {
+                auto* out_res = resources_.get(pe.output_resources[o]);
+                if (!out_res) continue;
+                vkCmdClearColorImage(cmd, out_res->image,
+                                     VK_IMAGE_LAYOUT_GENERAL,
+                                     &zero, 1, &range);
+            }
+        } else if (pe.pipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pe.pipeline->pipeline());
             VkDescriptorSet set = bindless_.set();
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -942,8 +1030,10 @@ bool Engine::upload_image(uint64_t node_id, const float* pixels,
     const uint64_t ticket = uploader_.submit(ctx_, node_id, pixels, width, height,
                                              std::move(recycled));
     if (ticket == 0) {
-        // Ring full — Python should retry next tick. Surface a soft failure.
-        log_warn("upload_image: uploader ring full for node " + std::to_string(node_id));
+        // Ring full -- Python should retry next tick. Surface a soft failure.
+        set_error_(EngineErrorCode::ImageUploadRingFull,
+                   "uploader ring full for node " + std::to_string(node_id),
+                   EnginePhase::ImageUpload, node_id);
         return false;
     }
     pending_uploads_.push_back({node_id, ticket});
@@ -953,7 +1043,12 @@ bool Engine::upload_image(uint64_t node_id, const float* pixels,
 
 bool Engine::release_image(uint64_t node_id) {
     auto it = image_registry_.find(node_id);
-    if (it == image_registry_.end()) return false;
+    if (it == image_registry_.end()) {
+        set_error_(EngineErrorCode::ImageReleaseUnknown,
+                   "no image registered for node " + std::to_string(node_id),
+                   EnginePhase::ImageRelease, node_id);
+        return false;
+    }
 
     bool has_pending = false;
     for (auto& p : pending_uploads_) if (p.node_id == node_id) { has_pending = true; break; }
@@ -976,6 +1071,29 @@ bool Engine::release_image(uint64_t node_id) {
                 pe.in_sampled_slots[i] = dummy_sampled_slot_;
     }
     return true;
+}
+
+
+void Engine::set_error_(EngineErrorCode code,
+                        std::string message,
+                        EnginePhase phase,
+                        NodeId failed_node,
+                        uint64_t graph_generation) {
+    last_error_record_.code             = code;
+    last_error_record_.message          = std::move(message);
+    last_error_record_.failed_node      = failed_node;
+    last_error_record_.graph_generation = graph_generation;
+    last_error_record_.phase            = phase;
+
+    // Mirror to legacy fields for callers that still read the old API.
+    last_error_     = last_error_record_.message;
+    failed_node_id_ = failed_node;
+
+    // Log a human-readable prefix including the code + phase.
+    log_error("[" + std::string(engine_error_code_name(code)) + " @ "
+              + std::string(engine_phase_name(phase)) + "] "
+              + last_error_record_.message
+              + (failed_node ? " (node " + std::to_string(failed_node) + ")" : ""));
 }
 
 

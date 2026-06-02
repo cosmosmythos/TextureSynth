@@ -200,7 +200,7 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     for (NodeId id : ir.eval_order) {
         auto* inst = ir.find(id);
         auto* type = lib.find(inst->type_id);
-    
+
         ComputePass pass;
         pass.node_id         = id;
         pass.type_id         = type->id;
@@ -208,6 +208,9 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
 		for (uint32_t i = 0; i < type->outputs.size(); ++i) { pass.output_resources.push_back({ id, i }); }
         pass.param_base_slot = param_base_slot[id];
         pass.input_mode      = InputMode::PreSampled;
+        // Phase 1c: mirror the bypassed flag from the validated node so
+        // the executor can emit a clear-to-zero dispatch when set.
+        pass.bypassed        = inst->bypassed;
     
         // Classify: zero inputs AND zero params == pure resource (image source).
         // For now we treat all generators as Dispatch; only future image/external

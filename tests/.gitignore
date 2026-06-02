@@ -1,0 +1,31 @@
+# All test-only artifacts. Kept inside tests/ so the root .gitignore
+# stays small and the user doesn't have to maintain two ignore files.
+
+# C++ test build output (gtest engine_tests binary).
+build/
+cmake-build-*/
+
+# Python test cache directories.
+python/cache/
+python/.pytest_cache/
+python/.mypy_cache/
+python/.ruff_cache/
+
+# Python bytecode.
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Test fixtures / dumps.
+*.pyd
+*.so
+*.exp
+*.lib
+*.dll
+
+# IDE noise.
+.vs/
+.vscode/
+*.user
+CMakeUserPresets.json

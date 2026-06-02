@@ -95,6 +95,18 @@ struct NodeInstance {
     NodeId id = 0;
     std::string type_id;
     ChannelFormat format_override = ChannelFormat::RGBA;
+    // Optional human-readable label. When non-empty, takes precedence over the
+    // auto-generated "{type_id}_{id}" name in logs, error messages, and the
+    // ResourceManager debug_name. Phase 1d feature.
+    std::string debug_name;
+    // Phase 1c: mute / bypass semantics.
+    //   muted    — skip; downstream reads this node's input[0] source instead
+    //              (validator rewires connections).
+    //   bypassed — skip; downstream gets a clear-to-zero pass (compiler emits
+    //              a no-op compute shader). Visible in the graph UI as
+    //              "turned off" without removing the node.
+    bool muted    = false;
+    bool bypassed = false;
 };
 
 
