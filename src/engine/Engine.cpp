@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cmath>
 #include <climits>
 #include <unordered_set>
 
@@ -471,6 +472,31 @@ uint64_t Engine::set_graph(const Graph& graph) {
             vmaFlushAllocation(ctx_.allocator(), param_alloc_[i], 0, VK_WHOLE_SIZE);
         }
     }
+    // Seed param SSBOs with manifest defaults so nodes render correctly
+    for (uint32_t ring = 0; ring < PARAM_RING; ++ring) {
+        auto* dst = static_cast<float*>(param_mapped_[ring]);
+        if (!dst) continue;
+
+        for (const auto& vn : current_ir_.nodes) {
+            auto bit = param_base_slot_.find(vn.id);
+            if (bit == param_base_slot_.end()) continue;
+
+            const auto* type = node_lib_.find(vn.type_id);
+            if (!type) continue;
+
+            const int base = bit->second;
+            for (size_t i = 0; i < type->params.size(); ++i) {
+                const int slot = base + static_cast<int>(i);
+                if (slot >= 0 && slot < static_cast<int>(MAX_NODE_PARAMS)) {
+                    float v = type->params[i].default_value;
+                    if (!std::isfinite(v)) v = 0.0f;
+                    dst[slot] = v;
+                }
+            }
+        }
+
+        vmaFlushAllocation(ctx_.allocator(), param_alloc_[ring], 0, VK_WHOLE_SIZE);
+    }
     param_write_idx_ = 0;
 
     const uint64_t gen = ++compile_generation_;
@@ -479,13 +505,13 @@ uint64_t Engine::set_graph(const Graph& graph) {
     pending_passes_.clear();
 
     bool all_cached = true;
-    std::vector<std::vector<uint32_t>> cached_spv;
-    cached_spv.reserve(compile_result.pass_plan.passes.size());
-    for (auto& pass : compile_result.pass_plan.passes) {
+    std::vector<std::vector<uint32_t>> cached_spv(compile_result.pass_plan.passes.size()); // sparse: pre-size, write by index
+    for (size_t i = 0; i < compile_result.pass_plan.passes.size(); ++i) {
+        const auto& pass = compile_result.pass_plan.passes[i];
         if (pass.kind != PassKind::Dispatch) continue;
         auto blob = cache_->load(pass.variant_key);
         if (!blob) { all_cached = false; break; }
-        cached_spv.push_back(std::move(*blob));
+        cached_spv[i] = std::move(*blob);  // sparse write: index by pass position
     }
 
     if (all_cached) {

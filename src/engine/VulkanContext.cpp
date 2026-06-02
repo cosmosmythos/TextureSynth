@@ -35,6 +35,7 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
     f12.shaderStorageImageArrayNonUniformIndexing         = VK_TRUE;
     f12.descriptorBindingSampledImageUpdateAfterBind      = VK_TRUE;
     f12.descriptorBindingStorageImageUpdateAfterBind      = VK_TRUE;
+    f12.descriptorBindingStorageBufferUpdateAfterBind     = VK_TRUE;
     f12.descriptorBindingUpdateUnusedWhilePending         = VK_TRUE;
     f12.descriptorBindingPartiallyBound                   = VK_TRUE;
     f12.runtimeDescriptorArray                            = VK_TRUE;

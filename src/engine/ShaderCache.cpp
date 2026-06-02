@@ -30,7 +30,13 @@ std::optional<std::vector<uint32_t>> ShaderCache::load(const ShaderVariantKey& k
     if (size % 4 != 0) return std::nullopt;
     f.seekg(0);
     std::vector<uint32_t> data(size / 4);
-    f.read(reinterpret_cast<char*>(data.data()), size);
+    // Validate the SPIR-V magic number. A corrupt or stale cache file
+    // won't start with 0x07230203 — let the caller fall through to
+    // recompile rather than passing garbage to vkCreateShaderModule.
+    if (data.empty() || data[0] != 0x07230203u) {
+        log_warn("Shader Cache: Invalid SPIR-V blob ignored");
+        return std::nullopt;
+    }
     return data;
 }
 

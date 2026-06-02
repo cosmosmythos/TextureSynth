@@ -2,6 +2,7 @@
 build/
 out/
 dist/
+test_shader_cache/
 *.whl
 *.pyd
 *.so

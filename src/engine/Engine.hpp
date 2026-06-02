@@ -177,7 +177,10 @@ public:
 
     // ── Dirty tracking: skip GPU submit when nothing changed ──────────
     bool any_pass_dirty() const noexcept       { return any_pass_dirty_.load(); }
-    void mark_all_clean() noexcept             { any_pass_dirty_.store(false); }
+    void mark_all_clean() { 
+        any_pass_dirty_.store(false);
+        dirty_set_.clear();
+    }
     void mark_node_dirty(NodeId node_id);      // sets flag + propagates downstream
     bool has_presented_frame() const noexcept  { return last_presented_w_ > 0; }
     uint64_t republish_last_frame(uint64_t generation);
