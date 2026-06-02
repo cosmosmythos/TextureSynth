@@ -16,8 +16,10 @@
 #include "engine/AsyncReadback.hpp"
 #include "engine/DirtySet.hpp"
 #include "engine/EngineError.hpp"
+#include <atomic>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -143,6 +145,25 @@ public:
         failed_node_id_ = 0;
     }
 
+    // Phase 5: explicit lifecycle state machine. Every public mutator guards
+    // on this so use-after-shutdown is a clean EngineError, not a crash.
+    enum class EngineState : uint8_t {
+        Uninitialized = 0,
+        Initializing  = 1,
+        Ready         = 2,
+        ShuttingDown  = 3,
+        ShutDown      = 4,
+        Error         = 5,
+    };
+    EngineState engine_state() const noexcept { return state_.load(std::memory_order_acquire); }
+    bool is_ready() const noexcept { return engine_state() == EngineState::Ready; }
+
+    // The mutex that serialises every public mutator. Exposed for the
+    // bindings layer (and for tests) so they can hold the lock for the
+    // full duration of a multi-step operation, eliminating the window
+    // where Engine::shutdown could interleave with an in-flight call.
+    std::mutex& entry_mutex() noexcept { return entry_mu_; }
+
     GraphRevisionId current_revision() const { return current_revision_; }
     const GraphIR&  current_ir()       const { return current_ir_; }
 
@@ -179,6 +200,11 @@ private:
     void destroy_global_samplers_();
     void mark_downstream_dirty_(NodeId root);
     void rebuild_downstream_adj_();
+
+    // Reverse-construction-order tear-down. Tolerates a not-fully-initialised
+    // engine and ignores VK_ERROR_DEVICE_LOST. Used by both Engine::shutdown
+    // (normal path) and Engine::init's rollback (after a partial init).
+    void shutdown_internal_();
 
     // Bindless slot assignment for a pass (sampled inputs + storage output).
     void assign_bindless_slots_(PassExec& pe);
@@ -279,6 +305,10 @@ private:
     VkFormat  texture_format_ = VK_FORMAT_R32G32B32A32_SFLOAT;
 
     std::atomic<bool> any_pass_dirty_{true};
+
+    // Lifecycle state machine (see public EngineState enum above).
+    std::atomic<EngineState> state_{EngineState::Uninitialized};
+    std::mutex               entry_mu_;
     uint64_t          last_presented_generation_{0};
     std::vector<float> last_presented_pixels_;
     uint32_t           last_presented_w_{0};

@@ -2,13 +2,17 @@
 TextureSynth — Node-based Vulkan Procedural Texture Generator
 """
 
-from .core import cpp_module, evaluation
+from .core import cpp_module, evaluation, preferences
 from . import nodes
 from . import operators
 from . import panels
 
 
 def register():
+    # Preferences must register first so the C++ log sink (installed
+    # below) can read the user's preferred level.
+    preferences.register()
+
     # Load C++ engine first so dynamic node classes can be generated.
     cpp_module.load()
 
@@ -19,8 +23,6 @@ def register():
 
     # Start evaluation only after all node classes exist.
     evaluation.register()
-
-    print("[TextureSynth] Addon registered.")
 
 
 def unregister():
@@ -33,4 +35,4 @@ def unregister():
 
     cpp_module.shutdown()
 
-    print("[TextureSynth] Addon unregistered.")
+    preferences.unregister()

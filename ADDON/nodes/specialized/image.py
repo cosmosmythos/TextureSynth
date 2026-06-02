@@ -9,6 +9,7 @@ JSON param order (MUST be matched by get_parameters):
 import bpy
 from ..base import TextureSynthNode
 from ._common import update_param
+from ...core import logging as _tslog
 
 
 SV_TYPE = "image"   # matches image.node.json `id`
@@ -23,7 +24,7 @@ def update_image_prop(self, context):
         from ...core.engine_bridge import upload_node_image
         upload_node_image(self)
     except Exception as e:
-        print(f"[TextureSynth] update_image_prop upload exception: {e}")
+        _tslog.error(f"update_image_prop upload exception: {e}")
     
     # Request standard parameter rendering redispatch
     update_param(self, context)

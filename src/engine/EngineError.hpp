@@ -25,6 +25,12 @@ enum class EngineErrorCode : uint32_t {
     // Lifecycle
     InitFailed,           // Vulkan context, AsyncReadback, ImageUploader, samplers, bindless
     ShutdownFailed,       // Should be unreachable; included for completeness
+    UseAfterShutdown,     // Any public method called on an engine that is not Ready
+    DoubleInit,           // init() called while Ready (idempotent: no-op+None; this code is for hard errors)
+    Busy,                 // init() called while Initializing or ShuttingDown
+
+    // Async readback
+    InvalidDimensions,    // AsyncReadback init/ensure_capacity: w==0 or capacity overflow
 
     // Graph submission / compilation
     GraphValidation,      // validate_graph() rejected the Graph
@@ -92,6 +98,10 @@ inline const char* engine_error_code_name(EngineErrorCode c) noexcept {
         case EngineErrorCode::None:                return "None";
         case EngineErrorCode::InitFailed:          return "InitFailed";
         case EngineErrorCode::ShutdownFailed:      return "ShutdownFailed";
+        case EngineErrorCode::UseAfterShutdown:    return "UseAfterShutdown";
+        case EngineErrorCode::DoubleInit:          return "DoubleInit";
+        case EngineErrorCode::Busy:                return "Busy";
+        case EngineErrorCode::InvalidDimensions:   return "InvalidDimensions";
         case EngineErrorCode::GraphValidation:     return "GraphValidation";
         case EngineErrorCode::GraphCompile:        return "GraphCompile";
         case EngineErrorCode::ShaderCompile:       return "ShaderCompile";

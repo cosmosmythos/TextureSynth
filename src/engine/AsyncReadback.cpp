@@ -3,21 +3,94 @@
 #include "engine/Engine.hpp"
 #include "engine/PushConstants.hpp"
 #include "engine/Logging.hpp"
+#include <climits>
 #include <cstring>
 #include <mutex>
 
 namespace te {
 
+namespace {
+
+// Sanity cap: a single staging frame is RGBA32F, 16 bytes/pixel.
+// 4 GiB / 16 = 256 Mpixel = 16384 x 16384. Anything bigger is almost
+// certainly a caller bug. Reject up front so we never ask VMA for a
+// 16-GiB allocation the driver will round / reject silently.
+constexpr VkDeviceSize MAX_STAGING_BYTES = VkDeviceSize{4} << 30;
+
+// Overflow-checked RGBA32F byte count for (w, h). Returns false and leaves
+// `out` untouched on any invalid input (zero, overflow, over the cap).
+bool capacity_bytes(uint32_t w, uint32_t h, VkDeviceSize& out) {
+    if (w == 0 || h == 0) return false;
+    const VkDeviceSize wh = (VkDeviceSize)w * h;
+    // Reject before the w*h*4 multiplication can overflow uint64 (it can't
+    // here because wh is already 64-bit, but the bound check is cheap and
+    // documents the intent).
+    if (wh > (UINT32_MAX / 4)) return false;
+    const VkDeviceSize bytes = wh * 4 * sizeof(float);
+    if (bytes == 0 || bytes > MAX_STAGING_BYTES) return false;
+    out = bytes;
+    return true;
+}
+
+// Allocate a fresh staging buffer+allocation. On success the caller owns
+// the new VkBuffer/VmaAllocation and must vmaDestroyBuffer exactly once.
+// On failure both handles are VK_NULL_HANDLE/nullptr and the previous
+// buffer (if any) held by the caller is untouched.
+bool alloc_staging(VulkanContext& ctx, VkDeviceSize capacity,
+                   VkBuffer& out_buf, VmaAllocation& out_alloc,
+                   void*& out_mapped) {
+    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bci.size  = capacity;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+              | VMA_ALLOCATION_CREATE_MAPPED_BIT
+              | VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; // fail-fast on OOM
+
+    VmaAllocationInfo ainfo{};
+    const VkResult r = vmaCreateBuffer(ctx.allocator(), &bci, &aci,
+                                       &out_buf, &out_alloc, &ainfo);
+    if (r != VK_SUCCESS) {
+        log_error("AsyncReadback: vmaCreateBuffer failed (VkResult="
+                  + std::to_string(r) + ")");
+        out_buf    = VK_NULL_HANDLE;
+        out_alloc  = nullptr;
+        out_mapped = nullptr;
+        return false;
+    }
+    out_mapped = ainfo.pMappedData;
+    return true;
+}
+
+} // namespace
+
 bool AsyncReadback::init(VulkanContext& ctx, uint32_t max_w, uint32_t max_h) {
+    VkDeviceSize cap = 0;
+    if (!capacity_bytes(max_w, max_h, cap)) {
+        log_error("AsyncReadback: invalid init dimensions "
+                  + std::to_string(max_w) + "x" + std::to_string(max_h));
+        current_capacity_w_ = 0;
+        current_capacity_h_ = 0;
+        return false;
+    }
     current_capacity_w_ = max_w;
     current_capacity_h_ = max_h;
-    const VkDeviceSize cap = (VkDeviceSize)max_w * max_h * 4 * sizeof(float);
-    for (auto& s : slots_) {
-        if (!init_slot_(ctx, s, cap)) {
-            log_error("AsyncReadback: slot init failed");
+
+    // Build each slot. On failure of slot i, tear down slots [0, i) so we
+    // never leave the engine with half-initialised Vulkan state.
+    for (size_t i = 0; i < SLOT_COUNT; ++i) {
+        if (!init_slot_(ctx, slots_[i], cap)) {
+            for (size_t j = 0; j < i; ++j) destroy_slot_(ctx, slots_[j]);
+            current_capacity_w_ = 0;
+            current_capacity_h_ = 0;
+            log_error("AsyncReadback: slot init failed at index "
+                      + std::to_string(i));
             return false;
         }
     }
+    initialized_ = true;
     log_info("AsyncReadback: initialized " + std::to_string(SLOT_COUNT)
              + " slots @ " + std::to_string(max_w) + "x" + std::to_string(max_h));
     return true;
@@ -48,29 +121,22 @@ bool AsyncReadback::init_slot_(VulkanContext& ctx, Slot& s, VkDeviceSize capacit
 }
 
 bool AsyncReadback::grow_staging_(VulkanContext& ctx, Slot& s, VkDeviceSize new_capacity) {
-    if (s.staging) {
-        vmaDestroyBuffer(ctx.allocator(), s.staging, s.staging_alloc);
-        s.staging = VK_NULL_HANDLE;
-        s.staging_alloc = nullptr;
-        s.staging_mapped = nullptr;
-    }
-
-    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bci.size  = new_capacity;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-    VmaAllocationCreateInfo aci{};
-    aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-    VmaAllocationInfo ainfo{};
-    if (vmaCreateBuffer(ctx.allocator(), &bci, &aci,
-                        &s.staging, &s.staging_alloc, &ainfo) != VK_SUCCESS) {
-        log_error("AsyncReadback: staging alloc failed");
+    // Allocate-then-swap: build the new staging buffer FIRST, only commit
+    // (destroy the old one) on success. If vmaCreateBuffer fails (OOM, bad
+    // dimensions, device lost), the slot's previous VkBuffer / VmaAllocation
+    // are untouched and still valid for any in-flight or pending work.
+    VkBuffer      new_buf    = VK_NULL_HANDLE;
+    VmaAllocation new_alloc  = nullptr;
+    void*         new_mapped = nullptr;
+    if (!alloc_staging(ctx, new_capacity, new_buf, new_alloc, new_mapped)) {
         return false;
     }
-    s.staging_mapped   = ainfo.pMappedData;
+    if (s.staging) {
+        vmaDestroyBuffer(ctx.allocator(), s.staging, s.staging_alloc);
+    }
+    s.staging          = new_buf;
+    s.staging_alloc    = new_alloc;
+    s.staging_mapped   = new_mapped;
     s.staging_capacity = new_capacity;
     return true;
 }
@@ -87,6 +153,11 @@ void AsyncReadback::destroy_slot_(VulkanContext& ctx, Slot& s) {
 }
 
 void AsyncReadback::shutdown(VulkanContext& ctx) {
+    // Mark uninitialised FIRST so any concurrent submit()/poll() bails out
+    // before touching a slot we are about to destroy. After this point
+    // the public surface (submit, poll, publish_synthetic) is a no-op.
+    initialized_ = false;
+
     // Drain any in-flight work first.
     for (auto& s : slots_) {
         if (s.state == SlotState::InFlight && s.fence) {
@@ -94,10 +165,16 @@ void AsyncReadback::shutdown(VulkanContext& ctx) {
         }
     }
     for (auto& s : slots_) destroy_slot_(ctx, s);
+    current_capacity_w_ = 0;
+    current_capacity_h_ = 0;
+    synthetic_ready_    = false;
+    synthetic_pixels_.clear();
 }
 
 bool AsyncReadback::ensure_capacity(VulkanContext& ctx, uint32_t w, uint32_t h) {
+    if (w == 0 || h == 0) return false;
     if (w <= current_capacity_w_ && h <= current_capacity_h_) return true;
+
     // Drain so we can safely resize staging buffers.
     for (auto& s : slots_) {
         if (s.state == SlotState::InFlight) {
@@ -105,9 +182,38 @@ bool AsyncReadback::ensure_capacity(VulkanContext& ctx, uint32_t w, uint32_t h) 
             s.state = SlotState::Free;
         }
     }
-    const VkDeviceSize new_cap = (VkDeviceSize)w * h * 4 * sizeof(float);
-    for (auto& s : slots_) {
-        if (!grow_staging_(ctx, s, new_cap)) return false;
+
+    VkDeviceSize new_cap = 0;
+    if (!capacity_bytes(w, h, new_cap)) {
+        log_error("AsyncReadback: invalid ensure_capacity dimensions "
+                  + std::to_string(w) + "x" + std::to_string(h));
+        return false; // Old buffers are untouched on any validation failure.
+    }
+
+    // Build all new buffers in temporaries. Only commit (destroy old,
+    // install new) once every slot has a fresh buffer. If any slot fails,
+    // tear down the new ones we built and leave the old state intact.
+    VkBuffer       new_bufs[SLOT_COUNT]   = {};
+    VmaAllocation  new_allocs[SLOT_COUNT] = {};
+    void*          new_mapped[SLOT_COUNT] = {};
+    for (size_t i = 0; i < SLOT_COUNT; ++i) {
+        if (!alloc_staging(ctx, new_cap, new_bufs[i], new_allocs[i], new_mapped[i])) {
+            for (size_t j = 0; j < i; ++j) {
+                vmaDestroyBuffer(ctx.allocator(), new_bufs[j], new_allocs[j]);
+            }
+            return false; // Old buffers remain valid.
+        }
+    }
+
+    for (size_t i = 0; i < SLOT_COUNT; ++i) {
+        if (slots_[i].staging) {
+            vmaDestroyBuffer(ctx.allocator(),
+                             slots_[i].staging, slots_[i].staging_alloc);
+        }
+        slots_[i].staging          = new_bufs[i];
+        slots_[i].staging_alloc    = new_allocs[i];
+        slots_[i].staging_mapped   = new_mapped[i];
+        slots_[i].staging_capacity = new_cap;
     }
     current_capacity_w_ = w;
     current_capacity_h_ = h;
@@ -143,6 +249,7 @@ uint64_t AsyncReadback::publish_synthetic(const std::vector<float>& pixels, uint
 }
 
 uint64_t AsyncReadback::submit(VulkanContext& ctx, Engine& engine, const PushConstants& pc, uint64_t generation) {
+    if (!initialized_) return 0;  // shut down or never initialised
     // ─── Short-circuit when nothing changed ───────────────────────────
     if (!engine.any_pass_dirty() && engine.has_presented_frame()) {
         return engine.republish_last_frame(generation);
@@ -241,6 +348,7 @@ bool AsyncReadback::poll(VulkanContext& ctx,
                          std::vector<float>& out_pixels,
                          uint32_t& out_w, uint32_t& out_h,
                          uint64_t& out_generation) {
+    if (!initialized_) return false;  // shut down or never initialised
     // ── Synthetic (CPU-cached) frame has highest priority ────────────
     if (synthetic_ready_) {
         out_pixels     = std::move(synthetic_pixels_);

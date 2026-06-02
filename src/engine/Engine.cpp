@@ -11,7 +11,37 @@
 namespace te {
 
 // ---------------------------------------------------------------------------
+// Lifecycle guard.
+//
+// Used at the top of every public mutator that requires a Ready engine.
+// The macro takes entry_mu_ for the *remainder of the function* (the
+// lock_guard's scope is the function body), so a concurrent Engine::shutdown
+// or Engine::init will block until the guarded method returns. The atomic
+// state check inside the lock makes the Ready/not-Ready decision and the
+// "return without doing anything" path both thread-safe.
+// ---------------------------------------------------------------------------
+#define TE_GUARD_READY(call)                                                     \
+    std::lock_guard<std::mutex> te_lk(entry_mu_);                                \
+    if (state_.load(std::memory_order_acquire) != EngineState::Ready) {          \
+        set_error_(EngineErrorCode::UseAfterShutdown,                            \
+                   std::string("engine not Ready (state=")                       \
+                   + std::to_string((int)state_.load()) + ")",                   \
+                   EnginePhase::Idle);                                           \
+        return call;                                                             \
+    }
+
+// ---------------------------------------------------------------------------
 // init
+//
+// Holds entry_mu_ for the entire body (state check + Vulkan construction +
+// state flip to Ready). A concurrent Engine::shutdown blocks on the lock
+// until init finishes, so a half-built engine is never torn down by
+// another thread. The state machine is:
+//
+//   Uninitialized/ShutDown/Error -> Initializing -> Ready
+//                                  (on success)
+//                                  -> Error
+//                                  (on failure, after best-effort teardown)
 // ---------------------------------------------------------------------------
 bool Engine::init(VkSurfaceKHR surface,
                   const char** extra_inst_exts, uint32_t extra_inst_ext_count,
@@ -19,6 +49,32 @@ bool Engine::init(VkSurfaceKHR surface,
                   const std::string& cache_dir,
                   const std::string& nodes_dir,
                   const std::string& glsl_dir) {
+
+    // entry_mu_ held for the entire body. A concurrent Engine::shutdown
+    // will block here until this function returns.
+    std::lock_guard<std::mutex> lk(entry_mu_);
+
+    const EngineState s = state_.load(std::memory_order_acquire);
+    if (s == EngineState::Initializing || s == EngineState::ShuttingDown) {
+        // Unreachable while we hold the lock: only init() sets Initializing,
+        // only shutdown() sets ShuttingDown, and both take this same lock.
+        set_error_(EngineErrorCode::Busy,
+                   "engine init or shutdown already in progress",
+                   EnginePhase::Init);
+        return false;
+    }
+    if (s == EngineState::Ready) {
+        log_info("Engine::init: already Ready -- no-op (idempotent)");
+        return true;
+    }
+    if (s == EngineState::ShutDown) {
+        log_info("Engine::init: re-arming after ShutDown");
+    }
+    state_.store(EngineState::Initializing, std::memory_order_release);
+
+    clear_error();
+    bool did_partially_succeed = false;
+    std::string err;  // hoisted to dodge MSVC C2362 (goto past init)
 
     VulkanContextDesc d{};
     d.enable_validation = enable_validation;
@@ -29,12 +85,12 @@ bool Engine::init(VkSurfaceKHR surface,
         set_error_(EngineErrorCode::InitFailed,
                    "Vulkan context init failed (no compatible device or surface?)",
                    EnginePhase::Init);
-        return false;
+        goto rollback;
     }
+    did_partially_succeed = true;  // first Vulkan object exists; rollback may need to tear it down
 
     cache_ = std::make_unique<ShaderCache>(cache_dir);
 
-    std::string err;
     if (NodeRegistryLoader::load_from_directory(node_lib_, nodes_dir, glsl_dir, &err) == 0) {
         log_warn("no nodes loaded: " + err);
     }
@@ -44,25 +100,25 @@ bool Engine::init(VkSurfaceKHR surface,
         set_error_(EngineErrorCode::InitFailed,
                    "output storage image creation failed",
                    EnginePhase::Init);
-        return false;
+        goto rollback;
     }
     if (!async_.init(ctx_, 4096, 4096)) {
         set_error_(EngineErrorCode::InitFailed,
                    "AsyncReadback init failed",
                    EnginePhase::Init);
-        return false;
+        goto rollback;
     }
     if (!uploader_.init(ctx_)) {
         set_error_(EngineErrorCode::InitFailed,
                    "ImageUploader init failed",
                    EnginePhase::Init);
-        return false;
+        goto rollback;
     }
     if (!ensure_dummy_image_()) {
         set_error_(EngineErrorCode::InitFailed,
                    "dummy image creation failed",
                    EnginePhase::Init);
-        return false;
+        goto rollback;
     }
 
     // ── Create param SSBO ring buffers (host-visible, persistently mapped) ──
@@ -82,7 +138,7 @@ bool Engine::init(VkSurfaceKHR surface,
                 set_error_(EngineErrorCode::InitFailed,
                            "param SSBO alloc failed (VMA out of memory?)",
                            EnginePhase::Init);
-                return false;
+                goto rollback;
             }
             param_mapped_[i] = ai.pMappedData;
             std::memset(param_mapped_[i], 0, (size_t)sz);
@@ -94,7 +150,7 @@ bool Engine::init(VkSurfaceKHR surface,
         set_error_(EngineErrorCode::InitFailed,
                    "global sampler creation failed",
                    EnginePhase::Init);
-        return false;
+        goto rollback;
     }
 
     // Bindless table — ONE descriptor set for the whole engine lifetime.
@@ -103,7 +159,7 @@ bool Engine::init(VkSurfaceKHR surface,
         set_error_(EngineErrorCode::InitFailed,
                    "BindlessTable init failed",
                    EnginePhase::Init);
-        return false;
+        goto rollback;
     }
 
     // Reserved slot 0 in BindlessTable is the dummy. Write the dummy view there.
@@ -117,7 +173,15 @@ bool Engine::init(VkSurfaceKHR surface,
         bindless_.write_param_ring(ctx_, ring_bufs, MAX_NODE_PARAMS * sizeof(float));
     }
     param_write_idx_ = 0;
+    state_.store(EngineState::Ready, std::memory_order_release);
     return true;
+
+rollback:
+    if (did_partially_succeed) {
+        shutdown_internal_();
+    }
+    state_.store(EngineState::Error, std::memory_order_release);
+    return false;
 }
 
 
@@ -126,8 +190,49 @@ bool Engine::ensure_dummy_image_() {
 }
 
 
+// ---------------------------------------------------------------------------
+// shutdown
+//
+// Idempotent. Second / Nth call is a no-op. Holds entry_mu_ for the entire
+// teardown so a concurrent Engine::init or another Engine::shutdown blocks
+// until we're done. Tolerates VK_ERROR_DEVICE_LOST (the device is gone, so
+// just free what we hold and accept that the underlying VkInstance may
+// already be invalid).
+//
+// State transitions:
+//   Uninitialized -> ShutDown   (nothing to tear down; mark for idempotency)
+//   Ready         -> ShuttingDown -> ShutDown
+//   Error         -> ShuttingDown -> ShutDown   (best-effort partial cleanup)
+//   Initializing  / ShuttingDown: unreachable (we hold the lock).
+// ---------------------------------------------------------------------------
 void Engine::shutdown() {
-    if (ctx_.device()) vkDeviceWaitIdle(ctx_.device());
+    std::lock_guard<std::mutex> lk(entry_mu_);
+
+    const EngineState s = state_.load(std::memory_order_acquire);
+    if (s == EngineState::ShutDown) return;  // idempotent
+    if (s == EngineState::Uninitialized) {
+        // Nothing to tear down. Flip to ShutDown so the next init() starts
+        // from a defined "re-arming" state.
+        state_.store(EngineState::ShutDown, std::memory_order_release);
+        return;
+    }
+    // s is Ready or Error. Both have Vulkan state to clean up.
+    state_.store(EngineState::ShuttingDown, std::memory_order_release);
+    shutdown_internal_();
+    state_.store(EngineState::ShutDown, std::memory_order_release);
+}
+
+
+void Engine::shutdown_internal_() {
+    // Wait for the GPU to finish whatever it was doing. Tolerate device-lost
+    // so a sick GPU still allows the engine to clean up.
+    if (ctx_.device()) {
+        const VkResult w = vkDeviceWaitIdle(ctx_.device());
+        if (w != VK_SUCCESS && w != VK_ERROR_DEVICE_LOST) {
+            log_warn("Engine::shutdown_internal_: vkDeviceWaitIdle returned "
+                     + std::to_string(w));
+        }
+    }
     async_.drain(ctx_);
     uploader_.drain(ctx_);
 
@@ -309,6 +414,7 @@ void Engine::release_bindless_slots_(PassExec& pe) {
 
 
 uint64_t Engine::set_graph(const Graph& graph) {
+    TE_GUARD_READY(0);
     clear_error();
 
     // Topology change must drain in-flight async work before we tear down
@@ -468,6 +574,7 @@ void Engine::rebuild_downstream_adj_() {
 
 
 void Engine::poll_pending_compiles() {
+    TE_GUARD_READY(;);
 
     // Pull completed uploads. Rewire descriptors and mark dirty.
     auto completed = uploader_.poll(ctx_);
@@ -923,6 +1030,7 @@ void Engine::mark_downstream_dirty_(NodeId root) {
 
 
 void Engine::update_node_params_by_id(NodeId node_id, const std::vector<float>& params) {
+    TE_GUARD_READY(;);
 
     if (param_write_idx_ >= PARAM_RING) return;
     void* mapped = param_mapped_[param_write_idx_];
@@ -953,6 +1061,8 @@ void Engine::update_node_params_by_id(NodeId node_id, const std::vector<float>& 
 
 void Engine::update_node_params_by_name(NodeId node_id,
                                         const std::unordered_map<std::string, float>& kv) {
+    TE_GUARD_READY(;);
+
     if (!param_mapped_[param_write_idx_]) return;
 
     auto it = param_base_slot_.find(node_id);
@@ -1019,6 +1129,8 @@ void Engine::update_node_params_by_name(NodeId node_id,
 
 bool Engine::upload_image(uint64_t node_id, const float* pixels,
                           uint32_t width, uint32_t height) {
+    TE_GUARD_READY(false);
+
     // Hand off any existing image as a recycled buffer if shapes match.
     std::unique_ptr<Image> recycled;
     auto it = image_registry_.find(node_id);
@@ -1042,6 +1154,8 @@ bool Engine::upload_image(uint64_t node_id, const float* pixels,
 
 
 bool Engine::release_image(uint64_t node_id) {
+    TE_GUARD_READY(false);
+
     auto it = image_registry_.find(node_id);
     if (it == image_registry_.end()) {
         set_error_(EngineErrorCode::ImageReleaseUnknown,

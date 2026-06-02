@@ -1,10 +1,32 @@
 """
 C++ Module Loader
 Loads the wheel-provided texturesynth_core C++ module.
+
+The C++ side calls into Python via `set_log_callback(level, message)`.
+We filter the messages by the user's addon-preference log level so the
+console is silent by default; users can flip to DEBUG in addon prefs
+to get the full firehose for bug reports.
 """
+import bpy
+
+from . import logging as _tslog
 
 _core = None      # texturesynth_core pyd module
 _engine = None    # Engine instance
+
+
+def _cpp_log_sink(level, message):
+    """Filter installed into the C++ engine. `level` is one of
+    '[info]  ', '[warn]  ', '[error] '. Drops events below the
+    addon-preference log_level."""
+    lvl = level.strip().lstrip("[]").strip().upper()
+    if lvl == "INFO" and not _tslog.is_enabled_for("INFO"):
+        return
+    if lvl == "WARN" and not _tslog.is_enabled_for("WARNING"):
+        return
+    if lvl == "ERROR" and not _tslog.is_enabled_for("ERROR"):
+        return
+    print(f"[TextureSynth C++] {level.strip()} {message}")
 
 
 def load():
@@ -12,7 +34,8 @@ def load():
 
     Safe to call from register() — the DLL loader runs first,
     then the import, then engine construction.
-    Non-fatal: prints errors but never raises.
+    Non-fatal: errors are forwarded to the addon logger (which prints
+    at ERROR level); never raises.
     """
     global _core, _engine
 
@@ -32,59 +55,49 @@ def load():
         import texturesynth_core as core
         _core = core
         try:
-            core.set_log_callback(
-                lambda level, message: print(f"[TextureSynth C++] {level.strip()} {message}")
-            )
-        except Exception as e:
-            print(f"[TextureSynth] Failed to install C++ log callback: {e}")
-        print("[TextureSynth] Core module imported OK.")
+            core.set_log_callback(_cpp_log_sink)
+        except Exception:
+            pass
     except ImportError as e:
-        print(f"[TextureSynth] ImportError: {e}")
-        print("[TextureSynth] Engine will not be available. Nodes still work as UI.")
+        _tslog.error(f"ImportError: {e}")
+        _tslog.error("Engine will not be available. Nodes still work as UI.")
         return False
     except Exception as e:
-        print(f"[TextureSynth] Core import exception: {e}")
+        _tslog.error(f"Core import exception: {e}")
         return False
 
     # Step 3 — construct Engine (no threads started here)
     try:
         eng = _core.Engine()
     except Exception as e:
-        print(f"[TextureSynth] Engine() constructor exception: {e}")
+        _tslog.error(f"Engine() constructor exception: {e}")
         _core = None
         return False
 
     # Step 4 — init Vulkan (headless, no surface)
     try:
-        import bpy
         import os
-        # Store shader cache in the user's addon data directory (safe from permissions issues)
-        cache_dir = os.path.join(bpy.utils.user_resource('DATAFILES', path="texturesynth"), "shader_cache")
+        cache_dir = os.path.join(
+            bpy.utils.user_resource('DATAFILES', path="texturesynth"),
+            "shader_cache",
+        )
         addon_root = os.path.dirname(os.path.dirname(__file__))
         nodes_dir  = os.path.join(addon_root, "shader_assets", "nodes")
         glsl_dir   = os.path.join(addon_root, "shader_assets", "glsl")
-        
+
         os.makedirs(cache_dir, exist_ok=True)
-        
+
         ok = eng.init(enable_validation=False, cache_dir=cache_dir, nodes_dir=nodes_dir, glsl_dir=glsl_dir)
         if not ok:
-            print(f"[TextureSynth] Engine.init() failed: {eng.last_error()}")
+            _tslog.error(f"Engine.init() failed: {eng.last_error()}")
             _core = None
             return False
     except Exception as e:
-        print(f"[TextureSynth] Engine.init() exception: {e}")
+        _tslog.error(f"Engine.init() exception: {e}")
         _core = None
         return False
 
     _engine = eng
-    print("[TextureSynth] Vulkan engine initialised OK.")
-    # Phase 6 sanity: warn if any Python node's named-param keys drift from
-    # the C++ manifest. This catches JSON renames silently breaking sliders.
-    try:
-        lib = eng.node_library().all()
-        print(f"[TextureSynth] Param-name contract: {len(lib)} C++ manifests loaded.")
-    except Exception as e:
-        print(f"[TextureSynth] Warning: could not verify NodeLibrary manifests: {e}")
     return True
 
 
@@ -94,9 +107,8 @@ def shutdown():
     if _engine is not None:
         try:
             _engine.shutdown()
-            print("[TextureSynth] Engine shut down.")
         except Exception as e:
-            print(f"[TextureSynth] Engine shutdown exception: {e}")
+            _tslog.error(f"Engine shutdown exception: {e}")
     if _core is not None:
         try:
             _core.set_log_callback(None)

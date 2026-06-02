@@ -20,6 +20,7 @@ Invariant:
 import bpy
 from . import cpp_module
 from . import engine_bridge
+from . import logging as _tslog
 
 _topology_dirty = False
 _params_dirty   = False
@@ -50,7 +51,7 @@ def _evaluation_timer():
     try:
         engine.poll_pending_compiles()
     except Exception as e:
-        print(f"[TextureSynth] poll exception: {e}")
+        _tslog.error(f"poll exception: {e}")
 
     # Sync compile errors to node UI.
     try:
@@ -58,7 +59,7 @@ def _evaluation_timer():
         if tree:
             engine_bridge.sync_node_errors(tree)
     except Exception as e:
-        print(f"[TextureSynth] sync errors exception: {e}")
+        _tslog.error(f"sync errors exception: {e}")
 
     # 2. Topology change → resubmit.
     if _topology_dirty:
@@ -85,7 +86,7 @@ def _evaluation_timer():
         try:
             state = engine_bridge.update_params_only(force_submit=True)
         except Exception as e:
-            print(f"[TextureSynth] dispatch exception: {e}")
+            _tslog.error(f"dispatch exception: {e}")
             return 0.1
 
         if state == 'landed':
@@ -103,7 +104,7 @@ def _evaluation_timer():
         try:
             engine_bridge.update_params_only(force_submit=False)
         except Exception as e:
-            print(f"[TextureSynth] idle poll exception: {e}")
+            _tslog.error(f"idle poll exception: {e}")
         return 0.05
 
     return 0.1

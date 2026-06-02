@@ -20,10 +20,39 @@ using namespace te;
 // ---------------------------------------------------------------------------
 // ASYNC API
 // ---------------------------------------------------------------------------
+// check_engine_ready: throws RuntimeError + populates EngineError when the
+// engine is not in the Ready state. Mirrors the C++ TE_GUARD_READY macro
+// so Python callers see a uniform error experience across mutators.
+//
+// IMPORTANT: every bindings function that calls check_engine_ready must
+// first take engine.entry_mutex() for the full duration of the call. The
+// C++-side TE_GUARD_READY macro does this; the bindings side has to do
+// it explicitly because lambdas can't use the macro. The lock pattern
+// for every guarded function is:
+//
+//     std::lock_guard<std::mutex> lk(engine.entry_mutex());
+//     check_engine_ready(engine, EnginePhase::Foo);
+//     // ... body ...
+//
+// Without the lock, a concurrent Engine::shutdown() could tear down
+// Vulkan resources between the state check and the body.
+// ---------------------------------------------------------------------------
+static void check_engine_ready(Engine& engine, EnginePhase phase) {
+    if (engine.is_ready()) return;
+    const Engine::EngineState s = engine.engine_state();
+    engine.set_error_record(EngineError{
+        EngineErrorCode::UseAfterShutdown,
+        std::string("engine not Ready (state=") + std::to_string((int)s) + ")",
+        0, 0, phase});
+    throw std::runtime_error("engine not Ready");
+}
+
 // submit_render: records + submits a dispatch+copy job on a free ring slot.
 // Returns ticket > 0 on success, 0 if all slots busy (retry next tick).
 // NEVER blocks the main thread.
 static uint64_t submit_render(Engine& engine, PushConstants pc, uint64_t generation) {
+    std::lock_guard<std::mutex> lk(engine.entry_mutex());
+    check_engine_ready(engine, EnginePhase::Submit);
     if (!engine.has_pipeline()) {
         engine.set_error_record(EngineError{
             EngineErrorCode::NoPipeline,
@@ -58,6 +87,8 @@ static uint64_t submit_render(Engine& engine, PushConstants pc, uint64_t generat
 // poll_readback: non-blocking. Returns None if nothing ready,
 // else (numpy[H,W,4], generation).
 static nb::object poll_readback(Engine& engine) {
+    std::lock_guard<std::mutex> lk(engine.entry_mutex());
+    check_engine_ready(engine, EnginePhase::Readback);
     std::vector<float> pixels;
     uint32_t w = 0, h = 0;
     uint64_t gen = 0;
@@ -95,6 +126,10 @@ NB_MODULE(texturesynth_core, m) {
         .value("None",                EngineErrorCode::None)
         .value("InitFailed",          EngineErrorCode::InitFailed)
         .value("ShutdownFailed",      EngineErrorCode::ShutdownFailed)
+        .value("UseAfterShutdown",    EngineErrorCode::UseAfterShutdown)
+        .value("DoubleInit",          EngineErrorCode::DoubleInit)
+        .value("Busy",                EngineErrorCode::Busy)
+        .value("InvalidDimensions",   EngineErrorCode::InvalidDimensions)
         .value("GraphValidation",     EngineErrorCode::GraphValidation)
         .value("GraphCompile",        EngineErrorCode::GraphCompile)
         .value("ShaderCompile",       EngineErrorCode::ShaderCompile)
@@ -263,11 +298,17 @@ NB_MODULE(texturesynth_core, m) {
 
         // Submit a new graph for async compilation. Returns generation id, or 0 on failure.
         .def("set_graph", [](Engine& e, const Graph& g) -> uint64_t {
+            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::GraphSubmit);
             return e.set_graph(g);
         })
 
         // Call once per timer tick (main thread). Installs pipeline if compile finished.
-        .def("poll_pending_compiles", &Engine::poll_pending_compiles)
+        .def("poll_pending_compiles", [](Engine& e) {
+            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::GraphCompileFinish);
+            e.poll_pending_compiles();
+        })
 
         // True when a pipeline is ready to dispatch.
         .def("has_pipeline", &Engine::has_pipeline)
@@ -286,12 +327,22 @@ NB_MODULE(texturesynth_core, m) {
             return (uint64_t)e.resources().budget_bytes();
         })
         .def("set_memory_budget_mb", [](Engine& e, size_t mb) {
+            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::Idle);
             e.resources().set_memory_budget_mb(mb);
         })
         .def("is_generation_ready", &Engine::is_generation_ready)
+        .def("is_ready", &Engine::is_ready)
+        .def("engine_state", [](const Engine& e) {
+            return (int)e.engine_state();
+        })
         .def("set_precision", &Engine::set_precision)
         .def("precision", &Engine::precision)
-        .def("set_resolution", &Engine::set_resolution)
+        .def("set_resolution", [](Engine& e, uint32_t w, uint32_t h) {
+            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::Idle);
+            e.set_resolution(w, h);
+        })
 
         // Last compile/graph error string.
         .def("last_error", [](const Engine& e) {
@@ -309,12 +360,16 @@ NB_MODULE(texturesynth_core, m) {
         // Replaces the old push-constant hot_params approach -- no 28-float limit.
         .def("update_node_params_by_id",
             [](Engine& e, uint64_t id, const std::vector<float>& p) {
+                std::lock_guard<std::mutex> lk(e.entry_mutex());
+                check_engine_ready(e, EnginePhase::ParamUpdate);
                 e.update_node_params_by_id(id, p);
             })
 
         .def("update_node_params_by_name",
             [](Engine& e, uint64_t id,
                const std::unordered_map<std::string, float>& kv) {
+                std::lock_guard<std::mutex> lk(e.entry_mutex());
+                check_engine_ready(e, EnginePhase::ParamUpdate);
                 e.update_node_params_by_name(id, kv);
             },
             "node_id"_a, "params"_a)
@@ -323,6 +378,8 @@ NB_MODULE(texturesynth_core, m) {
             [](Engine& e, uint64_t node_id,
                nb::ndarray<const float, nb::ndim<3>, nb::c_contig, nb::device::cpu> pixels,
                uint32_t width, uint32_t height) -> bool {
+                std::lock_guard<std::mutex> lk(e.entry_mutex());
+                check_engine_ready(e, EnginePhase::ImageUpload);
                 if (pixels.shape(0) != height ||
                     pixels.shape(1) != width  ||
                     pixels.shape(2) != 4) {
@@ -330,7 +387,11 @@ NB_MODULE(texturesynth_core, m) {
                 }
                 return e.upload_image(node_id, pixels.data(), width, height);
             })
-        .def("release_image", &Engine::release_image)
+        .def("release_image", [](Engine& e, uint64_t node_id) -> bool {
+            std::lock_guard<std::mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::ImageRelease);
+            return e.release_image(node_id);
+        })
 
         .def("param_layout", [](const Engine& e) {
             return e.param_layout();  // dict {id:int -> base:int}

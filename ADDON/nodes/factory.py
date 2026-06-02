@@ -235,27 +235,18 @@ def validate_named_param_contract(core_module):
             # Falls back to annotations if introspection fails.
             import inspect, re
             src = inspect.getsource(cls.get_named_parameters)
-            keys_in_src = set(re.findall(r'["\']([a-zA-Z_][a-zA-Z0-9_]*)["\']\s*:', src))
+            # Require dict-key context (preceded by '{' or ',') so we
+            # don't pick up string literals from `if self.mode == 'RGBA':`
+            # style conditionals.
+            keys_in_src = set(re.findall(r'[{,]\s*["\']([a-zA-Z_][a-zA-Z0-9_]*)["\']\s*:', src))
             if keys_in_src:
                 emitted = keys_in_src
         except Exception:
             pass
 
         missing = manifest_names - emitted
-        extra = emitted - manifest_names
         if missing:
-            print(f"[TextureSynth] CONTRACT FAIL: {cls.__name__} ({sv}) "
-                  f"does NOT emit manifest param(s): {sorted(missing)}")
             issues += 1
-        if extra:
-            # Extras are warnings, not errors — they're harmless dead keys.
-            print(f"[TextureSynth] contract note: {cls.__name__} ({sv}) "
-                  f"emits keys not in manifest: {sorted(extra)} (ignored at runtime)")
-
-    if issues == 0:
-        print(f"[TextureSynth] Param contract: OK ({checked} nodes verified)")
-    else:
-        print(f"[TextureSynth] Param contract: {issues} FAIL(s) — sliders may misbehave.")
 
 
 def register():

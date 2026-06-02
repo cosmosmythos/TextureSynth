@@ -7,6 +7,7 @@ and undo/redo proxy invalidation.
 """
 import bpy
 from . import cpp_module
+from . import logging as _tslog
 
 
 _last_active_fingerprint = None
@@ -133,21 +134,6 @@ def _build_graph_and_params(tree):
     if core is None:
         return None, None, None
 
-    # ── Diagnostics ────────────────────────────────────────────────
-    print(f"[TextureSynth] Tree '{tree.name}': "
-          f"{len(tree.nodes)} nodes, {len(tree.links)} links")
-    for n in tree.nodes:
-        sid = _node_stable_id(n) if hasattr(n, 'stable_id') else '?'
-        print(f"  node '{n.name}' bl_idname='{n.bl_idname}' "
-              f"sv_type={getattr(n, 'sv_type', '<none>')} stable_id={sid}")
-    for li, link in enumerate(tree.links):
-        fn = link.from_node.name if link.from_node else "<none>"
-        tn = link.to_node.name if link.to_node else "<none>"
-        fb = link.from_node.bl_idname if link.from_node else "?"
-        tb = link.to_node.bl_idname if link.to_node else "?"
-        print(f"  link[{li}] {fn}({fb}) → {tn}({tb}) valid={link.is_valid}")
-    # ──────────────────────────────────────────────────────────────
-
     graph = core.Graph()
     res = _get_resolution()
     render_res = _get_render_resolution(res)
@@ -164,7 +150,6 @@ def _build_graph_and_params(tree):
             output_node = n
             break
     if output_node is None:
-        print("[TextureSynth] No Output node in tree.")
         return None, None, None
 
     name_to_id, id_to_name = _build_id_maps(tree)
@@ -181,17 +166,12 @@ def _build_graph_and_params(tree):
             continue
         src = link.from_node
         if src.bl_idname == 'NodeUndefined':
-            print("[TextureSynth] Output is fed by NodeUndefined — "
-                  "delete and recreate the source node.")
             continue
         if src.name in name_to_id:
             output_src_id = name_to_id[src.name]
-            print(f"[TextureSynth] Output ← stable_id={output_src_id} "
-                  f"name='{src.name}' bl_idname={src.bl_idname}")
             break
 
     if output_src_id is None:
-        print("[TextureSynth] Output node has no valid incoming link.")
         return None, None, None
 
     order, reachable_ids = _get_active_subgraph_topo_order(
@@ -264,7 +244,6 @@ def _build_graph_and_params(tree):
         except ValueError:
             continue
         graph.add_connection(s_id, src_idx, d_id, dst_idx)
-        print(f"[TextureSynth] edge {s_id}.{src_idx} → {d_id}.{dst_idx}")
 
     return graph, pc, node_params
 
@@ -302,7 +281,6 @@ def _build_push_constants(tree):
             continue
         if hasattr(node, 'get_parameters'):
             params = node.get_parameters()
-            print(f"[TextureSynth] params for {node.name} ({node.sv_type}): {params}")
             node_params.extend(params)
 
     return pc, node_params
@@ -466,13 +444,9 @@ def upload_node_image(node):
         
         # Call the C++ engine to allocate staging buffer and upload to Vulkan image.
         success = engine.upload_image(nid, pixels, w, h)
-        if success:
-            print(f"[TextureSynth] Successfully uploaded external image '{image.name}' ({w}x{h}) for node stable_id={nid}")
-        else:
-            print(f"[TextureSynth] Core engine failed to upload image '{image.name}'")
         return success
     except Exception as e:
-        print(f"[TextureSynth] Exception during image upload for node '{node.name}': {e}")
+        _tslog.error(f"Exception during image upload for node '{node.name}': {e}")
         engine.release_image(nid)
         return False
 
@@ -503,7 +477,6 @@ def submit_graph():
         # Transient invalid state during editing (e.g. user dragging a link
         # away from a socket, Output node missing). DO NOT invalidate the
         # last successful render — the artist's viewport stays stable.
-        print("[TextureSynth] No valid graph — Output node missing or disconnected.")
         _last_active_fingerprint = None
         _submitted_generation = 0
         return 0
@@ -523,12 +496,12 @@ def submit_graph():
     try:
         generation = int(engine.set_graph(graph))
         if generation == 0:
-            print(f"[TextureSynth] set_graph failed: {engine.last_error()}")
+            _tslog.error(f"set_graph failed: {engine.last_error()}")
             sync_node_errors(tree)
             _invalidate_output_image()
             return 0
     except Exception as e:
-        print(f"[TextureSynth] set_graph exception: {e}")
+        _tslog.error(f"set_graph exception: {e}")
         return 0
 
     _last_active_fingerprint = _active_subgraph_fingerprint(tree)
@@ -536,9 +509,7 @@ def submit_graph():
     _last_applied_generation = 0
     _last_pushed_param_hash = None
     _push_params_using_stable_ids(tree, engine)
-    _diagnose_params(engine)
     sync_node_errors(tree)
-    print(f"[TextureSynth] submitted graph generation={generation}")
     return generation
 
 
@@ -575,7 +546,6 @@ def update_params_only(force_submit: bool = False):
     # Stale-pipeline detection.
     fp = _active_subgraph_fingerprint(tree)
     if fp != _last_active_fingerprint:
-        print("[TextureSynth] active subgraph changed under param update — resubmitting.")
         from .evaluation import request_topology_update
         request_topology_update()
         return 'invalid'
@@ -603,7 +573,7 @@ def update_params_only(force_submit: bool = False):
         return 'in_flight' if ticket != 0 else 'idle'
 
     except Exception as e:
-        print(f"[TextureSynth] async render exception: {e}")
+        _tslog.error(f"async render exception: {e}")
         return 'invalid'
 
 
@@ -614,7 +584,7 @@ def _poll_and_blit(engine):
     try:
         result = engine.poll_readback()
     except Exception as e:
-        print(f"[TextureSynth] poll_readback exception: {e}")
+        _tslog.error(f"poll_readback exception: {e}")
         return 'idle'
 
     if result is None:
@@ -626,16 +596,11 @@ def _poll_and_blit(engine):
     # If C++ hands us a result older than what we've already applied,
     # drop it silently. (Shouldn't happen post-Fix-B in C++, but defensive.)
     if gen != 0 and gen < _last_applied_generation:
-        print(f"[TextureSynth] dropping stale gen={gen} "
-              f"(already applied gen={_last_applied_generation})")
         return 'idle'
 
     height, width = pixels.shape[:2]
     _blit_to_image(pixels, width, height)
     _last_applied_generation = gen
-    print(f"[TextureSynth] async render landed gen={gen} "
-          f"{width}x{height} min={pixels.min():.3f} "
-          f"max={pixels.max():.3f} mean={pixels.mean():.3f}")
     return 'landed'
 
 
@@ -701,30 +666,13 @@ def _push_params_using_stable_ids(tree, engine):
         if hasattr(node, 'get_named_parameters'):
             try:
                 kv = node.get_named_parameters()
-                if kv:
+                if kv is not None:
                     engine.update_node_params_by_name(nid, kv)
-                    print(f"[TextureSynth] NAMED push '{node.name}': {kv}")
                     continue
-            except Exception as e:
-                print(f"[TextureSynth] get_named_parameters failed for "
-                      f"'{node.name}': {e} — falling back to positional")
+            except Exception:
+                pass
 
-        # Fallback: positional (legacy). Should not happen post-Phase 6;
-        # warn once per node so we notice contract regressions.
+        # Fallback: positional (legacy). Should not happen post-Phase 6.
         if hasattr(node, 'get_parameters'):
-            if not getattr(node, '_ts_warned_positional', False):
-                print(f"[TextureSynth] WARN: '{node.name}' ({node.sv_type}) "
-                      f"lacks get_named_parameters() — using positional API. "
-                      f"Sliders are vulnerable to JSON param reordering.")
-                try:
-                    node['_ts_warned_positional'] = True
-                except Exception:
-                    pass
             params = node.get_parameters()
             engine.update_node_params_by_id(nid, params)
-
-
-def _diagnose_params(engine):
-    layout = engine.param_layout()
-    total = engine.total_param_floats()
-    print(f"[TextureSynth] param_layout={dict(layout)} total_floats={total}")

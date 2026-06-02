@@ -65,6 +65,11 @@ private:
     uint32_t  current_capacity_h_ = 0;
     uint64_t  next_ticket_ = 1;
     uint64_t  latest_submitted_generation_ = 0;
+    // Set true on a successful init(), false on shutdown() and on the
+    // default-constructed state. submit() and poll() return early if false,
+    // so a use-after-shutdown at the AsyncReadback level is a clean no-op
+    // rather than a use-after-free on a null VkBuffer.
+    bool      initialized_ = false;
 
     // Synthetic (CPU-cached) frame — populated by publish_synthetic().
     std::vector<float> synthetic_pixels_;
