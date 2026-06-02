@@ -33,6 +33,8 @@ class TS_Image_Node(TextureSynthNode):
     bl_idname = 'TS_Image_Node'
     bl_label  = 'Image Input'
     sv_type   = SV_TYPE
+    ts_category = 'INPUT'
+    supports_format_override = False
 
     image: bpy.props.PointerProperty(
         type=bpy.types.Image,
@@ -72,7 +74,7 @@ class TS_Image_Node(TextureSynthNode):
 
     def draw_buttons(self, context, layout):
         self.draw_error_ui(layout)
-        layout.prop(self, 'format_override', text="")
+        self.draw_format_override_ui(layout)
         layout.template_ID(self, "image", open="image.open")
         
         col = layout.column(align=True)

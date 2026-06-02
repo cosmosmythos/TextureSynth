@@ -111,7 +111,7 @@ bool AsyncReadback::ensure_capacity(VulkanContext& ctx, uint32_t w, uint32_t h) 
     }
     current_capacity_w_ = w;
     current_capacity_h_ = h;
-    log_info("AsyncReadback: resized staging → " + std::to_string(w) + "x" + std::to_string(h));
+    log_info("AsyncReadback: resized staging -> " + std::to_string(w) + "x" + std::to_string(h));
     return true;
 }
 

@@ -22,6 +22,8 @@ class TS_ColorConst_Node(TextureSynthNode):
     bl_idname = 'TS_ColorConst_Node'
     bl_label  = 'Color'
     sv_type   = SV_TYPE
+    ts_category = 'INPUT'
+    supports_format_override = True
 
     mode: bpy.props.EnumProperty(
         name="Mode",
@@ -54,7 +56,7 @@ class TS_ColorConst_Node(TextureSynthNode):
 
     def draw_buttons(self, context, layout):
         self.draw_error_ui(layout)
-        layout.prop(self, 'format_override', text="")
+        self.draw_format_override_ui(layout)
         layout.prop(self, "mode", expand=True)
         if self.mode == 'RGBA':
             layout.template_color_picker(self, "color_data", value_slider=True)

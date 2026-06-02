@@ -30,6 +30,8 @@ class TS_Blend_Node(TextureSynthNode):
     bl_idname = 'TS_Blend_Node'
     bl_label  = 'Blend'
     sv_type   = SV_TYPE
+    ts_category = 'BLEND'
+    supports_format_override = False
 
     mode: bpy.props.EnumProperty(
         name="Mode",
@@ -50,7 +52,7 @@ class TS_Blend_Node(TextureSynthNode):
 
     def draw_buttons(self, context, layout):
         self.draw_error_ui(layout)
-        layout.prop(self, 'format_override', text="")
+        self.draw_format_override_ui(layout)
         layout.prop(self, "mode", text="")
         layout.prop(self, "factor", slider=True)
 

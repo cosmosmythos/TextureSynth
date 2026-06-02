@@ -41,7 +41,24 @@ _CATEGORY_BY_SVTYPE = {
     'combine_rgba':'COLOR','split_rgba':'COLOR',
 }
 
+_FORMAT_OVERRIDE_SV_TYPES = {
+    'color_const',
+    'perlin', 'simplex', 'worley', 'gabor', 'value', 'white',
+}
+
 _generated_classes = []
+
+
+def _supports_format_override(type_id, node_type):
+    """Only expose format override where it is an authoring choice.
+
+    Routing, channel packing/unpacking, and fixed semantic processors should
+    use their manifest formats so the UI does not advertise invalid choices.
+    """
+    return (
+        type_id in _FORMAT_OVERRIDE_SV_TYPES
+        and len(getattr(node_type, "outputs", [])) == 1
+    )
 
 
 def _update_param(self, context):
@@ -76,6 +93,8 @@ def generate_node_classes(core_module):
             'bl_idname': class_name,
             'bl_label':  node_type.display_name,
             'sv_type':   type_id,
+            'ts_category': _CATEGORY_BY_SVTYPE.get(type_id, 'FILTER'),
+            'supports_format_override': _supports_format_override(type_id, node_type),
             '__annotations__': {},
         }
 
@@ -115,6 +134,7 @@ def generate_node_classes(core_module):
                 super(type(self), self).init(context)
                 single_in = len(node_type_ref.inputs) == 1 and not any(
                     getattr(p, 'as_socket', False) for p in node_type_ref.params)
+                allow_format_override = getattr(type(self), 'supports_format_override', False)
 
                 # ── Input sockets (color from JSON format) ─────────
                 for sock in node_type_ref.inputs:
@@ -132,13 +152,18 @@ def generate_node_classes(core_module):
                 if node_type_ref.outputs:
                     fmt_override = _channel_format_to_override(
                         node_type_ref.outputs[0].format)
-                    self.format_override = fmt_override
-                out_type = socket_type_for_format(
-                    getattr(self, 'format_override', 'DEFAULT'))
+                    if allow_format_override:
+                        self.format_override = fmt_override
                 meta = {}
                 single_out = len(node_type_ref.outputs) == 1
                 for i, sock in enumerate(node_type_ref.outputs):
                     label = "" if single_out else sock.name.capitalize()
+                    if allow_format_override:
+                        out_type = socket_type_for_format(
+                            getattr(self, 'format_override', 'DEFAULT'))
+                    else:
+                        out_type = socket_type_for_format(
+                            _channel_format_to_override(sock.format))
                     self.outputs.new(out_type, label)
                     meta[i] = (sock.name, out_type)
                 self._ts_output_meta = meta
@@ -149,7 +174,7 @@ def generate_node_classes(core_module):
         def make_draw_buttons(p_names, p_as_socket):
             def draw_buttons_func(self, context, layout):
                 self.draw_error_ui(layout)
-                layout.prop(self, 'format_override', text="")
+                self.draw_format_override_ui(layout)
                 for p_name, is_sock in zip(p_names, p_as_socket):
                     if is_sock:
                         continue  # drawn inline by socket.draw() now

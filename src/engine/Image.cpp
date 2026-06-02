@@ -49,7 +49,7 @@ void Image::destroy(VulkanContext& ctx) {
 
 bool Image::upload_pixels(VulkanContext& ctx, const float* data, uint32_t w, uint32_t h) {
 
-    log_warn("Image::upload_pixels: synchronous path — use ImageUploader for production");
+    log_warn("Image::upload_pixels: synchronous path -- use ImageUploader for production");
     if (width_ != w || height_ != h || image_ == VK_NULL_HANDLE) {
         destroy(ctx);
         if (!create(ctx, w, h, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {

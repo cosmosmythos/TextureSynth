@@ -87,6 +87,7 @@ class TextureSynthNode(bpy.types.Node):
         return int(h[:16], 16)
 
     ts_category: str = 'INPUT'
+    supports_format_override: bool = False
 
     # Stored output socket metadata — populated by factory.py's init.
     # Maps socket_index -> (original_name, original_type).
@@ -121,6 +122,8 @@ class TextureSynthNode(bpy.types.Node):
         Called automatically when the format_override EnumProperty changes.
         Preserves links on each socket by index.
         """
+        if not getattr(self, 'supports_format_override', False):
+            return
         from .tree import socket_type_for_format, replace_socket
 
         fmt = getattr(self, 'format_override', 'DEFAULT')
@@ -137,8 +140,15 @@ class TextureSynthNode(bpy.types.Node):
     def get_format_override(self):
         """Return ChannelFormat enum value for engine."""
         from .tree import FORMAT_CHANNEL_MAP, _get_channel_format
+        if not getattr(self, 'supports_format_override', False):
+            return _get_channel_format().RGBA
         fmt = getattr(self, 'format_override', 'DEFAULT')
         getter = FORMAT_CHANNEL_MAP.get(fmt)
         if getter:
             return getter()
         return _get_channel_format().RGBA
+
+    def draw_format_override_ui(self, layout):
+        """Draw format override only for nodes where it is meaningful."""
+        if getattr(self, 'supports_format_override', False):
+            layout.prop(self, 'format_override', text="")

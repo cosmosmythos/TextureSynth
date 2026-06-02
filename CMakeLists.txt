@@ -38,7 +38,6 @@ add_library(engine STATIC
     src/engine/AsyncReadback.cpp
     src/engine/ImageUploader.cpp
     src/engine/BindlessTable.cpp
-    src/engine/ImageUploader.cpp
 )
 target_include_directories(engine PUBLIC src)
 target_link_libraries(engine PUBLIC

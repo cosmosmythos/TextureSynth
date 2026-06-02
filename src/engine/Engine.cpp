@@ -987,7 +987,7 @@ void Engine::update_node_params_by_name(NodeId node_id,
         if (!known.count(k)) {
             log_warn("update_node_params_by_name: node " + std::to_string(node_id)
                    + " (type '" + type->id + "') has no param named '" + k
-                   + "' — ignoring.");
+                   + "' -- ignoring.");
         }
     }
 
@@ -1000,7 +1000,7 @@ void Engine::update_node_params_by_name(NodeId node_id,
             log_warn("update_node_params_by_name: slot " + std::to_string(slot)
                    + " out of range for param '" + type->params[i].name
                    + "' on node " + std::to_string(node_id)
-                   + " — DROPPED (bug: GraphCompiler should have rejected this graph).");
+                   + " -- DROPPED (bug: GraphCompiler should have rejected this graph).");
             continue;
         }
         dst[slot] = found->second;
