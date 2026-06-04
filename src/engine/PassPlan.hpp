@@ -66,10 +66,18 @@ struct Chain {
     uint32_t              total_inputs   = 0;   // sum across nodes (descriptor layout)
     uint32_t              total_outputs  = 1;   // 1 in Phase 1; multi-output nodes are barriers (singleton chains)
     uint32_t              total_params   = 0;   // sum across nodes (SSBO slice width)
+    // Stage 4.2: # of pc.in_sampled_slots[] indices this chain's shader
+    // consumes (= max slot index used + 1). 0 for source-only chains.
+    // Populated by GraphCompiler from chain_shader::Result::external_inputs.
+    uint32_t              external_inputs = 0;
 
     // Filled by Stage 4 (emit_chain_shader). Empty for singleton or
     // oversized chains; the runtime then falls back to the per-node path.
     std::string           glsl;
+
+    // Filled by Stage 5 (FusedVariantKey). The cache lookup in Stage 6
+    // uses this key; per-node ShaderVariantKey is used for the fallback path.
+    FusedVariantKey       variant_key;
 
     // Filled by Stage 5 (FusedVariantKey). Empty for now; the cache
     // lookup uses the per-node key until Stage 5 lands.

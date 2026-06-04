@@ -6,17 +6,30 @@
 
 namespace te {
 
+using ChainId = uint32_t;   // NodeId is defined in Graph.hpp
+
 // Owns the "which passes need to run this frame" decision.
 // Decoupled from PassPlan so unit-testable.
 class DirtySet {
 public:
     void mark_node(uint64_t node_id) {
-        dirty_nodes_.insert(node_id);
+        const bool was_new = dirty_nodes_.insert(node_id).second;
+        if (!was_new) return;
+        // Invalidate every chain that contains this node.
+        for (auto& kv : chain_members_) {
+            for (NodeId n : kv.second) {
+                if (n == node_id) {
+                    chain_dirty_cache_.erase(kv.first);
+                    break;
+                }
+            }
+        }
     }
 
     void mark_topology_change() {
         dirty_nodes_.clear();
         all_dirty_ = true;
+        chain_dirty_cache_.clear();
     }
 
     // Expand dirty set to include all downstream consumers of marked nodes.
@@ -34,7 +47,7 @@ public:
             if (it == downstream.end()) continue;
             for (uint64_t nxt : it->second) {
                 if (visited.insert(nxt).second) {
-                    dirty_nodes_.insert(nxt);
+                    mark_node(nxt);  // routes through mark_node so chain cache invalidates
                     queue.push_back(nxt);
                 }
             }
@@ -45,11 +58,43 @@ public:
         return all_dirty_ || dirty_nodes_.count(node_id) > 0;
     }
 
+    // Stage 6: chain-level dirty query. True iff the chain is unknown
+    // (conservative), all_dirty_, or any member is in dirty_nodes_.
+    // Cached per chain id; the cache is invalidated in mark_node,
+    // mark_topology_change, clear, and set_chain_membership.
+    bool is_chain_dirty(ChainId c) const {
+        if (all_dirty_) return true;
+        auto cit = chain_dirty_cache_.find(c);
+        if (cit != chain_dirty_cache_.end()) return cit->second;
+        auto it = chain_members_.find(c);
+        if (it == chain_members_.end()) {
+            chain_dirty_cache_[c] = true;   // unknown -> run it
+            return true;
+        }
+        for (NodeId n : it->second) {
+            if (dirty_nodes_.count(n) > 0) {
+                chain_dirty_cache_[c] = true;
+                return true;
+            }
+        }
+        chain_dirty_cache_[c] = false;
+        return false;
+    }
+
     bool any() const { return all_dirty_ || !dirty_nodes_.empty(); }
 
     void clear() {
         dirty_nodes_.clear();
         all_dirty_ = false;
+        chain_dirty_cache_.clear();
+    }
+
+    // Stage 6: set the chain membership (called once per graph compile).
+    // Note: does NOT reset all_dirty_ -- topology changes go through
+    // mark_topology_change(). The membership is just a lookup table.
+    void set_chain_membership(std::unordered_map<ChainId, std::vector<NodeId>> m) {
+        chain_members_ = std::move(m);
+        chain_dirty_cache_.clear();
     }
 
     const std::unordered_set<uint64_t>& nodes() const { return dirty_nodes_; }
@@ -57,6 +102,10 @@ public:
 private:
     std::unordered_set<uint64_t> dirty_nodes_;
     bool all_dirty_ = true;  // first frame
+
+    // Stage 6: chain membership + per-chain dirty cache.
+    std::unordered_map<ChainId, std::vector<NodeId>> chain_members_;
+    mutable std::unordered_map<ChainId, bool> chain_dirty_cache_;
 };
 
 } // namespace te

@@ -252,3 +252,289 @@ TEST(Engine, BypassedNodeOutputIsClearedToZero) {
 
     engine.shutdown();
 }
+
+// Stage 6: chain dispatch — [perlin, invert] is a valid 2-node chain.
+// A single submit must issue EXACTLY ONE vkCmdDispatch, not two
+// (per-pass path would issue 2: perlin + invert).
+TEST(Engine, ChainDispatch_OneDispatchPerChain) {
+    te::Engine engine;
+    bool ok = engine.init(VK_NULL_HANDLE, nullptr, 0, /*validation*/ true,
+                          "test_shader_cache_chain_one",
+                          find_test_nodes_dir().c_str(),
+                          find_test_glsl_dir().c_str());
+    if (!ok) GTEST_SKIP() << "Engine init failed: " << engine.last_error();
+
+    te::Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "invert"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    uint64_t gen = engine.set_graph(g);
+    if (gen == 0) {
+        engine.shutdown();
+        GTEST_SKIP() << "set_graph failed: " << engine.last_error();
+    }
+    for (int i = 0; i < 200 && !engine.has_pipeline(); ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(engine.has_pipeline()) << "compile timed out";
+
+    te::PushConstants pc{};
+    pc.resolution_x = 64; pc.resolution_y = 64;
+    pc.seed = 1; pc.time = 0.0f;
+
+    uint64_t t = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+    ASSERT_NE(t, 0u);
+    std::vector<float> pixels;
+    uint32_t w = 0, h = 0; uint64_t og = 0;
+    for (int i = 0; i < 200; ++i) {
+        if (engine.async_readback().poll(engine.ctx(), pixels, w, h, og)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_FALSE(pixels.empty());
+    const uint64_t dispatches = engine.last_dispatch_count();
+    EXPECT_EQ(dispatches, 1u) << "chain frame 1 should be 1 dispatch, not 2";
+
+    // perlin output is non-zero on most pixels -> confirms chain produced real image
+    bool any_nonzero = false;
+    for (float v : pixels) {
+        if (v != 0.0f) { any_nonzero = true; break; }
+    }
+    EXPECT_TRUE(any_nonzero) << "chain shader produced an all-zero image";
+
+    engine.shutdown();
+}
+
+// Stage 6: param change to one member of a chain must fire the chain
+// dispatch (not 2 per-pass dispatches).
+TEST(Engine, ChainDispatch_ParamUpdateFiresOneChain) {
+    te::Engine engine;
+    bool ok = engine.init(VK_NULL_HANDLE, nullptr, 0, /*validation*/ true,
+                          "test_shader_cache_chain_param",
+                          find_test_nodes_dir().c_str(),
+                          find_test_glsl_dir().c_str());
+    if (!ok) GTEST_SKIP() << "Engine init failed: " << engine.last_error();
+
+    te::Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "invert"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    uint64_t gen = engine.set_graph(g);
+    if (gen == 0) {
+        engine.shutdown();
+        GTEST_SKIP() << "set_graph failed: " << engine.last_error();
+    }
+    for (int i = 0; i < 200 && !engine.has_pipeline(); ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(engine.has_pipeline());
+
+    te::PushConstants pc{};
+    pc.resolution_x = 64; pc.resolution_y = 64;
+    pc.seed = 1; pc.time = 0.0f;
+
+    // Frame 1: defaults
+    uint64_t t1 = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+    ASSERT_NE(t1, 0u);
+    std::vector<float> p1;
+    uint32_t w1=0,h1=0; uint64_t og1=0;
+    for (int i = 0; i < 200; ++i) {
+        if (engine.async_readback().poll(engine.ctx(), p1, w1, h1, og1)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_FALSE(p1.empty());
+    const uint64_t dispatches_after_f1 = engine.last_dispatch_count();
+    EXPECT_EQ(dispatches_after_f1, 1u) << "chain frame 1 should be 1 dispatch";
+
+    // Change perlin's seed -> different pixels, still 1 dispatch.
+    std::unordered_map<std::string, float> kv{
+        {"period", 8.0f}, {"octaves", 5.0f}, {"lacunarity", 2.0f},
+        {"gain", 0.5f},   {"offsetX", 0.0f}, {"offsetY", 0.0f},
+        {"speed", 0.0f},  {"seed", 1234.0f},
+    };
+    engine.update_node_params_by_name(1, kv);
+
+    uint64_t t2 = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+    ASSERT_NE(t2, 0u);
+    std::vector<float> p2;
+    uint32_t w2=0,h2=0; uint64_t og2=0;
+    for (int i = 0; i < 200; ++i) {
+        if (engine.async_readback().poll(engine.ctx(), p2, w2, h2, og2)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_FALSE(p2.empty());
+    bool any_diff = false;
+    for (size_t i = 0; i < p1.size(); ++i) {
+        if (p1[i] != p2[i]) { any_diff = true; break; }
+    }
+    EXPECT_TRUE(any_diff) << "param change should produce different pixels";
+    EXPECT_EQ(engine.last_dispatch_count(), 1u)
+        << "param change must fire 1 chain dispatch, not "
+        << engine.last_dispatch_count();
+
+    engine.shutdown();
+}
+
+// Stage 6: bypassed perlin in [perlin, invert] chain -> chain is bypassed
+// and its final output must be cleared to zero (per existing BypassedNode contract).
+TEST(Engine, ChainDispatch_BypassedChainClearsMembers) {
+    te::Engine engine;
+    bool ok = engine.init(VK_NULL_HANDLE, nullptr, 0, /*validation*/ true,
+                          "test_shader_cache_chain_bypass",
+                          find_test_nodes_dir().c_str(),
+                          find_test_glsl_dir().c_str());
+    if (!ok) GTEST_SKIP() << "Engine init failed: " << engine.last_error();
+
+    te::Graph g;
+    te::NodeInstance perlin;
+    perlin.id = 1;
+    perlin.type_id = "perlin";
+    perlin.bypassed = true;
+    g.nodes.push_back(perlin);
+    te::NodeInstance invert;
+    invert.id = 2;
+    invert.type_id = "invert";
+    g.nodes.push_back(invert);
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    uint64_t gen = engine.set_graph(g);
+    if (gen == 0) {
+        engine.shutdown();
+        GTEST_SKIP() << "set_graph failed: " << engine.last_error();
+    }
+    for (int i = 0; i < 200 && !engine.has_pipeline(); ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(engine.has_pipeline());
+
+    te::PushConstants pc{};
+    pc.resolution_x = 64; pc.resolution_y = 64;
+    pc.seed = 1; pc.time = 0.0f;
+
+    uint64_t t = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+    ASSERT_NE(t, 0u);
+    std::vector<float> pixels;
+    uint32_t w = 0, h = 0; uint64_t og = 0;
+    for (int i = 0; i < 200; ++i) {
+        if (engine.async_readback().poll(engine.ctx(), pixels, w, h, og)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_FALSE(pixels.empty());
+    bool all_zero = true;
+    for (float v : pixels) {
+        if (v != 0.0f) { all_zero = false; break; }
+    }
+    EXPECT_TRUE(all_zero) << "bypassed chain must clear all member outputs";
+
+    engine.shutdown();
+}
+
+// Stage 9: set_active_node must switch the preview source. With perlin -> invert,
+// the engine is asked to render node 1 (perlin) instead of node 2 (invert).
+// Both frames produce non-zero pixels, but the perlin frame and the invert
+// frame differ (invert inverts brightness), proving the dispatch source
+// changed and the engine is not just rendering the same chain twice.
+TEST(Engine, SetActiveNodeSwitchesPreviewSource) {
+    te::Engine engine;
+    bool ok = engine.init(VK_NULL_HANDLE, nullptr, 0, /*validation*/ true,
+                          "test_shader_cache_active_node",
+                          find_test_nodes_dir().c_str(),
+                          find_test_glsl_dir().c_str());
+    if (!ok) GTEST_SKIP() << "Engine init failed: " << engine.last_error();
+
+    te::Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "invert"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    uint64_t gen = engine.set_graph(g);
+    if (gen == 0) { engine.shutdown(); GTEST_SKIP() << "set_graph: " << engine.last_error(); }
+    for (int i = 0; i < 200 && !engine.has_pipeline(); ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(engine.has_pipeline());
+
+    te::Engine::BakedImage active_invert = engine.readback_sync();
+    ASSERT_FALSE(active_invert.pixels.empty());
+
+    uint64_t gen_perlin = engine.set_active_node(1);
+    ASSERT_NE(gen_perlin, 0u) << "set_active_node failed: " << engine.last_error();
+    for (int i = 0; i < 200 && !engine.has_pipeline(); ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(engine.has_pipeline());
+
+    te::Engine::BakedImage active_perlin = engine.readback_sync();
+    ASSERT_FALSE(active_perlin.pixels.empty());
+    ASSERT_EQ(active_invert.pixels.size(), active_perlin.pixels.size());
+
+    bool any_diff = false;
+    for (size_t i = 0; i < active_invert.pixels.size(); ++i) {
+        if (active_invert.pixels[i] != active_perlin.pixels[i]) {
+            any_diff = true; break;
+        }
+    }
+    EXPECT_TRUE(any_diff)
+        << "perlin output and invert(perlin) output must differ";
+
+    engine.shutdown();
+}
+
+// Stage 9: bake() iterates Graph::output_targets and returns one BakedImage
+// per target, each named. The engine's active node is restored after bake.
+TEST(Engine, BakeReturnsOneImagePerTarget) {
+    te::Engine engine;
+    bool ok = engine.init(VK_NULL_HANDLE, nullptr, 0, /*validation*/ true,
+                          "test_shader_cache_bake",
+                          find_test_nodes_dir().c_str(),
+                          find_test_glsl_dir().c_str());
+    if (!ok) GTEST_SKIP() << "Engine init failed: " << engine.last_error();
+
+    te::Graph g;
+    g.nodes.push_back({1, "perlin"});
+    te::NodeInstance inv;
+    inv.id = 2; inv.type_id = "invert";
+    g.nodes.push_back(inv);
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 1;
+    g.output_targets.push_back({1, "Base Color"});
+    g.output_targets.push_back({2, "Inverted"});
+
+    uint64_t gen = engine.set_graph(g);
+    if (gen == 0) { engine.shutdown(); GTEST_SKIP() << "set_graph: " << engine.last_error(); }
+    for (int i = 0; i < 200 && !engine.has_pipeline(); ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(engine.has_pipeline());
+
+    auto bakes = engine.bake();
+    ASSERT_EQ(bakes.size(), 2u);
+    EXPECT_EQ(bakes[0].name, "Base Color");
+    EXPECT_EQ(bakes[1].name, "Inverted");
+    EXPECT_FALSE(bakes[0].pixels.empty());
+    EXPECT_FALSE(bakes[1].pixels.empty());
+    EXPECT_EQ(bakes[0].width,  bakes[1].width);
+    EXPECT_EQ(bakes[0].height, bakes[1].height);
+
+    bool any_diff = false;
+    for (size_t i = 0; i < bakes[0].pixels.size(); ++i) {
+        if (bakes[0].pixels[i] != bakes[1].pixels[i]) { any_diff = true; break; }
+    }
+    EXPECT_TRUE(any_diff) << "Base Color and Inverted must differ";
+
+    EXPECT_EQ(engine.current_graph().output_node, 1u)
+        << "bake must restore the original active node";
+
+    engine.shutdown();
+}

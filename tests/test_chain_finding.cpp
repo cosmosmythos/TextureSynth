@@ -746,3 +746,56 @@ TEST(ChainFinding, FuzzEveryNodeCoveredUnderCap) {
         }
     }
 }
+
+// ===========================================================================
+// STAGE 4.2: Multi-input node with one in-graph predecessor
+//
+// A PurePixel node with N input sockets where:
+//   - exactly ONE socket is connected to a chain predecessor
+//   - the other N-1 sockets are unconnected
+// has in_degree=1 in the graph (the chain finder counts only
+// dst_socket==0 edges; for a multi-input node with 1 connection, the
+// 1 connection is at socket 0, so in_degree=1).
+//
+// Such a node is NOT a barrier (in_degree=1 is below the >1 fan-in
+// threshold) and is chainable. Stage 4.2 lifts the emitter's previous
+// "multi-input rejected" rule to make this case work end-to-end.
+// ===========================================================================
+
+TEST(ChainFinding, MultiInputNodeJoinsChain) {
+    // source(1) -> blend(2). blend has 2 inputs; .a = source, .b
+    // is unconnected. Expected: ONE chain [source, blend] (not two
+    // singletons, and not a barrier for blend).
+    auto lib = make_lib();
+    lib.add_public(make_type("blend", 2, 1, 0, PassKind::PurePixel));
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "blend"});
+    g.connections.push_back({1, 0, 2, 0});   // source -> blend.a
+    // blend.b is unconnected
+    g.output_node = 2;
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    auto chains = find_chains(r.ir, lib);
+    ASSERT_EQ(chains.size(), 1u)
+        << "Multi-input node with one in-graph predecessor should join the chain";
+    EXPECT_EQ(chains[0].nodes, (std::vector<NodeId>{1, 2}));
+    // And the vertex-disjoint cover invariant still holds.
+    EXPECT_TRUE(check_vertex_disjoint_cover(chains, r.ir));
+}
+
+TEST(ChainFinding, MultiInputHeadIsSingleton) {
+    // blend(2) is the head: both inputs are unconnected, no in-graph
+    // predecessor. Expected: ONE chain [blend] (singleton). The chain
+    // shader will fetch both inputs from pc.in_sampled_slots[].
+    auto lib = make_lib();
+    lib.add_public(make_type("blend", 2, 1, 0, PassKind::PurePixel));
+    Graph g;
+    g.nodes.push_back({1, "blend"});
+    g.output_node = 1;
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    auto chains = find_chains(r.ir, lib);
+    ASSERT_EQ(chains.size(), 1u);
+    EXPECT_EQ(chains[0].nodes, (std::vector<NodeId>{1}));
+}

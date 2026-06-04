@@ -193,14 +193,18 @@ def _build_graph_and_params(tree):
         # node.name is the Blender user-visible label ("Perlin Noise.001");
         # pass it as debug_name so engine logs and error messages refer to the
         # operator's actual node, not "perlin_42".
-        # mute (bpy.types.Node.mute) maps to the engine's bypassed flag: both
-        # mean "node body is disabled, output becomes zero". The engine's
-        # muted flag (rewire to input[0]) is a distinct concept not exposed
-        # in Blender and stays False here.
+        # Mute semantics: Blender's Node.mute means "remove this node from the
+        # graph; downstream reads this node's input[0] source" (the "Mute"
+        # convention in Blender's Compositor/Shader editor). The engine
+        # `muted` flag implements that: validator rewires connections
+        # around muted nodes so downstream gets the upstream value.
+        # Engine `bypassed` is a different concept (output goes to zero) and
+        # is not currently exposed in Blender. Setting it to False here.
+        is_muted = bool(getattr(node, 'mute', False))
         graph.add_node(
             nid, node.sv_type, fmt_override, node.name,
-            muted=False,
-            bypassed=bool(getattr(node, 'mute', False)),
+            muted=is_muted,
+            bypassed=False,
         )
 
     # Collect parameters in same topological order
@@ -219,6 +223,24 @@ def _build_graph_and_params(tree):
             node_params.extend(params)
 
     graph.set_output(output_src_id)
+
+    # Add the Output node's named bake targets to the graph. Each target
+    # is (source_node_id, name). The engine's bake() iterates them in
+    # order and produces one BakedImage per target. Rows with empty
+    # source_node are skipped (artist hasn't picked a source yet).
+    for t in (output_node.targets if output_node else []):
+        raw = (getattr(t, "source_node", "") or "").strip()
+        if not raw:
+            # Empty source defaults to the live-preview source — artist
+            # convenience so a newly-added target doesn't need a second
+            # value before the bake is usable.
+            sid = output_src_id
+        else:
+            try:
+                sid = int(raw, 0)
+            except ValueError:
+                continue
+        graph.add_output_target(sid, t.name or "Unnamed")
 
     # Add edges — skip Output marker
     for link in tree.links:
@@ -380,10 +402,10 @@ def _active_subgraph_fingerprint(tree):
     name_to_id, id_to_name = _build_id_maps(tree)
     order, reachable = _get_active_subgraph_topo_order(
         tree, output_node, name_to_id)
-    # node identity: stable_id + sv_type + mute (engine bypassed)
+    # node identity: stable_id + sv_type + mute (engine muted, i.e. rewire)
     # Including mute in the fingerprint ensures a mute-toggle triggers a
-    # topology resubmit. Mute maps to the engine's bypassed flag, which
-    # changes the dispatch path (clear-to-zero vs normal pipeline).
+    # topology resubmit. Mute maps to the engine's `muted` flag, which
+    # changes the dispatch path (rewire-around vs normal pipeline).
     node_part = tuple(
         (nid,
          getattr(_node_by_name(tree, id_to_name.get(nid, '')), 'sv_type', None),
@@ -462,7 +484,8 @@ def submit_graph():
         return 0
 
     res = _get_resolution()
-    engine.set_resolution(res, res)
+    render_res = _get_render_resolution(res)
+    engine.set_resolution(render_res, render_res)
 
     precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
     if precision_str == 'R8':
@@ -538,7 +561,8 @@ def update_params_only(force_submit: bool = False):
         return 'invalid'
 
     res = _get_resolution()
-    engine.set_resolution(res, res)
+    render_res = _get_render_resolution(res)
+    engine.set_resolution(render_res, render_res)
     precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
     engine.set_precision(0 if precision_str == 'R8'
                          else 1 if precision_str == 'R16' else 2)

@@ -13,6 +13,7 @@ using namespace te;
 
 int main() {
     try {
+        std::cerr << "[viewer] init: rdoc\n";
         // RenderDoc capture API: must be initialized BEFORE the Vulkan
         // instance is created, so that when qrenderdoc attaches to this
         // process it can hook the instance creation. If RenderDoc is
@@ -20,6 +21,7 @@ int main() {
         RenderDocCapture rdoc;
         rdoc.init();
 
+        std::cerr << "[viewer] init: window\n";
         Window window;
         if (!window.init(1280, 720, "Texture Engine Viewer")) {
             return -1;
@@ -28,6 +30,7 @@ int main() {
         uint32_t glfw_ext_count = 0;
         const char** glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
 
+        std::cerr << "[viewer] init: engine\n";
         Engine engine;
         // Asset dirs are relative to the working directory the viewer is launched from.
         // Launch from the repo root (the standard way: .\build\Release\viewer.exe) so
@@ -40,11 +43,13 @@ int main() {
 
         VkSurfaceKHR surface = window.create_surface(engine.ctx().instance());
 
+        std::cerr << "[viewer] init: swapchain\n";
         Swapchain swapchain;
         if (!swapchain.init(engine.ctx(), surface, window.width(), window.height())) {
             return -1;
         }
 
+        std::cerr << "[viewer] init: imgui\n";
         ImGuiLayer imgui;
         if (!imgui.init(window, engine.ctx(), swapchain.image_format())) {
             return -1;
@@ -53,6 +58,7 @@ int main() {
         // Hand the capture wrapper to the renderer so it can start/end
         // captures around the command buffer recording when the user
         // clicks "Capture Frame" in the UI.
+        std::cerr << "[viewer] init: renderer\n";
         Renderer renderer;
         if (!renderer.init(engine.ctx(), swapchain, engine, imgui, &rdoc)) {
             return -1;
@@ -78,9 +84,15 @@ int main() {
         // would never finish compiling.
         bool booting_ = true;
         bool initial_compile_submitted_ = false;
+        int frame_count_ = 0;
+        std::cerr << "[viewer] init: enter loop\n";
 
         while (!window.should_close()) {
             window.poll_events();
+            if (frame_count_ < 3) {
+                std::cerr << "[viewer] frame " << frame_count_ << "\n";
+            }
+            frame_count_++;
 
             if (window.was_resized()) {
                 window.wait_events_if_minimized();
@@ -112,6 +124,11 @@ int main() {
             }
 
             engine.tick_retired();
+
+            // Surface the per-frame dispatch count to the UI so the user
+            // can see at a glance whether the engine is actually running
+            // or sitting idle (dirty_set empty -> 0 dispatches).
+            imgui.set_dispatch_count(engine.last_dispatch_count());
         }
 
         vkDeviceWaitIdle(engine.ctx().device());

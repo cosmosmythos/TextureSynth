@@ -57,6 +57,18 @@ struct RetiredPass {
     uint32_t frames_remaining = MAX_FRAMES_IN_FLIGHT + 2;
 };
 
+// Stage 6: per-chain runtime state. The chain's compute pipeline is
+// built once per cache key; the tail pass index gives us the
+// out_storage_slot that the chain's final imageStore writes to
+// (Stage 5.x spec fix: TAIL, not HEAD).
+struct ChainExec {
+    std::unique_ptr<ComputePipeline> pipeline;
+    std::vector<uint32_t>            member_pass_indices;   // into passes_
+    uint32_t                         head_pass_index = 0;
+    uint32_t                         tail_pass_index = 0;   // for out_storage_slots[0]
+    bool                             bypassed        = false;
+};
+
 class Engine {
 public:
     bool init(VkSurfaceKHR surface,
@@ -68,6 +80,33 @@ public:
     void shutdown();
 
     uint64_t set_graph(const Graph& graph);
+
+    // Set the "active" node whose output is shown in the preview. Equivalent
+    // to set_graph() with the same nodes/connections but a different
+    // output_node. Cheap if the cache has the chain shader for the new
+    // output's chain; otherwise the chain shader recompiles.
+    uint64_t set_active_node(NodeId node_id);
+
+    // Bake all named output targets, in declaration order. For each target,
+    // re-targets the engine at target.source_node, dispatches one frame, and
+    // reads back synchronously. Returns raw RGBA float32 pixels (row-major,
+    // length = w*h*4) per target — the host owns the format (Blender fills
+    // bpy.types.Image.pixels, the viewer shows a float texture, a CLI tool
+    // writes EXR/PNG/TIFF with its own codec). If output_targets is empty,
+    // bakes the active node under the name "output". Blocks on the GPU
+    // readback — call from a background thread if needed.
+    struct BakedImage {
+        std::string name;            // matches Graph::OutputTarget::name
+        uint32_t    width  = 0;
+        uint32_t    height = 0;
+        std::vector<float> pixels;   // RGBA32F, row-major
+    };
+    std::vector<BakedImage> bake();
+
+    // Synchronous readback of the current output (one image, the active node).
+    // Lower-level than bake() — callers that want one image without iterating
+    // named targets use this.
+    BakedImage readback_sync();
 
     const NodeLibrary& node_library() const { return node_lib_; }
     const Graph& current_graph() const { return current_graph_; }
@@ -123,6 +162,10 @@ public:
     void record_dispatch(VkCommandBuffer cmd, const PushConstants& pc);
 
     bool has_pipeline() const { return !passes_.empty(); }
+    // Number of vkCmdDispatch issued by the most recent record_dispatch.
+    // 0 means the engine early-exited (no pipeline, or nothing dirty).
+    // Useful for verifying "is the engine actually running?" in the dev viewer.
+    uint64_t last_dispatch_count() const noexcept { return last_dispatch_count_; }
     uint64_t compile_generation()  const { return compile_generation_; }
     uint64_t installed_generation() const { return installed_generation_; }
     bool is_generation_ready(uint64_t generation) const {
@@ -164,6 +207,9 @@ public:
     // where Engine::shutdown could interleave with an in-flight call.
     std::recursive_mutex& entry_mutex() noexcept { return entry_mu_; }
 
+    // Counter updated by record_dispatch.
+    uint64_t last_dispatch_count_ = 0;
+
     GraphRevisionId current_revision() const { return current_revision_; }
     const GraphIR&  current_ir()       const { return current_ir_; }
 
@@ -204,6 +250,17 @@ private:
     void mark_downstream_dirty_(NodeId root);
     void rebuild_downstream_adj_();
 
+    // Stage 6: build ChainExec array + chain_id_of_pass_ + chain
+    // membership table from the PassPlan. Called by both the
+    // cache-hit and compile-finish install paths.
+    void populate_chains_(const PassPlan& plan);
+
+    // Stage 6: dispatch a single chain. Issues the per-chain
+    // vkCmdDispatch + the layout transitions for head inputs and
+    // the tail's output. Bypassed chains become a clear-to-zero pass.
+    void record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
+                                uint32_t gx, uint32_t gy, size_t chain_idx);
+
     // Reverse-construction-order tear-down. Tolerates a not-fully-initialised
     // engine and ignores VK_ERROR_DEVICE_LOST. Used by both Engine::shutdown
     // (normal path) and Engine::init's rollback (after a partial init).
@@ -211,7 +268,16 @@ private:
 
     // Bindless slot assignment for a pass (sampled inputs + storage output).
     void assign_bindless_slots_(PassExec& pe);
-    void release_bindless_slots_(PassExec& pe);
+
+    // Build a ComputePipeline from a SPIR-V blob + variant key. Shared by
+    // the cache-hit and async-compile-finish install paths. On failure,
+    // sets the engine error and returns false.
+    bool create_pass_pipeline_(PassExec& pe,
+                               NodeId node_id,
+                               const std::string& type_id,
+                               const std::string& error_prefix,
+                               const ShaderVariantKey& variant_key,
+                               const std::vector<uint32_t>& spirv);
 
     // Phase 0: single point of truth for failure reporting. Mirrors to the
     // legacy last_error_/failed_node_id_ fields for backward compat and logs.
@@ -234,7 +300,6 @@ private:
     std::vector<PendingUpload> pending_uploads_;
     std::unordered_map<uint64_t, bool> images_needing_acquire_;
 
-    Image& output_() { return *output_storage_; }
     Image           dummy_;
     uint32_t        dummy_sampled_slot_ = BindlessTable::INVALID_SLOT;
 
@@ -266,13 +331,18 @@ private:
     BindlessTable  bindless_;
 
     std::unique_ptr<Image> output_storage_;
-    Image* output_ptr_ = nullptr;
     struct RetiredImage { std::unique_ptr<Image> img; uint32_t frames_remaining; };
     std::vector<RetiredImage> retired_images_;
 
     std::vector<PassExec> passes_;
     std::vector<RetiredPass> retired_passes_;
     ResourceUUID  final_output_resource_ = {};
+
+    // Stage 6: chain executables (one per fused chain in plan.chains).
+    // chain_id_of_pass_[i] gives the chain index for passes_[i], or
+    // UINT32_MAX if the pass is not part of a chain (barrier / singleton).
+    std::vector<ChainExec> chain_execs_;
+    std::vector<uint32_t>   chain_id_of_pass_;
 
     std::unordered_map<uint64_t, std::unique_ptr<Image>> image_registry_;
     VkImageLayout dummy_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -296,6 +366,10 @@ private:
     std::vector<PendingPass> pending_passes_;
     bool                     pending_active_ = false;
     ResourceUUID             pending_final_output_ = {};
+    // Stage 6: the PassPlan whose async compile is in flight (or
+    // just completed). poll_pending_compiles consumes it once the
+    // pass plans are installed.
+    PassPlan                 pending_pass_plan_;
 
     std::unordered_map<NodeId, int> param_base_slot_;
     int total_param_floats_ = 0;
@@ -313,13 +387,11 @@ private:
     // Lifecycle state machine (see public EngineState enum above).
     std::atomic<EngineState> state_{EngineState::Uninitialized};
     std::recursive_mutex     entry_mu_;
-    uint64_t          last_presented_generation_{0};
     std::vector<float> last_presented_pixels_;
     uint32_t           last_presented_w_{0};
     uint32_t           last_presented_h_{0};
 
     DirtySet          dirty_set_;
-    uint64_t          exec_generation_ = 0;
 
     AsyncReadback async_;
 };

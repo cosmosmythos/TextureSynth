@@ -51,6 +51,37 @@ static ShaderVariantKey build_variant_key(const NodeType& type,
 }
 
 
+// Stage 5: FusedVariantKey for a chain. Ordered over the chain's
+// node types so [perlin,invert,grayscale] and [grayscale,invert,perlin]
+// hash to different values. Mirrors build_variant_key: param_socket_mask
+// and input_count per node. feature_flags is the OR-fold across nodes
+// (low 3 bits = max(format_override) seen in the chain; the tail's
+// format drives the chain's actual output).
+static FusedVariantKey build_fused_key(const Chain& chain,
+                                       const GraphIR& ir,
+                                       const NodeLibrary& lib) {
+    FusedVariantKey k;
+    uint32_t fmt_or = 0;
+    for (NodeId n : chain.nodes) {
+        const auto* inst = ir.find(n);
+        const auto* type = inst ? lib.find(inst->type_id) : nullptr;
+        if (!type) continue;
+        k.node_type_ids.push_back(type->id);
+        uint32_t mask = 0;
+        for (uint32_t i = 0; i < type->params.size() && i < 32; ++i) {
+            if (type->params[i].as_socket) mask |= (1u << i);
+        }
+        k.param_socket_masks.push_back(mask);
+        k.input_counts.push_back(static_cast<uint32_t>(type->inputs.size()));
+        if (inst) {
+            fmt_or |= static_cast<uint32_t>(inst->format_override) & 0x7u;
+        }
+    }
+    k.feature_flags = fmt_or;
+    return k;
+}
+
+
 static std::string emit_node_shader(const ValidatedNode& vn,
                                     const NodeType& type,
                                     const ShaderVariantKey& key,
@@ -315,6 +346,8 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
         auto glsl = chain_shader::emit_linear(ch, ir, lib);
         if (glsl.ok()) {
             ch.glsl = std::move(glsl.source);
+            ch.external_inputs = glsl.external_inputs;
+            ch.variant_key = build_fused_key(ch, ir, lib);
         } else {
             log_warn("ChainShaderEmitter: chain ["
                      + [&]{ std::string s; for (auto n : ch.nodes) s += std::to_string(n) + ","; return s; }()

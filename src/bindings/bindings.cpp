@@ -144,6 +144,11 @@ NB_MODULE(texturesynth_core, m) {
         .value("ImageUploadOOM",      EngineErrorCode::ImageUploadOOM)
         .value("ImageReleaseUnknown", EngineErrorCode::ImageReleaseUnknown)
         .value("VulkanCommand",       EngineErrorCode::VulkanCommand)
+        // Stage 9: live preview + bake
+        .value("SubmitFailed",        EngineErrorCode::SubmitFailed)
+        .value("ReadbackFailed",      EngineErrorCode::ReadbackFailed)
+        .value("IoError",             EngineErrorCode::IoError)
+        .value("CompileFailed",       EngineErrorCode::CompileFailed)
         .value("Unknown",             EngineErrorCode::Unknown);
 
     nb::enum_<EnginePhase>(m, "EnginePhase")
@@ -208,6 +213,7 @@ NB_MODULE(texturesynth_core, m) {
 
     nb::class_<Graph>(m, "Graph")
         .def(nb::init<>())
+        .def_rw("output_node", &Graph::output_node)
         .def("add_node",
              [](Graph& g, uint64_t id, const std::string& type,
                 ChannelFormat format_override,
@@ -235,7 +241,14 @@ NB_MODULE(texturesynth_core, m) {
         .def("set_output",
              [](Graph& g, uint64_t id) {
                  g.output_node = id;
-             });
+             })
+        .def("add_output_target",
+             [](Graph& g, uint64_t source_node, const std::string& name) {
+                 g.output_targets.push_back({source_node, name});
+             },
+             "source_node"_a, "name"_a)
+        .def("clear_output_targets",
+             [](Graph& g) { g.output_targets.clear(); });
 
     nb::enum_<SocketType>(m, "SocketType")
         .value("Float",     SocketType::Float)
@@ -303,6 +316,62 @@ NB_MODULE(texturesynth_core, m) {
             return e.set_graph(g);
         })
 
+        // Re-target the preview at a different node. Cheap on cache hit; recompiles
+        // the chain shader only if the new output is in a different chain.
+        .def("set_active_node", [](Engine& e, uint64_t id) -> uint64_t {
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::GraphSubmit);
+            return e.set_active_node(id);
+        })
+
+        // Synchronous readback of the active node's output as a numpy array
+        // (shape = [H, W, 4], dtype = float32, RGBA in [0,1]).
+        .def("readback_sync", [](Engine& e) -> nb::ndarray<nb::numpy, float, nb::shape<-1, -1, 4>> {
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::Submit);
+            Engine::BakedImage img = e.readback_sync();
+            if (img.pixels.empty()) {
+                throw std::runtime_error("readback_sync: " + e.last_error());
+            }
+            const size_t count = static_cast<size_t>(img.height) * img.width * 4;
+            float* data = new float[count];
+            std::memcpy(data, img.pixels.data(), count * sizeof(float));
+            nb::capsule owner(data, [](void* p) noexcept {
+                delete[] static_cast<float*>(p);
+            });
+            size_t shape[3] = { (size_t)img.height, (size_t)img.width, 4 };
+            return nb::ndarray<nb::numpy, float, nb::shape<-1, -1, 4>>(
+                data, 3, shape, owner);
+        })
+
+        // Bake all named Graph::output_targets (or the active node if no
+        // targets). Returns a list of {name, w, h, ndarray(rgba float)}.
+        // The host decides the format (Blender: bpy.data.images; viewer:
+        // float texture; CLI: numpy → EXR/PNG/TIFF).
+        .def("bake", [](Engine& e) {
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::Submit);
+            auto bakes = e.bake();
+            nb::list out;
+            for (const auto& b : bakes) {
+                nb::dict d;
+                d["name"]   = b.name;
+                d["width"]  = b.width;
+                d["height"] = b.height;
+                const size_t count = static_cast<size_t>(b.height) * b.width * 4;
+                float* data = new float[count];
+                std::memcpy(data, b.pixels.data(), count * sizeof(float));
+                nb::capsule owner(data, [](void* p) noexcept {
+                    delete[] static_cast<float*>(p);
+                });
+                size_t shape[3] = { (size_t)b.height, (size_t)b.width, 4 };
+                d["pixels"] = nb::ndarray<nb::numpy, float, nb::shape<-1, -1, 4>>(
+                    data, 3, shape, owner);
+                out.append(d);
+            }
+            return out;
+        })
+
         // Call once per timer tick (main thread). Installs pipeline if compile finished.
         .def("poll_pending_compiles", [](Engine& e) {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
@@ -315,6 +384,7 @@ NB_MODULE(texturesynth_core, m) {
         .def("compile_generation", &Engine::compile_generation)
         .def("installed_generation", &Engine::installed_generation)
         .def("current_revision", &Engine::current_revision)
+        .def("current_graph", &Engine::current_graph, nb::rv_policy::reference)
         .def("resource_count", [](Engine& e) {
             // Count of live per-node images held by ResourceManager.
             // Cheap O(1) via internal map size -- exposed for Python diagnostics.

@@ -57,15 +57,21 @@ using ConnByDst = std::unordered_map<
     return out;
 }
 
-// Validate the chain is linear (Stage 4.1 contract) and build the
-// per-node input-source map.
+// Validate the chain is linear (Stage 4.1 + 4.2 contract) and build
+// the per-node input-source map.
 //
 // A chain is "linear" iff:
-//   - every node has 0 or 1 input sockets (multi-input = Stage 4.2)
-//   - every non-first node's input is the previous node's output
+//   - every node has 0..N input sockets (multi-input supported since 4.2)
 //   - every input is SocketType::Vec4
+//   - for the head (i==0), every input socket is either unconnected or
+//     fed by a node OUTSIDE the chain
+//   - for non-head nodes (i>0):
+//       * socket 0 is fed by the previous chain node's output (Local)
+//       * all other sockets are unconnected OR fed by a node outside
+//         the chain (External)
 //   - the first node's input (if any) comes from outside the chain
-//   - total external inputs <= MAX_PASS_INPUTS (push-constant limit)
+//   - total external inputs across the whole chain <= MAX_PASS_INPUTS
+//     (push-constant slot limit)
 [[nodiscard]] EmitPlan build_emit_plan(const Chain& chain,
                                         const GraphIR& ir,
                                         const NodeLibrary& lib) noexcept {
@@ -96,13 +102,6 @@ using ConnByDst = std::unordered_map<
         ne.param_offset_in_chain = (i < chain.param_offsets.size())
                                   ? chain.param_offsets[i] : 0u;
 
-        // Stage 4.1: at most 1 input socket per node in a linear chain.
-        if (type->inputs.size() > 1) {
-            plan.error = "chain node " + type->id +
-                         " has " + std::to_string(type->inputs.size()) +
-                         " inputs (Stage 4.1 supports only 0 or 1)";
-            return plan;
-        }
         // Non-first node with 0 inputs is a malformed chain (sources are
         // always chain heads, never mid-chain).
         if (i > 0 && type->inputs.empty()) {
@@ -111,47 +110,63 @@ using ConnByDst = std::unordered_map<
             return plan;
         }
 
-        // Resolve the (at most one) input.
-        if (type->inputs.size() == 1) {
-            const auto& sock = type->inputs[0];
+        // Stage 4.2: per-socket input resolution. Each socket s of
+        // node i is resolved to either Local{i-1} (only for socket 0
+        // of non-head nodes fed by the previous chain node) or
+        // External{next_external_slot++} (head, unconnected, or any
+        // mid-chain socket that isn't the predecessor's output).
+        for (uint32_t s = 0; s < type->inputs.size(); ++s) {
+            const auto& sock = type->inputs[s];
             if (sock.type != SocketType::Vec4) {
                 plan.error = "chain node " + type->id +
-                             " input is not Vec4 (Stage 4.1 limitation)";
+                             " socket " + std::to_string(s) +
+                             " is not Vec4 (chain shader limitation)";
                 return plan;
             }
-            // First node: the input is allowed to be unconnected -- that
-            // is the chain's "external sampled image" source (the
-            // texelFetch in main() targets pc.in_sampled_slots[i]).
-            // Non-first nodes MUST be connected to the previous chain node.
+            // Find the connection feeding (id, s), if any.
+            NodeId conn_src = 0;
             const auto it = conns.find(id);
-            const bool unconnected = (it == conns.end() || it->second.empty());
-            if (i > 0 && unconnected) {
-                plan.error = "non-head chain node " + type->id +
-                             " (index " + std::to_string(i) +
-                             ") input is unconnected";
-                return plan;
+            if (it != conns.end()) {
+                for (const auto& pr : it->second) {
+                    if (pr.first == s) { conn_src = pr.second; break; }
+                }
             }
+            const bool connected = (conn_src != 0);
+
             if (i == 0) {
-                if (!unconnected) {
-                    const NodeId src = it->second[0].second;
-                    const auto pos_it = chain_pos.find(src);
-                    if (pos_it != chain_pos.end()) {
-                        plan.error = "first chain node " + type->id +
-                                     " has predecessor in chain (not linear)";
-                        return plan;
-                    }
+                // Head: every socket is external. A connection to a
+                // node inside the chain would violate the chain-finder
+                // contract (heads are by definition the first node).
+                if (connected && chain_pos.count(conn_src)) {
+                    plan.error = "head chain node " + type->id +
+                                 " socket " + std::to_string(s) +
+                                 " fed by node inside the chain";
+                    return plan;
                 }
                 ne.inputs.push_back(External{next_external_slot++});
             } else {
-                const NodeId src = it->second[0].second;
-                const auto pos_it = chain_pos.find(src);
-                if (pos_it == chain_pos.end() || pos_it->second != i - 1) {
+                // Mid-chain: socket 0 fed by predecessor = Local.
+                // Everything else (unconnected, or fed by a node OUTSIDE
+                // the chain) is External. A socket fed by a chain-internal
+                // node that is NOT the predecessor IS a true non-linearity
+                // and must be rejected -- we cannot route to it from a
+                // non-immediate predecessor inside a single fused shader.
+                if (s == 0 && connected
+                    && chain_pos.count(conn_src)
+                    && chain_pos.at(conn_src) == i - 1) {
+                    ne.inputs.push_back(Local{i - 1});
+                } else if (!connected
+                           || !chain_pos.count(conn_src)) {
+                    // Unconnected, or fed by a node outside the chain:
+                    // both become an external sampled-image read.
+                    ne.inputs.push_back(External{next_external_slot++});
+                } else {
                     plan.error = "chain node " + type->id +
                                  " (index " + std::to_string(i) +
-                                 ") input is not the previous chain node";
+                                 ") socket " + std::to_string(s) +
+                                 " has a non-predecessor connection (not linear)";
                     return plan;
                 }
-                ne.inputs.push_back(Local{i - 1});
             }
         }
         plan.nodes.push_back(std::move(ne));
@@ -285,6 +300,27 @@ Result emit_linear(const Chain& chain, const GraphIR& ir,
         }
     }
 
+    // Format post-process: if the tail is format_sensitive (noise
+    // generators) and the instance requested a non-RGBA format, collapse
+    // _local_<last> through one of the _fmt_* helpers before imageStore.
+    // Noise nodes return (noise, grad.x, grad.y, 1); we map that to the
+    // requested output layout.
+    const ValidatedNode* tail_inst =
+        plan.nodes.empty() ? nullptr : ir.find(plan.nodes.back().node_id);
+    const NodeType* tail_type =
+        tail_inst ? lib.find(tail_inst->type_id) : nullptr;
+    const bool tail_needs_format =
+        tail_type && tail_type->is_format_sensitive
+        && tail_inst->format_override != ChannelFormat::RGBA;
+    if (tail_needs_format) {
+        s << "vec4 _fmt_mono(vec4 v)  { return vec4(v.x, 0.0, 0.0, 0.0); }\n"
+             "vec4 _fmt_uv(vec4 v)    { return vec4(v.y, v.z, 0.0, 1.0); }\n"
+             "vec4 _fmt_rgb(vec4 v)   { return vec4(v.xxx, 1.0); }\n"
+             "vec4 _fmt_rgba(vec4 v)  { return v; }\n"
+             "vec4 _fmt_id(vec4 v)    { return v; }\n"
+             "vec4 _fmt_metadata(vec4 v) { return v; }\n\n";
+    }
+
     // Main function: load externals, declare locals, call each node in
     // sequence, imageStore the final local.
     s << "void main() {\n"
@@ -307,6 +343,18 @@ Result emit_linear(const Chain& chain, const GraphIR& ir,
         if (!type) continue;
         emit_node_call(s, ne, *type);
         s << "    _local_" << i << " = _result;\n";
+    }
+
+    // Format post-process on the tail (no-op for non-sensitive tails).
+    if (tail_needs_format) {
+        static const char* fn_for[] = {
+            "_fmt_mono", "_fmt_uv", "_fmt_rgb", "_fmt_rgba",
+            "_fmt_id",   "_fmt_metadata"
+        };
+        const size_t fi = static_cast<size_t>(tail_inst->format_override);
+        const char* fn = (fi < std::size(fn_for)) ? fn_for[fi] : "_fmt_rgba";
+        s << "    _local_" << (plan.nodes.size() - 1) << " = " << fn
+          << "(_local_" << (plan.nodes.size() - 1) << ");\n";
     }
 
     // Final imageStore. The chain's output goes to the storage slot

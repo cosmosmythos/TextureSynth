@@ -19,7 +19,7 @@ def _cpp_log_sink(level, message):
     """Filter installed into the C++ engine. `level` is one of
     '[info]  ', '[warn]  ', '[error] '. Drops events below the
     addon-preference log_level."""
-    lvl = level.strip().lstrip("[]").strip().upper()
+    lvl = level.strip().strip("[]").strip().upper()
     if lvl == "INFO" and not _tslog.is_enabled_for("INFO"):
         return
     if lvl == "WARN" and not _tslog.is_enabled_for("WARNING"):

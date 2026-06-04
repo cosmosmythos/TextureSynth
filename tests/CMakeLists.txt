@@ -15,6 +15,8 @@ add_executable(engine_tests
     test_async_readback.cpp
     test_full_pipeline.cpp
     test_shader_variant_key.cpp
+    test_fused_variant_key.cpp
+    test_dirty_set.cpp
     test_chain_finding.cpp
     test_chain_shader_emitter.cpp
 )

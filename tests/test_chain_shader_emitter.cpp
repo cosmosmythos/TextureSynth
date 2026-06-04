@@ -69,6 +69,33 @@ vec4 node_param(vec2 uv, vec4 in0, float p0, float p1, float p2) {
 }
 )glsl";
 
+// Stage 4.2: 2-input node used to test multi-input mid-chain
+// (source -> blend where blend.a = source, blend.b = external).
+constexpr const char* GLSL_BODY_BLEND = R"glsl(
+vec4 node_blend(vec2 uv, vec4 in0, vec4 in1) {
+    return in0 * 0.5 + in1 * 0.5;
+}
+)glsl";
+
+// Stage 4.2: 8-input node used to test the MAX_PASS_INPUTS budget
+// boundary. All 8 inputs are external; total = 8 == MAX_PASS_INPUTS.
+constexpr const char* GLSL_BODY_WIDE = R"glsl(
+vec4 node_wide(vec2 uv, vec4 i0, vec4 i1, vec4 i2, vec4 i3,
+                          vec4 i4, vec4 i5, vec4 i6, vec4 i7) {
+    return i0 + i1 + i2 + i3 + i4 + i5 + i6 + i7;
+}
+)glsl";
+
+// Stage 5.0: stub noise generator. 0 inputs, 8 params, format_sensitive.
+// The body is intentionally trivial -- the format post-process test only
+// cares about how the emitter wraps the tail's _local, not the noise math.
+constexpr const char* GLSL_BODY_PERLIN = R"glsl(
+vec4 node_perlin(vec2 uv, float p0, float p1, float p2, float p3,
+                              float p4, float p5, float p6, float p7) {
+    return vec4(0.5, 0.5, 0.5, 1.0);
+}
+)glsl";
+
 NodeType make_type(const std::string& id,
                    const std::string& body,
                    uint32_t n_in = 1,
@@ -101,6 +128,16 @@ NodeLibrary make_lib() {
     lib.add_public(make_type("invert",    GLSL_BODY_INVERT,    1, 1, 0));
     lib.add_public(make_type("grayscale", GLSL_BODY_GRAYSCALE, 1, 1, 0));
     lib.add_public(make_type("param",     GLSL_BODY_PARAM,     1, 1, 3));
+    lib.add_public(make_type("blend",     GLSL_BODY_BLEND,     2, 1, 0));
+    lib.add_public(make_type("wide",      GLSL_BODY_WIDE,      8, 1, 0));
+    return lib;
+}
+
+NodeLibrary make_lib_with_perlin() {
+    auto lib = make_lib();
+    NodeType p = make_type("perlin", GLSL_BODY_PERLIN, 0, 1, 8);
+    p.is_format_sensitive = true;
+    lib.add_public(std::move(p));
     return lib;
 }
 
@@ -303,35 +340,46 @@ TEST(ChainEmitter, ParamOffsetsAreEmbeddedAsLiterals) {
 }
 
 TEST(ChainEmitter, NonLinearChainRejected) {
-    // Multi-input node in the chain should be rejected with a
-    // diagnostic that mentions "Stage 4.1".
-    NodeLibrary lib = make_lib();
-    lib.add_public(make_type("mixer", GLSL_BODY_STEP, 2, 1, 0, PassKind::PurePixel));
+    // Stage 4.2 (multi-input chains) lifts the previous "multi-input
+    // rejected" rule. The remaining rejection case is: a mid-chain
+    // node whose socket is fed by a chain-INTERNAL node that is NOT
+    // its immediate predecessor (true non-linearity -- we cannot
+    // route to it from a non-immediate predecessor in a single fused
+    // shader).
+    //
+    // Constructing such a graph directly via Graph::connections is
+    // awkward (the chain finder's forward DFS won't actually produce
+    // this structure for a well-formed input). The closest reachable
+    // case is the fan-in test below: 2 sources feed a 2-input node,
+    // and the chain finder produces 1 chain [source1, blend] (since
+    // in_degree counts only dst_socket==0 edges, blend has in_degree=1)
+    // plus 1 chain [source2] (the second source). The first chain's
+    // blend.socket[1] is fed by source 2, which is OUTSIDE the chain
+    // and therefore becomes an External. emit_linear should succeed.
+    //
+    // This is a regression test that the OLD "multi-input rejected
+    // with Stage 4.1 error" no longer fires.
+    auto lib = make_lib();
     Graph g;
     g.nodes.push_back({1, "source"});
     g.nodes.push_back({2, "source"});
-    g.nodes.push_back({3, "mixer"});   // 2 inputs -- not Stage 4.1 linear
-    g.connections.push_back({1, 0, 3, 0});
-    g.connections.push_back({2, 0, 3, 1});
+    g.nodes.push_back({3, "blend"});
+    g.connections.push_back({1, 0, 3, 0});  // source 1 -> blend.a
+    g.connections.push_back({2, 0, 3, 1});  // source 2 -> blend.b
     g.output_node = 3;
-    // mixer is PurePixel with 2 inputs -- the chain finder will see it
-    // as a barrier (multi-input) and emit it as a singleton chain. The
-    // singleton chain is rejected by emit_linear. So we just need to
-    // confirm: chains[0] is the singleton, and the singleton's glsl is
-    // empty (fallback to per-pass).
     auto f = compile_fixture(g, lib);
     ASSERT_TRUE(f.ok);
-    // Find the chain containing node 3 (the mixer).
+    // Find the chain that contains blend (node 3). It is [1, 3]
+    // because the chain finder walks source 1 forward to blend.
     for (const auto& ch : f.compiled.pass_plan.chains) {
-        if (std::find(ch.nodes.begin(), ch.nodes.end(), (NodeId)3) != ch.nodes.end()) {
-            // Either it's a singleton (mixer-only) or it was rejected.
-            // In both cases, emit_linear should refuse.
-            auto r = chain_shader::emit_linear(ch, f.ir, lib);
-            EXPECT_FALSE(r.ok())
-                << "Multi-input chain should be rejected, got:\n" << r.source;
-            EXPECT_THAT(r.error, HasSubstr("Stage 4.1"));
-            return;
-        }
+        if (std::find(ch.nodes.begin(), ch.nodes.end(), (NodeId)3) == ch.nodes.end()) continue;
+        auto r = chain_shader::emit_linear(ch, f.ir, lib);
+        ASSERT_TRUE(r.ok())
+            << "Multi-input chain should now emit, got error: " << r.error;
+        // 1 external: blend.socket[1] is fed by source 2 (outside
+        // the chain). blend.socket[0] is fed by source 1 (Local).
+        EXPECT_EQ(r.external_inputs, 1u);
+        return;
     }
     FAIL() << "Could not find a chain containing node 3";
 }
@@ -373,6 +421,92 @@ TEST(ChainEmitter, LinearChain_ThreeNodes_OneSource) {
     EXPECT_THAT(result.source, HasSubstr("vec4 _local_1"));
     EXPECT_THAT(result.source, HasSubstr("vec4 _local_2"));
     EXPECT_THAT(result.source, HasSubstr("imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _local_2)"));
+}
+
+// ===========================================================================
+// STAGE 4.2: MULTI-INPUT CHAINS (mux routing)
+//
+// The chain shader must support nodes with N input sockets. For each
+// socket, the emitter routes to one of two sources:
+//   - Local{i-1}  : the previous chain node's output (register-only)
+//   - External{s} : texelFetch(u_sampled[pc.in_sampled_slots[s]], coord, 0)
+//
+// Per-socket resolution rules (see ChainShaderEmitter.cpp:build_emit_plan):
+//   - HEAD (i==0): all sockets are External (head has no predecessor)
+//   - MID  (i>0) : socket 0 fed by predecessor = Local, else External
+//   - Any mid-chain socket fed by a non-predecessor in the chain = error
+// ===========================================================================
+
+TEST(ChainEmitter, MultiInputMidChain_OneExternal) {
+    // source(1) -> blend(2). blend.a = source, blend.b = external.
+    // Chain is [source, blend]. blend has 2 inputs:
+    //   - socket 0: connected to source (in chain, position 0) = Local{0}
+    //   - socket 1: unconnected = External{0}
+    // Total external inputs = 1. main() emits:
+    //   _result = node_blend(uv, _local_0,
+    //                        texelFetch(u_sampled[...slots[0]...], coord, 0));
+    auto lib = make_lib();
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "blend"});
+    // blend.a = source.output[0]
+    g.connections.push_back({1, 0, 2, 0});
+    // blend.b is unconnected
+    g.output_node = 2;
+    auto f = compile_fixture(g, lib);
+    auto ch = get_chain_for_node(f.compiled, 1);
+    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.external_inputs, 1u);
+    // blend's call must have _local_0 as first arg and texelFetch as second
+    EXPECT_THAT(result.source, HasSubstr(
+        "node_blend(uv, _local_0, texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], coord, 0))"));
+    // And the chain's external_inputs field is populated by the compiler
+    EXPECT_EQ(ch.external_inputs, 1u);
+}
+
+TEST(ChainEmitter, MultiInputHead_TwoExternals) {
+    // blend(2) is the chain head. Both inputs are external.
+    // Chain is [blend] singleton. blend has 2 inputs:
+    //   - socket 0: unconnected = External{0}
+    //   - socket 1: unconnected = External{1}
+    // Total external inputs = 2.
+    auto lib = make_lib();
+    Graph g;
+    g.nodes.push_back({1, "blend"});
+    g.output_node = 1;
+    auto f = compile_fixture(g, lib);
+    auto ch = get_chain_for_node(f.compiled, 1);
+    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.external_inputs, 2u);
+    // blend's call must have two texelFetch args (no Local)
+    EXPECT_THAT(result.source, HasSubstr(
+        "node_blend(uv, texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], coord, 0), "
+        "texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots[1])], coord, 0))"));
+    EXPECT_EQ(ch.external_inputs, 2u);
+}
+
+TEST(ChainEmitter, MultiInputMaxInputs_EightExternals) {
+    // wide(8) is the chain head, all 8 inputs external. Sits right at
+    // the MAX_PASS_INPUTS=8 budget. Verifies the emitter doesn't
+    // off-by-one reject the boundary case. (String-shape check; the
+    // matching SPIR-V compile is in ChainEmitterSPIRV.MultiInputMaxInputs.)
+    auto lib = make_lib();
+    Graph g;
+    g.nodes.push_back({1, "wide"});
+    g.output_node = 1;
+    auto f = compile_fixture(g, lib);
+    auto ch = get_chain_for_node(f.compiled, 1);
+    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.external_inputs, 8u);
+    // Verify all 8 slot indices appear in the GLSL.
+    for (uint32_t i = 0; i < 8; ++i) {
+        EXPECT_THAT(result.source, HasSubstr("pc.in_sampled_slots[" + std::to_string(i) + "]"))
+            << "missing slot " << i << " in:\n" << result.source;
+    }
+    EXPECT_EQ(ch.external_inputs, 8u);
 }
 
 // ===========================================================================
@@ -505,4 +639,105 @@ TEST(ChainEmitterSPIRV, ChainWithParams_Compiles) {
                         << "\n--- emitted GLSL ---\n" << ch.glsl;
     // main + node_source + node_param + node_step = 4
     EXPECT_EQ(spv.num_function_defs, 4u);
+}
+
+TEST(ChainEmitterSPIRV, MultiInputMaxInputs_Compiles) {
+    // Stage 4.2: an 8-input node is at the MAX_PASS_INPUTS budget.
+    // The GLSL call signature has 8 texelFetch args; this verifies
+    // shaderc actually accepts that many args in a single call.
+    auto lib = make_lib();
+    Graph g;
+    g.nodes.push_back({1, "wide"});
+    g.output_node = 1;
+    auto f = compile_fixture(g, lib);
+    auto ch = get_chain_for_node(f.compiled, 1);
+    auto spv = compile_to_spirv(ch.glsl);
+    EXPECT_TRUE(spv.ok) << "spv error:\n" << spv.error
+                        << "\n--- emitted GLSL ---\n" << ch.glsl;
+    // main + node_wide = 2
+    EXPECT_EQ(spv.num_function_defs, 2u);
+    EXPECT_EQ(ch.external_inputs, 8u);
+}
+
+// =====================================================================
+// Stage 5.0: format post-process on the chain tail.
+// Perlin is a 0-input format_sensitive source. A format_sensitive node
+// can be a chain TAIL only when it's a singleton chain (its only node
+// is the output). The post-process collapses _local_0 through the
+// helper matching format_override.
+// =====================================================================
+
+TEST(ChainEmitter, FormatPostProcess_AppliesOnSensitiveTail_Mono) {
+    auto lib = make_lib_with_perlin();
+    Graph g;
+    NodeInstance perlin{1, "perlin"};
+    perlin.format_override = ChannelFormat::Mono;
+    g.nodes.push_back(perlin);
+    g.output_node = 1;
+    auto f = compile_fixture(g, lib);
+    ASSERT_TRUE(f.ok) << f.error;
+    auto ch = get_chain_for_node(f.compiled, 1);
+    ASSERT_FALSE(ch.glsl.empty());
+    EXPECT_THAT(ch.glsl, HasSubstr("_fmt_mono("));
+    EXPECT_THAT(ch.glsl, HasSubstr("_local_0 = _fmt_mono(_local_0)"));
+}
+
+TEST(ChainEmitter, FormatPostProcess_AppliesOnSensitiveTail_UV) {
+    auto lib = make_lib_with_perlin();
+    Graph g;
+    NodeInstance perlin{1, "perlin"};
+    perlin.format_override = ChannelFormat::UV;
+    g.nodes.push_back(perlin);
+    g.output_node = 1;
+    auto f = compile_fixture(g, lib);
+    ASSERT_TRUE(f.ok);
+    auto ch = get_chain_for_node(f.compiled, 1);
+    EXPECT_THAT(ch.glsl, HasSubstr("_local_0 = _fmt_uv(_local_0)"));
+}
+
+TEST(ChainEmitter, FormatPostProcess_NotEmittedForRGBAOverride) {
+    // RGBA is the default; no-op helpers, no call emitted.
+    auto lib = make_lib_with_perlin();
+    Graph g;
+    NodeInstance perlin{1, "perlin"};
+    perlin.format_override = ChannelFormat::RGBA;
+    g.nodes.push_back(perlin);
+    g.output_node = 1;
+    auto f = compile_fixture(g, lib);
+    ASSERT_TRUE(f.ok);
+    auto ch = get_chain_for_node(f.compiled, 1);
+    EXPECT_THAT(ch.glsl, Not(HasSubstr("_fmt_mono(")));
+    EXPECT_THAT(ch.glsl, Not(HasSubstr("_fmt_rgb(")));
+}
+
+TEST(ChainEmitter, FormatPostProcess_NotEmittedForNonSensitiveTail) {
+    // invert (non-sensitive) as output -- no helpers, no call.
+    auto lib = make_lib();
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "invert"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+    auto f = compile_fixture(g, lib);
+    ASSERT_TRUE(f.ok);
+    auto ch = get_chain_for_node(f.compiled, 1);
+    EXPECT_THAT(ch.glsl, Not(HasSubstr("_fmt_")));
+}
+
+TEST(ChainEmitterSPIRV, FormatPostProcess_CompilesWithMono) {
+    // End-to-end: chain shader with format post-process compiles to SPIR-V.
+    auto lib = make_lib_with_perlin();
+    Graph g;
+    NodeInstance perlin{1, "perlin"};
+    perlin.format_override = ChannelFormat::Mono;
+    g.nodes.push_back(perlin);
+    g.output_node = 1;
+    auto f = compile_fixture(g, lib);
+    ASSERT_TRUE(f.ok);
+    auto ch = get_chain_for_node(f.compiled, 1);
+    auto spv = compile_to_spirv(ch.glsl);
+    EXPECT_TRUE(spv.ok) << "spv error:\n" << spv.error
+                        << "\n--- emitted GLSL ---\n" << ch.glsl;
+    // main + node_perlin + _fmt_mono = 3
+    EXPECT_EQ(spv.num_function_defs, 3u);
 }

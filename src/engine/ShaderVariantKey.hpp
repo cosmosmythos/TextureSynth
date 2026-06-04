@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <functional>
+#include <vector>
 
 namespace te {
 
@@ -63,11 +64,58 @@ struct ShaderVariantKey {
     }
 };
 
+// Identifies a unique compiled fused-chain shader. Ordered over the
+// chain's node types; different orders hash to different keys.
+//
+// NO specialization[] field — per-node spec constants live on
+// ShaderVariantKey and OR-fold into feature_flags below. Per-pipeline-
+// state and per-dispatch values (sliders, time) are push constants by
+// Vulkan industry consensus and must NEVER be on a cache key.
+//
+// cache key = hash() — but the ShaderCache also writes a .key.json
+// sidecar and re-checks equality on load. FNV-1a over a vector of
+// strings has a higher collision risk than over a single string, so
+// the sidecar is the safety net.
+struct FusedVariantKey {
+    std::vector<std::string> node_type_ids;       // ordered: head first, tail last
+    std::vector<uint32_t>    param_socket_masks;  // per-node, same length as node_type_ids
+    std::vector<uint32_t>    input_counts;        // per-node declared inputs
+    uint32_t                 feature_flags = 0;   // OR-fold across all chain nodes
+                                                 // (low 3 bits = format; high bits reserved)
+    uint64_t                 epoch         = 5;   // distinct from ShaderVariantKey::epoch=4
+                                                 // so the two hash families can't collide
+                                                 // if they ever share a directory.
+
+    bool operator==(const FusedVariantKey& o) const noexcept {
+        return node_type_ids       == o.node_type_ids
+            && param_socket_masks  == o.param_socket_masks
+            && input_counts        == o.input_counts
+            && feature_flags       == o.feature_flags
+            && epoch               == o.epoch;
+    }
+
+    uint64_t hash() const noexcept {
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+        for (const auto& s : node_type_ids)   for (char c : s) mix(static_cast<uint8_t>(c));
+        for (uint32_t m : param_socket_masks) mix(m);
+        for (uint32_t n : input_counts)       mix(n);
+        mix(feature_flags);
+        mix(epoch);
+        return h;
+    }
+};
+
 } // namespace te
 
 namespace std {
 template<> struct hash<te::ShaderVariantKey> {
     size_t operator()(const te::ShaderVariantKey& k) const noexcept {
+        return static_cast<size_t>(k.hash());
+    }
+};
+template<> struct hash<te::FusedVariantKey> {
+    size_t operator()(const te::FusedVariantKey& k) const noexcept {
         return static_cast<size_t>(k.hash());
     }
 };

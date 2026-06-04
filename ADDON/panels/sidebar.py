@@ -42,6 +42,11 @@ class TEXTURESYNTH_PT_sidebar(bpy.types.Panel):
         # Manual update
         layout.operator("texturesynth.update", icon='FILE_REFRESH')
 
+        # Bake the output node's named targets to bpy.data.images.
+        layout.separator()
+        layout.label(text="Bake targets:")
+        layout.operator("texturesynth.bake", icon='RENDER_STILL')
+
 
 classes = (
     TEXTURESYNTH_PT_sidebar,
@@ -54,8 +59,11 @@ def on_precision_update(self, context):
 
 
 def on_proxy_scale_update(self, context):
-    from ..core.evaluation import request_param_update
-    request_param_update()
+    # Proxy scale changes the render resolution, so the engine's image
+    # allocation must be resized — that's a topology-level change, not
+    # just a param re-dispatch.
+    from ..core.evaluation import request_topology_update
+    request_topology_update()
 
 
 def register():

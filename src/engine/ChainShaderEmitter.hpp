@@ -7,18 +7,23 @@
 namespace te::chain_shader {
 
 // ---------------------------------------------------------------------------
-// Stage 4.1: emit GLSL for a LINEAR chain.
+// Stage 4.1 + 4.2: emit GLSL for a LINEAR chain (possibly with
+// multi-input nodes).
 //
-// A "linear" chain (the Stage 4.1 subset) is a sequence of single-input
-// PurePixel nodes where:
-//   - the first node has 0 inputs (source) or 1 input from outside the chain
-//   - every other node has exactly 1 input, which is the previous node's output
-//   - every input is SocketType::Vec4 (no Sampler2D, no Float -- Stage 4.1)
+// A chain in this stage is a sequence of PurePixel nodes where:
+//   - the first node (head) has 0..N input sockets; every socket is
+//     fed by an external sampled image (u_sampled[pc.in_sampled_slots[s]])
+//   - every other node has 1..N input sockets; socket 0 is fed by the
+//     previous chain node's output (Local{i-1}), and any additional
+//     sockets are fed by external sampled images
+//   - every input is SocketType::Vec4 (no Sampler2D, no Float)
+//   - total external inputs across the whole chain <= MAX_PASS_INPUTS
+//     (push-constant slot budget)
 //
 // The result is a single .comp shader that runs all nodes in a single
 // dispatch. The push constant layout matches PassPushConstants so the
 // existing Engine can dispatch chains using the same struct (Stage 6
-// wires the actual vkCmdPushConstants; Stage 4.1 only emits GLSL).
+// wires the actual vkCmdPushConstants; this stage only emits GLSL).
 //
 // Returns Result with ok()=false on any failure: caller should fall back
 // to the per-node path.

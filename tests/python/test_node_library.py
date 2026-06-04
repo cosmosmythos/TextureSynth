@@ -43,11 +43,14 @@ def test_error_code_enum_complete():
     members = {m for m in dir(tc.EngineErrorCode) if not m.startswith("_")}
     expected = {
         "None", "InitFailed", "ShutdownFailed",
+        "InvalidDimensions", "Busy", "DoubleInit", "UseAfterShutdown",
         "GraphValidation", "GraphCompile", "ShaderCompile", "PipelineCreation",
         "NoPipeline", "StaleGeneration", "SubmitRingFull",
         "ParamUnknownNode", "ParamUnknownName",
         "ImageUploadShape", "ImageUploadRingFull", "ImageUploadOOM", "ImageReleaseUnknown",
         "VulkanCommand", "Unknown",
+        # Stage 9: live preview + bake
+        "SubmitFailed", "ReadbackFailed", "IoError", "CompileFailed",
     }
     assert members == expected, f"EngineErrorCode drifted: missing={expected - members}, extra={members - expected}"
 

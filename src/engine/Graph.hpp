@@ -159,7 +159,22 @@ struct Connection {
 struct Graph {
     std::vector<NodeInstance> nodes;
     std::vector<Connection> connections;
-    NodeId output_node = 0;             // which node's output[0] goes to imageStore
+    // The "active" node whose output[0] is shown in the preview / written
+    // to the engine's output_storage_ when the host calls submit(). Clicking
+    // a node in the UI re-submits the graph with that node as active.
+    NodeId output_node = 0;
+    // Named "bake" targets. Each target is a (source_node, name) pair.
+    // The Bake/Export button iterates these, re-targeting the engine at each
+    // one and writing the pixels to a host-side image (Blender's bpy.data.images
+    // for the addon, a .png file for the viewer). When empty, the engine has
+    // only the single preview image and Bake only writes the active node.
+    // Naming matches the Substance PBR-Render convention (Base Color / Normal /
+    // Roughness / Height / ...) but is not constrained to those names.
+    struct OutputTarget {
+        NodeId source_node = 0;        // graph node whose output[0] to render
+        std::string name;              // "Base Color", "Normal", "Height", ...
+    };
+    std::vector<OutputTarget> output_targets;
 };
 
 

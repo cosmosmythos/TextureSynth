@@ -42,6 +42,10 @@ enum class EngineErrorCode : uint32_t {
     NoPipeline,           // submit_render called before has_pipeline()
     StaleGeneration,      // submit_render generation no longer current
     SubmitRingFull,       // AsyncReadback ring exhausted (recoverable, retry)
+    SubmitFailed,         // submit() rejected the work (no slot, no pipeline, etc.)
+    ReadbackFailed,       // poll() never produced pixels within the timeout
+    IoError,              // file/path/mkdir operations (kept for future use)
+    CompileFailed,        // compile never produced a pipeline within the timeout
 
     // Parameter updates
     ParamUnknownNode,     // update_node_params_* called with unknown node id

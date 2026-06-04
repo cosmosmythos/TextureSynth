@@ -131,3 +131,116 @@ is needed; otherwise the first configure will repopulate `_deps/`.
 | Multiple `Engine()` instances crash on Windows (only one VkInstance per process) | Tests use a session-scoped `engine` fixture; create new engines only after `shutdown()` |
 | Python's `tc.PushConstants.seed` is `uint32_t` | Pass `int`, not `float` |
 | C++ test target `engine_tests` is OFF by default | Reconfigure with `-DBUILD_TESTS:BOOL=ON` (the second time, since first cache-write may be ignored) |
+| `bpy.props.IntProperty` is signed int32 and silently truncates `uint64_t` `NodeId` | Store as `StringProperty` hex, convert at use site |
+| Blender `Node.mute` must map to engine `muted` (rewire / pass-through), NOT `bypassed` (output=zero) | `ADDON/core/engine_bridge.py:202-203` — `muted=bool(mute), bypassed=False` |
+
+---
+
+## 🚫 DO NOT create parallel addon structure
+
+**Lesson learned**: this repo already has a complete Blender 4.2+ extension
+at `ADDON/` in the **repo root** (NOT in `src/`). It has its own
+`blender_manifest.toml`, `__init__.py`, `core/`, `nodes/`, `operators/`,
+`panels/`, `utils/`, `wheels/`. **Always `ls ADDON/` first and read
+the existing files before writing any addon-side code.**
+
+Things that already exist and must be REUSED, not rewritten:
+- `ADDON/core/cpp_module.py` — singleton engine loader (DLL paths)
+- `ADDON/core/engine_bridge.py` — the ONLY file that talks to `texturesynth_core`
+- `ADDON/utils/dll_loader.py` — Windows DLL search-path setup
+- `ADDON/operators/update.py` + `connect.py` — the standard operators
+- `ADDON/nodes/base.py::TextureSynthNode.stable_id()` — uint64 ID derivation
+- `ADDON/blender_manifest.toml` — declared at repo root
+
+**If you think you need a new folder like `src/texturesynth_addon/` or
+`src/blender_addon/` — STOP. You are duplicating `ADDON/`.**
+
+---
+
+## 🚫 DO NOT add `wheels = [...]` to source `ADDON/blender_manifest.toml`
+
+**Lesson learned**: the GitHub workflow `.github/workflows/build_texturesynth.yml`
+**dynamically appends** `wheels = [...]` to the manifest at packaging
+time (line 215-216). The source manifest must stay clean so the CI step
+can rewrite it. Hardcoding local paths in the source manifest breaks
+releases and pollutes the file with OS/ABI-specific entries.
+
+The correct workflow:
+1. CI builds the wheel on `windows-latest` for `cp311-cp311` + `cp313-cp313`
+2. CI copies `ADDON/` to a build dir, copies the wheels into `wheels/`,
+   appends `wheels = [...]` to the manifest
+3. CI zips the result into `texturesynth-{version}-windows-x64.zip`
+4. CI creates a GitHub release with the zip
+
+**For local testing**: copy the source `ADDON/` to
+`%APPDATA%\Blender Foundation\Blender\{ver}\extensions\user_default\texturesynth\`
+and install the wheel manually into Blender's bundled Python
+(`<blender>\4.5\python\bin\python.exe -m pip install dist\texturesynth-*.whl`).
+**Note**: install to Blender's site-packages requires write permission to
+`C:\Program Files\...` (or `--user` to user site-packages if Blender's
+`sys.path` includes it). **If the local install path is blocked** (DLL
+load failures, permission errors), do NOT keep fighting it — push to
+GitHub and let CI build the release zip.
+
+---
+
+## 🚫 DO NOT add PNG/file writers to the engine
+
+**Lesson learned**: the engine is a **graph executor**. It produces raw
+float pixels. **The host (Blender / viewer / CLI) owns the file format
+and the file I/O.** Do not link `stb_image_write`, `libpng`, or any
+other image writer into the engine binary.
+
+Why:
+- Industry standard: engines return data, hosts persist data. See
+  Cycles, Eevee, Substance — none of them write PNGs from the renderer.
+- Cross-language: the binding returns an `ndarray` (numpy) and the host
+  writes whatever format the user asked for.
+- Testable: an engine that returns arrays can be unit-tested with
+  pixel-equality assertions. An engine that writes files is impossible
+  to test cleanly.
+
+Concretely: `Engine::bake()` returns `std::vector<BakedImage>` where each
+`BakedImage { name, width, height, std::vector<float> pixels }` (RGBA32F,
+row-major). The Blender `Bake` operator reads these arrays and writes
+them to `bpy.data.images` (`float_buffer=True`).
+
+---
+
+## 🔍 Before writing code: investigate the existing code deeply
+
+**Lesson learned (recurring)**: agents tend to start writing new code
+before understanding what's already there. This has cost real time on
+this project (e.g. creating `src/texturesynth_addon/` when `ADDON/`
+existed at repo root).
+
+Mandatory first steps before any non-trivial edit:
+
+1. **`ls` the relevant directory** — know what already exists
+2. **`grep`** for the symbol/concept you're about to add — see if it's
+   already implemented under a different name
+3. **Read the file you're about to edit** — understand the surrounding
+   imports, the naming conventions, the style
+4. **Check `DEV_LOG/IMPLEMENTATION_PLAN_*/` and `AGENTS.md`** — there's
+   almost always a note about the area you're touching
+5. **Run a parallel `explore` subagent** for unfamiliar code areas —
+   they're cheap and prevent blind edits
+
+If you find that what you wanted to add is already there, USE IT, don't
+re-implement it. If it's close but wrong, FIX IT in place. New folders
+are a code smell — the existing structure was designed intentionally.
+
+---
+
+## Engine architecture invariants (don't break these)
+
+| Invariant | Why |
+|---|---|
+| Engine produces **raw float pixels**, no file I/O | Industry standard, testable, host-owned format |
+| `bake()` returns `vector<BakedImage>`, not paths | Bindings convert to numpy / bpy.data.images |
+| Blender `Node.mute` → engine `muted` (NOT `bypassed`) | `muted` = rewire upstream (pass-through); `bypassed` = output zero (different concept) |
+| `output_node` is the **active/preview source** | The `bpy.context.active_node` (or `Output` node's `Result` input) |
+| `output_targets[]` are **named bake targets** | PBR Render pattern: Base Color / Normal / Roughness / ... |
+| `ShaderCache` sidecar = `<hash>.spv` + `<hash>.spv.key.json` | Cache invalidation requires the FULL FusedVariantKey in the sidecar |
+| `Graph::OutputTarget { NodeId source_node, std::string name }` | Stored in `Graph` so it ships in the submit payload |
+| `Engine::BakedImage { name, w, h, std::vector<float> pixels }` | RGBA32F, row-major, no padding |

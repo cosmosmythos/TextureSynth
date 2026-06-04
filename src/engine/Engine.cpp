@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cmath>
 #include <climits>
+#include <thread>
 #include <unordered_set>
 
 namespace te {
@@ -287,13 +288,18 @@ void Engine::shutdown_internal_() {
 
     for (auto& p : passes_) {
         if (p.pipeline) p.pipeline->destroy(ctx_);
-        release_bindless_slots_(p);
     }
     passes_.clear();
     for (auto& r : retired_passes_) {
         if (r.pipeline) r.pipeline->destroy(ctx_);
     }
     retired_passes_.clear();
+
+    for (auto& ce : chain_execs_) {
+        if (ce.pipeline) ce.pipeline->destroy(ctx_);
+    }
+    chain_execs_.clear();
+    chain_id_of_pass_.clear();
 
     if (dummy_sampled_slot_ != BindlessTable::INVALID_SLOT) {
         dummy_sampled_slot_ = BindlessTable::INVALID_SLOT;
@@ -451,11 +457,29 @@ void Engine::assign_bindless_slots_(PassExec& pe) {
 }
 
 
-void Engine::release_bindless_slots_(PassExec& pe) {
-    // We don't free resource slots here — they're owned by ResourceManager
-    // lifecycle (flushed when ResourceManager::retire_all runs in set_graph).
-    // External image slots are freed in release_image / shutdown.
-    (void)pe;
+bool Engine::create_pass_pipeline_(PassExec& pe,
+                                   NodeId node_id,
+                                   const std::string& type_id,
+                                   const std::string& error_prefix,
+                                   const ShaderVariantKey& variant_key,
+                                   const std::vector<uint32_t>& spirv) {
+    auto pipe = std::make_unique<ComputePipeline>();
+    const std::string pipe_name = "pipe_node_" + std::to_string(node_id) + "_" + type_id;
+    pipe->set_name(pipe_name);
+    // VkSpecializationInfo is non-extensible; value-init only (no sType).
+    VkSpecializationMapEntry entries[8];
+    VkSpecializationInfo     spec{};
+    const VkSpecializationInfo* spec_ptr = build_spec_info(variant_key, entries, spec);
+    if (!pipe->create(ctx_, spirv, bindless_.pipeline_layout(), spec_ptr)) {
+        set_error_(EngineErrorCode::PipelineCreation, error_prefix,
+                   EnginePhase::GraphCompileFinish, node_id);
+        return false;
+    }
+    pe.pipeline = std::move(pipe);
+    ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
+                        (uint64_t)pe.pipeline->pipeline(),
+                        pe.pipeline->name());
+    return true;
 }
 
 
@@ -487,7 +511,6 @@ uint64_t Engine::set_graph(const Graph& graph) {
     rebuild_downstream_adj_();
     any_pass_dirty_.store(true);
     dirty_set_.mark_topology_change();
-    exec_generation_ = 0;
     last_presented_pixels_.clear();
     last_presented_w_ = 0;
     last_presented_h_ = 0;
@@ -574,37 +597,14 @@ uint64_t Engine::set_graph(const Graph& graph) {
             pe.bypassed         = pass.bypassed;
 
             if (pass.kind == PassKind::Dispatch) {
-                // Phase 1c: bypassed passes don't need a compute pipeline —
-                // the executor will clear their output to zero via
-                // vkCmdClearColorImage. We still call assign_bindless_slots_
-                // so downstream passes that read this output can resolve
-                // its bindless slot.
+                // Bypassed passes: no pipeline; executor clears output to zero.
+                // We still assign bindless slots so downstream passes can resolve.
                 if (!pass.bypassed) {
-                    auto pipe = std::make_unique<ComputePipeline>();
-                    const std::string pipe_name =
-                        "pipe_node_" + std::to_string(pass.node_id) + "_" + pass.type_id;
-                    pipe->set_name(pipe_name);
-                    // Specialization constants flow from the variant key. The
-                    // helper returns nullptr for the (today-common) case
-                    // specialization_count == 0, preserving prior behavior.
-                    // Note: VkSpecializationInfo has no sType (non-extensible
-                    // struct per Vulkan spec) — value-initialize only.
-                    VkSpecializationMapEntry entries[8];
-                    VkSpecializationInfo     spec{};
-                    const VkSpecializationInfo* spec_ptr =
-                        build_spec_info(pass.variant_key, entries, spec);
-                    if (!pipe->create(ctx_, cached_spv[i], bindless_.pipeline_layout(), spec_ptr)) {
-                        set_error_(EngineErrorCode::PipelineCreation,
-                                   "pipeline creation failed for node "
-                                   + std::to_string(pass.node_id),
-                                   EnginePhase::GraphCompileFinish,
-                                   pass.node_id);
+                    if (!create_pass_pipeline_(pe, pass.node_id, pass.type_id,
+                            "pipeline creation failed for node " + std::to_string(pass.node_id),
+                            pass.variant_key, cached_spv[i])) {
                         return 0;
                     }
-                    pe.pipeline = std::move(pipe);
-                    ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
-                                        (uint64_t)pe.pipeline->pipeline(),
-                                        pe.pipeline->name());
                 }
                 assign_bindless_slots_(pe);
             }
@@ -612,6 +612,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
         }
         final_output_resource_ = compile_result.pass_plan.final_output_resource;
         installed_generation_  = gen;
+        populate_chains_(compile_result.pass_plan);
         log_info("PassPlan installed (cache hit), passes=" + std::to_string(passes_.size())
                  + " generation=" + std::to_string(gen));
         return gen;
@@ -640,9 +641,103 @@ uint64_t Engine::set_graph(const Graph& graph) {
     pending_active_       = true;
     pending_generation_   = gen;
     pending_final_output_ = compile_result.pass_plan.final_output_resource;
+    pending_pass_plan_    = compile_result.pass_plan;
     log_info("PassPlan compile dispatched, passes=" + std::to_string(pending_passes_.size())
              + " generation=" + std::to_string(gen));
     return gen;
+}
+
+
+uint64_t Engine::set_active_node(NodeId node_id) {
+    if (current_graph_.nodes.empty()) {
+        set_error_(EngineErrorCode::GraphValidation,
+                   "set_active_node called before any set_graph", EnginePhase::GraphSubmit);
+        return 0;
+    }
+    if (node_id == current_graph_.output_node) {
+        return installed_generation_ ? installed_generation_ : pending_generation_;
+    }
+    Graph g = current_graph_;
+    g.output_node = node_id;
+    return set_graph(g);
+}
+
+
+Engine::BakedImage Engine::readback_sync() {
+    BakedImage out;
+    if (current_graph_.nodes.empty()) {
+        set_error_(EngineErrorCode::GraphValidation,
+                   "readback_sync called before any set_graph", EnginePhase::Submit);
+        return out;
+    }
+    if (!has_pipeline()) {
+        for (int i = 0; i < 200 && !has_pipeline(); ++i) {
+            poll_pending_compiles();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (!has_pipeline()) {
+            set_error_(EngineErrorCode::CompileFailed,
+                       "readback_sync: compile timed out", EnginePhase::Submit);
+            return out;
+        }
+    }
+    PushConstants pc{};
+    pc.resolution_x = output_w_;
+    pc.resolution_y = output_h_;
+    pc.seed         = 1;
+    pc.time         = 0.0f;
+
+    async_.drain(ctx_);
+    uint64_t gen = async_.submit(ctx_, *this, pc, installed_generation_);
+    if (gen == 0) {
+        set_error_(EngineErrorCode::SubmitFailed,
+                   "readback_sync: async submit failed", EnginePhase::Submit);
+        return out;
+    }
+    uint64_t og = 0;
+    for (int i = 0; i < 4000; ++i) {
+        if (async_.poll(ctx_, out.pixels, out.width, out.height, og)) return out;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    set_error_(EngineErrorCode::ReadbackFailed,
+               "readback_sync: readback timed out", EnginePhase::Submit);
+    return out;
+}
+
+
+std::vector<Engine::BakedImage> Engine::bake() {
+    std::vector<BakedImage> out;
+    if (current_graph_.nodes.empty()) {
+        set_error_(EngineErrorCode::GraphValidation,
+                   "bake called before any set_graph", EnginePhase::GraphSubmit);
+        return out;
+    }
+
+    struct T { NodeId node; std::string name; };
+    std::vector<T> targets;
+    if (current_graph_.output_targets.empty()) {
+        targets.push_back({current_graph_.output_node, "output"});
+    } else {
+        for (const auto& t : current_graph_.output_targets) {
+            targets.push_back({t.source_node, t.name});
+        }
+    }
+
+    const NodeId original_active = current_graph_.output_node;
+    for (const auto& t : targets) {
+        if (t.node != current_graph_.output_node) {
+            uint64_t g = set_active_node(t.node);
+            if (g == 0) return out;
+        }
+        BakedImage img = readback_sync();
+        if (img.pixels.empty()) return out;
+        img.name = t.name;
+        out.push_back(std::move(img));
+    }
+    if (current_graph_.output_node != original_active) {
+        set_active_node(original_active);
+    }
+    return out;
 }
 
 
@@ -730,10 +825,7 @@ void Engine::poll_pending_compiles() {
 
         if (pp.kind == PassKind::Dispatch) {
             if (pp.bypassed) {
-                // Phase 1c: bypassed pass — no shader, no pipeline. The
-                // executor will clear the output to zero at dispatch time.
-                // We still allocate bindless slots (below) so downstream
-                // passes can resolve this output's slot.
+                // Bypassed: no shader, no pipeline; executor clears to zero.
             } else {
                 CompileResult r = pp.fut.get();
                 if (!r.success) {
@@ -746,29 +838,14 @@ void Engine::poll_pending_compiles() {
                     return;
                 }
                 cache_->store(pp.variant_key, r.spirv);
-                auto pipe = std::make_unique<ComputePipeline>();
-                const std::string pipe_name =
-                    "pipe_node_" + std::to_string(pp.node_id) + "_" + pp.type_id;
-                pipe->set_name(pipe_name);
-                // Specialization constants flow from the variant key. The
-                // helper returns nullptr for the (today-common) case
-                // specialization_count == 0, preserving prior behavior.
-                // Note: VkSpecializationInfo has no sType (non-extensible
-                // struct per Vulkan spec) — value-initialize only.
-                VkSpecializationMapEntry entries[8];
-                VkSpecializationInfo     spec{};
-                const VkSpecializationInfo* spec_ptr =
-                    build_spec_info(pp.variant_key, entries, spec);
-                if (!pipe->create(ctx_, r.spirv, bindless_.pipeline_layout(), spec_ptr)) {
-                    set_error_(EngineErrorCode::PipelineCreation,
-                               "pipeline creation failed for " + pp.name,
-                               EnginePhase::GraphCompileFinish, pp.node_id);
+                if (!create_pass_pipeline_(pe, pp.node_id, pp.type_id,
+                        "pipeline creation failed for " + pp.name,
+                        pp.variant_key, r.spirv)) {
+                    pending_passes_.clear();
+                    pending_active_     = false;
+                    pending_generation_ = 0;
                     return;
                 }
-                pe.pipeline = std::move(pipe);
-                ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
-                                    (uint64_t)pe.pipeline->pipeline(),
-                                    pe.pipeline->name());
             }
             assign_bindless_slots_(pe);
         }
@@ -782,6 +859,8 @@ void Engine::poll_pending_compiles() {
     installed_generation_  = pending_generation_;
     clear_error();
 
+    // Stage 6: build ChainExec from the just-installed plan.
+    populate_chains_(pending_pass_plan_);
     pending_passes_.clear();
     pending_active_     = false;
     pending_generation_ = 0;
@@ -798,6 +877,77 @@ void Engine::retire_all_passes_() {
         });
     }
     passes_.clear();
+}
+
+
+// Stage 6: build chain_id_of_pass_, ChainExec array, and chain
+// membership table from the PassPlan. Called by both the cache-hit
+// and async-compile install paths after passes_ is populated.
+void Engine::populate_chains_(const PassPlan& plan) {
+    chain_execs_.clear();
+    chain_execs_.reserve(plan.chains.size());
+    chain_id_of_pass_.assign(passes_.size(), UINT32_MAX);
+
+    // node_id -> pass index (for head/tail lookup)
+    std::unordered_map<NodeId, uint32_t> pass_idx_by_node;
+    pass_idx_by_node.reserve(plan.passes.size());
+    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
+        pass_idx_by_node[plan.passes[i].node_id] = i;
+    }
+
+    std::unordered_map<ChainId, std::vector<NodeId>> membership;
+    membership.reserve(plan.chains.size());
+
+    for (size_t ci = 0; ci < plan.chains.size(); ++ci) {
+        const auto& ch = plan.chains[ci];
+        ChainExec ce;
+        ce.bypassed = ch.bypassed;
+
+        for (NodeId n : ch.nodes) {
+            auto it = pass_idx_by_node.find(n);
+            if (it == pass_idx_by_node.end()) continue;
+            uint32_t pi = it->second;
+            ce.member_pass_indices.push_back(pi);
+            if (pi < chain_id_of_pass_.size())
+                chain_id_of_pass_[pi] = (uint32_t)ci;
+        }
+        if (!ce.member_pass_indices.empty()) {
+            ce.head_pass_index = ce.member_pass_indices.front();
+            ce.tail_pass_index = ce.member_pass_indices.back();
+        }
+        // Inherit bypass from the chain struct; mirror ComputePass.
+        if (!ch.glsl.empty() && !ch.bypassed) {
+            // Try cache, fall back to sync compile.
+            std::optional<std::vector<uint32_t>> blob;
+            if (cache_) blob = cache_->load(ch.variant_key);
+            if (!blob) {
+                CompileResult r = compiler_.compile_compute_sync(
+                    ch.glsl, "chain_" + std::to_string(ci));
+                if (r.success) {
+                    if (cache_) cache_->store(ch.variant_key, r.spirv);
+                    blob = std::move(r.spirv);
+                } else {
+                    log_warn("chain compile failed: " + r.error_log);
+                }
+            }
+            if (blob) {
+                auto pipe = std::make_unique<ComputePipeline>();
+                const std::string pipe_name = "pipe_chain_" + std::to_string(ci);
+                pipe->set_name(pipe_name);
+                if (pipe->create(ctx_, *blob, bindless_.pipeline_layout(), nullptr)) {
+                    ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
+                                        (uint64_t)pipe->pipeline(), pipe->name());
+                    ce.pipeline = std::move(pipe);
+                } else {
+                    log_warn("chain pipeline creation failed: chain " + std::to_string(ci));
+                }
+            }
+        }
+        chain_execs_.push_back(std::move(ce));
+        membership[(ChainId)ci] = ch.nodes;
+    }
+
+    dirty_set_.set_chain_membership(std::move(membership));
 }
 
 
@@ -822,14 +972,117 @@ void Engine::tick_retired() {
 					if (r.pipeline) r.pipeline->destroy(ctx_);
 					return true;
 				}
-				return false;
-			}),
-		retired_passes_.end());
+ 				return false;
+ 			}),
+ 		retired_passes_.end());
+}
+
+
+// Stage 6: dispatch a single chain. Issues the per-chain vkCmdDispatch
+// + the layout transitions for the head's external inputs and the
+// tail's output. Bypassed chains become a clear-to-zero pass on
+// every member's output.
+void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
+                                    uint32_t gx, uint32_t gy, size_t chain_idx) {
+    if (chain_idx >= chain_execs_.size()) return;
+    const ChainExec& ce = chain_execs_[chain_idx];
+    if (ce.member_pass_indices.empty()) return;
+    const PassExec& head = passes_[ce.head_pass_index];
+    const PassExec& tail = passes_[ce.tail_pass_index];
+
+    // Bypassed chain: clear every member's output to zero.
+    if (ce.bypassed) {
+        VkClearColorValue zero{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        for (uint32_t pi : ce.member_pass_indices) {
+            const PassExec& pe = passes_[pi];
+            for (uint32_t o = 0; o < pe.output_count; ++o) {
+                auto* r = resources_.get(pe.output_resources[o]);
+                if (r) vkCmdClearColorImage(cmd, r->image,
+                                            VK_IMAGE_LAYOUT_GENERAL,
+                                            &zero, 1, &range);
+            }
+        }
+        return;
+    }
+    if (!ce.pipeline) return;   // compile failed; skip silently
+
+    // Transition external inputs to SHADER_READ_ONLY_OPTIMAL.
+    for (const auto& inp : head.input_resources) {
+        if (inp.node_id == 0) continue;
+        auto* src = resources_.get(inp);
+        if (!src) continue;
+        if (src->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+            !dirty_set_.is_dirty(inp.node_id)) continue;
+        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                        | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.image     = src->image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers    = &b;
+        vkCmdPipelineBarrier2(cmd, &dep);
+        src->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    // Transition tail's output to GENERAL.
+    for (uint32_t o = 0; o < tail.output_count; ++o) {
+        auto* r = resources_.get(tail.output_resources[o]);
+        if (!r) continue;
+        if (r->layout != VK_IMAGE_LAYOUT_GENERAL) {
+            VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+            b.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            b.srcAccessMask = 0;
+            b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                            | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+            b.oldLayout     = r->layout;
+            b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+            b.image         = r->image;
+            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers    = &b;
+            vkCmdPipelineBarrier2(cmd, &dep);
+            r->layout = VK_IMAGE_LAYOUT_GENERAL;
+        }
+    }
+
+    // Bind + dispatch.
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ce.pipeline->pipeline());
+    VkDescriptorSet set = bindless_.set();
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            bindless_.pipeline_layout(), 0, 1, &set, 0, nullptr);
+
+    PassPushConstants ppc{};
+    ppc.global           = pc;
+    // Spec: chain's param_base_slot is the head's; param_ring_idx is shared.
+    ppc.param_base_slot  = (uint32_t)head.param_base_slot;
+    ppc.input_count      = head.input_count;
+    for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
+        ppc.in_sampled_slots[k] = head.in_sampled_slots[k];
+    // Spec fix: out_storage_slots[0] comes from the TAIL (who writes the
+    // final imageStore), not the head.
+    for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
+        ppc.out_storage_slots[t] = tail.out_storage_slots[t];
+    ppc.param_ring_idx = param_write_idx_;
+
+    vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(PassPushConstants), &ppc);
+    vkCmdDispatch(cmd, gx, gy, 1);
+    ++last_dispatch_count_;
 }
 
 
 void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
 
+    last_dispatch_count_ = 0;
     if (passes_.empty()) return;
     // Ring rotation: if params were touched since last submit, advance to the
     // next slot and snapshot. NO descriptor rebind — shader picks up via
@@ -850,8 +1103,6 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
 
     // Defensive: if nothing is dirty, skip entirely (submit() should have caught this).
     if (!dirty_set_.any()) return;
-
-    ++exec_generation_;
 
     auto transition = [&](VkImage img,
                           VkImageLayout from, VkImageLayout to,
@@ -945,10 +1196,34 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
     }
 
-    // 4. Incremental dispatch — only dirty passes.
+    // 4. Stage 6: chains first (one dispatch per chain, regardless of
+    //    member count), then non-chain passes. Chain member passes are
+    //    skipped in the per-pass loop via chain_id_of_pass_.
     bool final_pass_was_dirty = false;
+#ifndef TE_FORCE_NO_FUSION
+    for (size_t ci = 0; ci < chain_execs_.size(); ++ci) {
+        if (!dirty_set_.is_chain_dirty((ChainId)ci)) continue;
+        const size_t tail_i = chain_execs_[ci].tail_pass_index;
+        if (tail_i < passes_.size()) {
+            const auto& tail_pe = passes_[tail_i];
+            if (std::find(tail_pe.output_resources.begin(),
+                          tail_pe.output_resources.end(),
+                          final_output_resource_) != tail_pe.output_resources.end()) {
+                final_pass_was_dirty = true;
+            }
+        }
+        record_chain_dispatch_(cmd, pc, gx, gy, ci);
+    }
+#endif
+
+    // 4. Incremental dispatch — only dirty passes.
     for (size_t i = 0; i < passes_.size(); ++i) {
         auto& pe = passes_[i];
+#ifndef TE_FORCE_NO_FUSION
+        // Chain members are dispatched by the chain walk above.
+        if (i < chain_id_of_pass_.size() &&
+            chain_id_of_pass_[i] != UINT32_MAX) continue;
+#endif
         if (!dirty_set_.is_dirty(pe.node_id)) continue;
 
         // Phase 1c: bypassed passes don't read inputs — skip input barriers
@@ -1022,6 +1297,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
                                VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(PassPushConstants), &ppc);
             vkCmdDispatch(cmd, gx, gy, 1);
+            ++last_dispatch_count_;
         }
 
         pe.output_layout_is_general = true;
@@ -1102,11 +1378,10 @@ uint64_t Engine::republish_last_frame(uint64_t generation) {
 
 
 void Engine::stash_last_presented(const std::vector<float>& pixels,
-                                  uint32_t w, uint32_t h, uint64_t generation) {
+                                  uint32_t w, uint32_t h, uint64_t /*generation*/) {
     last_presented_pixels_ = pixels;
     last_presented_w_ = w;
     last_presented_h_ = h;
-    last_presented_generation_ = generation;
 }
 
 

@@ -27,6 +27,13 @@ public:
     // Submit a GLSL compute shader to be compiled off the main thread.
     std::future<CompileResult> compile_compute_async(std::string glsl, std::string name);
 
+    // Synchronous wrapper for the chain path. Chain compile is short
+    // (small SPIR-V, one shader) and runs at set_graph time, so the
+    // thread-pool hop is not worth the bookkeeping.
+    CompileResult compile_compute_sync(std::string glsl, std::string name) {
+        return compile_compute_async(std::move(glsl), std::move(name)).get();
+    }
+
     static uint64_t hash_source(const std::string& s);
 
 private:

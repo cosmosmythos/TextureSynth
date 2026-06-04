@@ -69,7 +69,7 @@ class TS_ColorSocket(bpy.types.NodeSocket):
 
 
 class TS_IntSocket(bpy.types.NodeSocket):
-    """Integer ID output — integer标识 data."""
+    """Integer ID output — integer identifier data."""
     bl_idname = 'TS_IntSocketType'
     bl_label = "ID Socket"
     draw = _make_socket_draw('TS_IntSocketType')
