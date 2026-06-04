@@ -79,6 +79,14 @@ bool ResourceManager::create_image_(VulkanContext& ctx, NodeResource& r,
         log_error("ResourceManager: vmaCreateImage failed for " + dbg);
         return false;
     }
+    ctx.set_debug_name(VK_OBJECT_TYPE_IMAGE, (uint64_t)r.image, dbg);
+    // VMA's own name mechanism. Independent of vkSetDebugUtilsObjectNameEXT
+    // (per VMA docs: "does not automatically set it to the Vulkan buffer or
+    // image"). Populated via vmaGetAllocationInfo(alloc).pName and consumed
+    // by vmaBuildStatsString's JSON dump. Queryable in tests; useful when
+    // the VMA-side allocator is the only handle (e.g. linear sub-allocator
+    // pools that don't expose VkDeviceMemory directly).
+    vmaSetAllocationName(ctx.allocator(), r.alloc, dbg.c_str());
 
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image    = r.image;
@@ -92,6 +100,7 @@ bool ResourceManager::create_image_(VulkanContext& ctx, NodeResource& r,
         r.alloc = nullptr;
         return false;
     }
+    ctx.set_debug_name(VK_OBJECT_TYPE_IMAGE_VIEW, (uint64_t)r.view, dbg + "_view");
     return true;
 }
 
@@ -190,6 +199,94 @@ void ResourceManager::shutdown(VulkanContext& ctx) {
     live_.clear();
     retired_.clear();
     current_bytes_ = 0;
+}
+
+
+VmaStatsReport ResourceManager::get_vma_stats(VulkanContext& ctx) const {
+    VmaStatsReport r;
+    r.node_resource_count      = live_.size();
+    r.node_resource_bytes      = current_bytes_;
+    r.warning_threshold_bytes  = budget_bytes_;
+    r.retired_count            = retired_.size();
+    for (const auto& ret : retired_) {
+        // Re-derive from extents rather than tracking per-retire bytes;
+        // the cost is trivial (retired list is bounded by MAX_FRAMES_IN_FLIGHT+1)
+        // and avoids a separate accumulator.
+        r.retired_bytes += (size_t)ret.res.extent.width
+                         * (size_t)ret.res.extent.height
+                         * pixel_bytes_(ret.res.format);
+    }
+
+    // VMA API: vmaCalculateStatistics takes a VmaTotalStatistics*. The
+    // 'total' field is the rolled-up across all heaps/types. The
+    // per-heap breakdown is in ts.heapStats[heapIndex] (one entry per
+    // VkPhysicalDeviceMemoryProperties::memoryHeapCount).
+    VmaTotalStatistics ts{};
+    vmaCalculateStatistics(ctx.allocator(), &ts);
+    const VmaStatistics& s = ts.total.statistics;
+    r.vma_block_bytes         = (size_t)s.blockBytes;
+    r.vma_allocation_bytes    = (size_t)s.allocationBytes;
+    r.vma_unused_range_bytes  = (size_t)(s.blockBytes - s.allocationBytes);
+
+    // Per-heap budget / usage. vmaGetHeapBudgets fills the array with
+    // real OS-level residency numbers when the allocator was created
+    // with VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT (see
+    // VulkanContext.cpp). Without the flag, VMA falls back to 80% of
+    // heap size -- still a valid number, but not the real VRAM gauge
+    // an artist-facing panel would want.
+    //
+    // Edge cases we handle:
+    //   1. memoryHeapCount == 0 (spec violation, but guard anyway)
+    //   2. Driver returns 0 for budget (VMA itself falls back to the
+    //      80% heuristic -- so this branch is mostly defensive)
+    //   3. usage > budget mid-frame (legal, just clamp pressure)
+    //   4. UMA systems (memoryHeapCount == 1, the single heap has both
+    //      DEVICE_LOCAL and HOST_VISIBLE types; isDeviceLocal is true)
+    const VkPhysicalDeviceMemoryProperties* mem_props = nullptr;
+    vmaGetMemoryProperties(ctx.allocator(), &mem_props);
+    if (mem_props && mem_props->memoryHeapCount > 0) {
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS] = {};
+        vmaGetHeapBudgets(ctx.allocator(), budgets);
+
+        r.heap_stats.reserve(mem_props->memoryHeapCount);
+        for (uint32_t i = 0; i < mem_props->memoryHeapCount; ++i) {
+            const VkMemoryHeap& heap = mem_props->memoryHeaps[i];
+            const VmaBudget&    b    = budgets[i];
+
+            VmaHeapStats h;
+            h.index                = i;
+            h.is_device_local      = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+            h.label                = h.is_device_local ? "DEVICE_LOCAL" : "HOST";
+            h.heap_size_bytes      = (size_t)heap.size;
+            h.budget_bytes         = (size_t)b.budget;
+            h.usage_bytes          = (size_t)b.usage;
+            h.vma_block_bytes      = (size_t)b.statistics.blockBytes;
+            h.vma_allocation_bytes = (size_t)b.statistics.allocationBytes;
+            h.vma_block_count      = b.statistics.blockCount;
+            h.vma_allocation_count = b.statistics.allocationCount;
+
+            // Pressure: usage / budget, clamped 0..1. When budget is 0
+            // (driver didn't populate the budget extension and VMA
+            // returned 0), default to 0 to avoid div-by-zero.
+            if (h.budget_bytes > 0) {
+                h.pressure = (float)double(h.usage_bytes) / (float)double(h.budget_bytes);
+                if (h.pressure < 0.0f) h.pressure = 0.0f;
+                if (h.pressure > 1.0f) h.pressure = 1.0f;
+            }
+
+            if (h.is_device_local) {
+                r.gpu_budget_bytes += h.budget_bytes;
+                r.gpu_usage_bytes  += h.usage_bytes;
+            }
+            r.heap_stats.push_back(h);
+        }
+        if (r.gpu_budget_bytes > 0) {
+            r.gpu_pressure = (float)double(r.gpu_usage_bytes) / (float)double(r.gpu_budget_bytes);
+            if (r.gpu_pressure < 0.0f) r.gpu_pressure = 0.0f;
+            if (r.gpu_pressure > 1.0f) r.gpu_pressure = 1.0f;
+        }
+    }
+    return r;
 }
 
 

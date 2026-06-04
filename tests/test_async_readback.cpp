@@ -3,6 +3,7 @@
 #include "engine/AsyncReadback.hpp"
 #include "engine/Engine.hpp"
 #include "engine/PushConstants.hpp"
+#include "test_assets.hpp"
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -137,8 +138,8 @@ bool init_engine_with_nodes(Engine& e) {
     return e.init(VK_NULL_HANDLE, nullptr, 0,
                   true,
                   "test_shader_cache",
-                  "shader_assets/nodes",
-                  "shader_assets/glsl");
+                  find_test_nodes_dir().c_str(),
+                  find_test_glsl_dir().c_str());
 }
 
 bool build_trivial_graph(const Engine& e, Graph& g_out) {
@@ -409,8 +410,8 @@ bool init_engine_for_lifecycle(Engine& e) {
     return e.init(VK_NULL_HANDLE, nullptr, 0,
                   true,
                   "test_shader_cache",
-                  "shader_assets/nodes",
-                  "shader_assets/glsl");
+                  find_test_nodes_dir().c_str(),
+                  find_test_glsl_dir().c_str());
 }
 
 } // namespace

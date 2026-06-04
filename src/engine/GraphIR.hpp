@@ -35,6 +35,10 @@ struct ValidatedNode {
     // remain so the compiler can emit a clear pass for them.
     bool muted    = false;
     bool bypassed = false;
+    // Stage 2: mirror of NodeType::pass_kind, copied by validate_graph
+    // when populating the IR. Source of truth is NodeType (type-level
+    // classification, not a per-instance override).
+    PassKind pass_kind = PassKind::PurePixel;
 };
 
 struct ValidatedConnection {

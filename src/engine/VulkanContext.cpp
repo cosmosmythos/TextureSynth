@@ -105,7 +105,19 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
 
     // ── VMA ────────────────────────────────────────────────────────
     VmaAllocatorCreateInfo aci{};
-    aci.flags            = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    // VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT: needed for vkCmdDispatch
+    //   indirect-address descriptor access (compute's storage buffer reads).
+    // VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT: without this, vmaGetHeapBudgets
+    //   returns a static 80%-of-heap-size estimate instead of the real OS-level
+    //   residency budget (DXGI on Windows, etc.). With it, VMA queries
+    //   VkPhysicalDeviceMemoryBudgetPropertiesEXT and returns actual VRAM
+    //   usage/limit. Required for the per-heap memory telemetry exposed
+    //   via ResourceManager::get_vma_stats() and the future artist-facing
+    //   "VRAM usage" panel. Requires VK_KHR_get_physical_device_properties2
+    //   at instance level (core in Vulkan 1.1+, so no extra work for us
+    //   on API 1.3).
+    aci.flags            = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
+                         | VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     aci.physicalDevice   = physical_device_;
     aci.device           = device_;
     aci.instance         = instance_;
@@ -119,6 +131,19 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
     if (vkCreatePipelineCache(device_, &pcci, nullptr, &pipeline_cache_) != VK_SUCCESS) {
         log_warn("VkPipelineCache creation failed; pipelines will recompile cold");
         pipeline_cache_ = VK_NULL_HANDLE;
+    }
+
+    // ── VK_EXT_debug_utils: vkSetDebugUtilsObjectNameEXT ────────────
+    // Core in Vulkan 1.1+ but still loaded by pointer to stay portable
+    // to older loaders and to avoid relying on the macro being defined
+    // by the current Vulkan header.
+    set_debug_name_fn_ = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+        vkGetDeviceProcAddr(device_, "vkSetDebugUtilsObjectNameEXT"));
+    if (set_debug_name_fn_) {
+        log_info("VulkanContext: vkSetDebugUtilsObjectNameEXT loaded");
+    } else {
+        log_info("VulkanContext: vkSetDebugUtilsObjectNameEXT not available "
+                 "(debug object names will be no-ops)");
     }
 
     log_info("Vulkan context ready");
@@ -166,6 +191,41 @@ bool VulkanContext::load_pipeline_cache(const std::string& path) {
     log_info("pipeline cache loaded (" + std::to_string(sz) + " bytes)");
     return true;
 }
+
+VkResult VulkanContext::set_debug_name(VkObjectType type, uint64_t handle,
+                                       const std::string& name) const {
+    // No-op fast paths. We return VK_SUCCESS for these so callers
+    // can chain the call without an if-guard at every site.
+    if (!set_debug_name_fn_ || handle == 0 || name.empty()) {
+        return VK_SUCCESS;
+    }
+    // Vulkan spec: pObjectName has a max length of 256 bytes
+    // INCLUDING the trailing NUL. The constant
+    // VK_MAX_DEBUG_UTILS_OBJECT_NAME_LENGTH_EXT is not in every
+    // Vulkan header revision, so we hard-code 256 here (it has been
+    // stable since VK_EXT_debug_utils was promoted to core in
+    // Vulkan 1.1). VVL will reject a longer string with
+    // VUID-VkDebugUtilsObjectNameInfoEXT-pObjectName-parameter
+    // and return VK_ERROR_VALIDATION_FAILED_EXT. To keep callers
+    // happy (and to avoid passing a dangling pointer to a truncated
+    // string we don't store), we truncate proactively.
+    constexpr size_t kMaxUsable = 256 - 1;  // 255 chars
+    std::string trimmed = name;
+    if (trimmed.size() > kMaxUsable) {
+        log_warn("set_debug_name: truncating name from " + std::to_string(trimmed.size())
+                 + " to " + std::to_string(kMaxUsable) + " chars: \""
+                 + trimmed.substr(0, 32) + "...\"");
+        trimmed.resize(kMaxUsable);
+    }
+    // VVL does not copy pObjectName (Khronos VVL#1168); the std::string
+    // argument guarantees the bytes are live for the duration of this call.
+    VkDebugUtilsObjectNameInfoEXT info{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+    info.objectType   = type;
+    info.objectHandle = handle;
+    info.pObjectName  = trimmed.c_str();
+    return set_debug_name_fn_(device_, &info);
+}
+
 
 void VulkanContext::shutdown() {
     if (pipeline_cache_) {

@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/NodeLibrary.hpp"
+#include "engine/Graph.hpp"   // PassKind
 #include <string>
 
 namespace te {
@@ -11,6 +12,11 @@ public:
                                    const std::string& nodes_dir,
                                    const std::string& glsl_dir,
                                    std::string* error_out = nullptr);
+
+    // Public so unit tests can pin the string-to-enum mapping without
+    // having to write a temp .node.json to disk. Empty / unrecognized
+    // strings return PurePixel and emit a log_warn (see .cpp).
+    static PassKind parse_pass_kind(const std::string& s);
 };
 
 

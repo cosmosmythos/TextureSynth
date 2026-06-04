@@ -3,18 +3,26 @@
 #include "engine/Engine.hpp"
 #include "viewer/Swapchain.hpp"
 #include "viewer/ImGuiLayer.hpp"
+#include "viewer/RenderDocCapture.hpp"
 #include <vector>
 
 namespace te {
 
 class Renderer {
 public:
-    bool init(VulkanContext& ctx, Swapchain& swapchain, Engine& engine, ImGuiLayer& imgui);
+    // Optional RenderDoc pointer. May be nullptr if the user did not
+    // call rdoc.init() or if RenderDoc is not attached. The renderer
+    // tolerates nullptr -- the ImGui "Capture Frame" button will be
+    // disabled in that case.
+    bool init(VulkanContext& ctx, Swapchain& swapchain, Engine& engine, ImGuiLayer& imgui,
+              RenderDocCapture* rdoc = nullptr);
     void shutdown();
 
     void on_swapchain_recreated();
     void record_and_submit(PushConstants& pc, Graph& graph,
                            bool& graph_changed, bool& recompile_requested);
+
+    bool renderdoc_available() const { return rdoc_ && rdoc_->is_available(); }
 
 private:
     void create_sync_objects();
@@ -25,6 +33,7 @@ private:
     Swapchain* swapchain_ = nullptr;
     Engine* engine_ = nullptr;
     ImGuiLayer* imgui_ = nullptr;
+    RenderDocCapture* rdoc_ = nullptr;
 
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> command_buffers_;  // per frame-in-flight

@@ -16,5 +16,6 @@
           "default": 0.0, "min": 0.0, "max": 28.0, "step": 1.0, "integer": true }
     ],
     "shader": "blend.glsl",
-    "entry": "node_blend"
+    "entry": "node_blend",
+    "pass_kind": "pure_pixel"
 }

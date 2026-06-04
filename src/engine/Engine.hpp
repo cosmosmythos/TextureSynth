@@ -282,6 +282,7 @@ private:
     struct PendingPass {
         std::future<CompileResult> fut;
         std::string                name;
+        std::string                type_id;       // shader signature key (e.g. "perlin")
         uint32_t                   input_count = 0;
         std::vector<ResourceUUID>  output_resources;
         std::vector<ResourceUUID>  input_resources;

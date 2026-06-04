@@ -83,9 +83,11 @@ void ImGuiLayer::begin_frame() {
 }
 
 void ImGuiLayer::render_ui(PushConstants& pc, Graph& graph, const NodeLibrary& lib,
-                           bool& graph_changed, bool& recompile_requested) {
+                           bool& graph_changed, bool& recompile_requested,
+                           bool& capture_requested) {
     graph_changed = false;
     recompile_requested = false;
+    capture_requested = false;
 
     ImGui::Begin("Node Graph");
 
@@ -146,12 +148,20 @@ void ImGuiLayer::render_ui(PushConstants& pc, Graph& graph, const NodeLibrary& l
                 }
             }
 
-            // Parameters (sliders mapped to hot_params)
-            int base = param_base[node.id];
-            for (size_t pi = 0; pi < type->params.size(); pi++) {
-                auto& p = type->params[pi];
-                ImGui::SliderFloat(p.name.c_str(), &pc.hot_params[base + pi], p.min_value, p.max_value);
-            }
+            // Parameters: per-node sliders for live editing.
+            // TODO: PushConstants no longer carries hot_params (engine
+            // moved to SSBO bindless params in stage 1/2). Re-enable
+            // this once the viewer writes through Engine::update_param
+            // or the equivalent SSBO update path. Until then, params
+            // are not editable from the UI -- use the .node.json
+            // manifest defaults.
+            (void)param_base;  // suppress unused warning
+            (void)type;
+            // int base = param_base[node.id];
+            // for (size_t pi = 0; pi < type->params.size(); pi++) {
+            //     auto& p = type->params[pi];
+            //     ImGui::SliderFloat(p.name.c_str(), &pc.hot_params[base + pi], p.min_value, p.max_value);
+            // }
 
             // Set as output button
             if (!is_output) {
@@ -194,7 +204,10 @@ void ImGuiLayer::render_ui(PushConstants& pc, Graph& graph, const NodeLibrary& l
         if (ImGui::Button(type.display_name.c_str())) {
             uint32_t new_id = 0;
             for (auto& n : graph.nodes)
-                new_id = std::max(new_id, n.id);
+                // n.id is NodeId (uint64_t); new_id is uint32_t. Cast
+                // up to a common type to disambiguate std::max.
+                if (static_cast<uint64_t>(n.id) > new_id)
+                    new_id = static_cast<uint32_t>(n.id);
             new_id++;
 
             graph.nodes.push_back({new_id, type_id});
@@ -222,19 +235,42 @@ void ImGuiLayer::render_ui(PushConstants& pc, Graph& graph, const NodeLibrary& l
         recompile_requested = true;
     }
 
+    // ── RenderDoc capture ───────────────────────────────────────────
+    // Visible only when qrenderdoc.exe has attached and the capture
+    // API is bound. TriggerMultiFrameCapture pops RenderDoc's own save
+    // dialog, so the artist picks where the .rdc goes.
+    if (rdoc_available_) {
+        ImGui::Separator();
+        ImGui::TextColored({0.4f, 0.8f, 1.0f, 1.0f}, "RenderDoc: attached");
+        if (ImGui::Button("Capture Frame")) {
+            capture_requested = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Triggers a single-frame capture in the attached RenderDoc. "
+                              "RenderDoc will pop a save dialog.");
+        }
+    }
+
     ImGui::End();
 }
 
-void ImGuiLayer::end_frame(VkCommandBuffer cmd, VkImageView target_view, uint32_t width, uint32_t height) {
+void ImGuiLayer::end_frame(VkCommandBuffer cmd, VkImageView target_view, uint32_t width, uint32_t height,
+                          bool clear_first) {
     ImGui::Render();
     ImDrawData* draw_data = ImGui::GetDrawData();
+
+    VkClearValue clear_value{};
+    clear_value.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 
     VkRenderingAttachmentInfo color_attachment{};
     color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     color_attachment.imageView = target_view;
     color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; 
+    color_attachment.loadOp = clear_first ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
     color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    if (clear_first) {
+        color_attachment.clearValue = clear_value;
+    }
 
     VkRenderingInfo render_info{};
     render_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;

@@ -1,7 +1,10 @@
 #include "engine/GraphCompiler.hpp"
 #include "engine/Graph.hpp"
+#include "engine/ChainFinder.hpp"
+#include "engine/ChainShaderEmitter.hpp"
 #include "engine/PushConstants.hpp"
 #include "engine/BindlessTable.hpp"
+#include "engine/Logging.hpp"
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -9,9 +12,21 @@
 namespace te {
 
 // Build a ShaderVariantKey for a node pass.
-// Today: keyed by (node_type, input_count, socket_param_mask, output_format).
-// Tomorrow: feature_flags will be populated from node params (e.g. "use_mask").
-static ShaderVariantKey build_variant_key(const NodeType& type, uint32_t input_count, uint32_t param_socket_count) {
+// Keyed by: (node_type, input_count, param_socket_mask, format_override).
+//
+// feature_flags layout (32 bits):
+//   bits  0..2  : ChannelFormat enum (Mono=0, UV=1, RGB=2, RGBA=3, ID=4, Metadata=5)
+//   bits  3..   : reserved for future flags (use_mask, hq, etc. — none defined yet)
+//
+// Why format_override is here: nodes with different output formats emit different
+// GLSL (e.g. Perlin-mono returns vec4(n,n,n,1), Perlin-UV returns vec4(grad*0.5+0.5,0,1)).
+// Keying on format means each variant gets its own .spv in ShaderCache, and the
+// driver can specialize the math (no uniform branching). Per CH_FORMAT_ENUMS.md
+// design (TODO in that doc — we are implementing it now).
+static ShaderVariantKey build_variant_key(const NodeType& type,
+                                           uint32_t input_count,
+                                           uint32_t param_socket_count,
+                                           ChannelFormat format) {
 
     ShaderVariantKey key;
     key.node_type_id   = type.id;
@@ -27,9 +42,10 @@ static ShaderVariantKey build_variant_key(const NodeType& type, uint32_t input_c
     }
     key.param_socket_mask = mask;
 
-    // feature_flags: today always 0. Retrofit path:
-    //   if (node.param("use_mask") > 0.5f) key.feature_flags |= (1u << 0);
-    //   if (node.param("high_quality") > 0.5f) key.feature_flags |= (1u << 1);
+    // Pack format_override into the low 3 bits of feature_flags.
+    // Cast through uint32_t so the static_cast below is well-defined.
+    const uint32_t fmt_bits = static_cast<uint32_t>(format) & 0x7u;
+    key.feature_flags = fmt_bits;
 
     return key;
 }
@@ -39,11 +55,17 @@ static std::string emit_node_shader(const ValidatedNode& vn,
                                     const NodeType& type,
                                     const ShaderVariantKey& key,
                                     int param_base,
-                                    uint32_t input_count) {
+                                    uint32_t input_count,
+                                    ChannelFormat format) {
     (void)vn; (void)key; (void)param_base; (void)input_count;
     std::ostringstream s;
 
     s << "#version 460\n";
+    // TS_FORMAT is consumed by the per-node format post-process (emitted
+    // only for nodes flagged is_format_sensitive). The GLSL preprocessor
+    // resolves the #if/#elif chain at parse time, so each cache key gets
+    // its own dead-branch-stripped .spv.
+    s << "#define TS_FORMAT " << static_cast<uint32_t>(format) << "\n";
     s << "#extension GL_EXT_nonuniform_qualifier : require\n";
     s << "#extension GL_EXT_samplerless_texture_functions : require\n";
     s << "layout(local_size_x = 8, local_size_y = 8) in;\n\n";
@@ -165,6 +187,30 @@ static std::string emit_node_shader(const ValidatedNode& vn,
         }
     }
     s << ");\n";
+
+    // ── Format post-process (noise-style outputs only) ──────────────
+    // For nodes that return the canonical noise/gradient vec4(noise,
+    // grad.x, grad.y, 1) we fold the channels into the requested output
+    // format. Combiners and constant sources don't opt in — their `result`
+    // is already a final color and must NOT be collapsed.
+    //
+    // The GLSL preprocessor resolves these #if branches at parse time, so
+    // each ChannelFormat gets its own dead-stripped .spv in ShaderCache.
+    if (type.is_format_sensitive && !multi_output) {
+        s << "    // Format post-process (per .node.json format_sensitive)\n"
+          << "#if TS_FORMAT == 0\n"        // Mono
+          << "    result = vec4(result.r, result.r, result.r, 1.0);\n"
+          << "#elif TS_FORMAT == 1\n"      // UV (use gradient, drop noise)
+          << "    result = vec4(result.g, result.b, 0.0, 1.0);\n"
+          << "#elif TS_FORMAT == 2\n"      // RGB
+          << "    result = vec4(result.r, result.g, result.b, 1.0);\n"
+          << "#elif TS_FORMAT == 3\n"      // RGBA
+          << "    result = vec4(result.r, result.g, result.b, 1.0);\n"
+          << "#else\n"                      // ID, Metadata — pass through
+          << "    result = vec4(result.r, result.g, result.b, result.a);\n"
+          << "#endif\n";
+    }
+
     if (multi_output) {
         for (uint32_t i = 0; i < outputs_n; ++i)
             s << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots["
@@ -211,14 +257,22 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
         // Phase 1c: mirror the bypassed flag from the validated node so
         // the executor can emit a clear-to-zero dispatch when set.
         pass.bypassed        = inst->bypassed;
-    
-        // Classify: zero inputs AND zero params == pure resource (image source).
-        // For now we treat all generators as Dispatch; only future image/external
-        // nodes will set kind=ResourceBind. We expose the hook here so Phase 6
-        // can flip it without touching the executor.
-        const bool is_resource_node =
-            (type->inputs.empty() && type->params.empty() && type->glsl_function.empty());
-        pass.kind = is_resource_node ? PassKind::ResourceBind : PassKind::Dispatch;
+
+        // Stage 2: mirror the pass_kind classification from ValidatedNode
+        // (sourced from NodeType by the validator). Stages 3-6 will read
+        // pass.pass_kind to drive chain finding and chain shader emission.
+        pass.pass_kind       = inst->pass_kind;
+
+        // Derive the legacy binary `kind` from pass_kind for the executor:
+        //   Upload / Readback  -> ResourceBind (no dispatch, state only)
+        //   everything else    -> Dispatch
+        // The executor's existing branch on `kind == PassKind::Dispatch`
+        // remains the gate for variant-key build + shader emission. See
+        // 03_pass_kind.md §2.3 for why we keep both fields.
+        pass.kind            = (pass.pass_kind == PassKind::Upload ||
+                                pass.pass_kind == PassKind::Readback)
+                              ? PassKind::ResourceBind
+                              : PassKind::Dispatch;
     
         const uint32_t inputs_n = (uint32_t)type->inputs.size();
         uint32_t param_socket_count = 0;
@@ -234,13 +288,39 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     
         if (pass.kind == PassKind::Dispatch) {
             // Build variant key BEFORE emitting GLSL — cache lookup uses this.
-            pass.variant_key = build_variant_key(*type, total_slots, param_socket_count);
-            pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots);
+            // format_override flows from ValidatedNode (set from NodeInstance
+            // by validate_graph) into the cache key so each format gets its
+            // own .spv. See build_variant_key for the encoding.
+            pass.variant_key = build_variant_key(*type, total_slots, param_socket_count, inst->format_override);
+            pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots, inst->format_override);
         }
         pass.input_socket_count = total_slots;
         plan.passes.push_back(std::move(pass));
     }
     plan.final_output_resource = {ir.output_node, 0};
+
+    // Stage 3: find chains (one Chain per fused dispatch). The
+    // per-node PassPlan is still populated above; chains are an
+    // ADDITIONAL structure that Stages 4-6 will consume. Existing
+    // per-node code is untouched -- this is a pure addition.
+    plan.chains = find_chains(ir, lib);
+
+    // Stage 4.1: emit a fused GLSL shader for each chain. The result
+    // is stored in Chain::glsl and consumed by Stages 5 (cache key) and
+    // 6 (engine dispatch). Chains that are not "linear" per the Stage
+    // 4.1 contract (multi-input nodes, multi-output sources, etc.) are
+    // left with empty glsl; the engine falls back to the per-pass path
+    // for those until Stage 4.2 lifts the constraint.
+    for (auto& ch : plan.chains) {
+        auto glsl = chain_shader::emit_linear(ch, ir, lib);
+        if (glsl.ok()) {
+            ch.glsl = std::move(glsl.source);
+        } else {
+            log_warn("ChainShaderEmitter: chain ["
+                     + [&]{ std::string s; for (auto n : ch.nodes) s += std::to_string(n) + ","; return s; }()
+                     + "] fell back to per-pass path: " + glsl.error);
+        }
+    }
 
     // ── User-facing error FIRST (param budget) ─────────────────────
     // next_slot is the total floats consumed by the graph. The legal

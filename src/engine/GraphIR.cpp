@@ -242,6 +242,12 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         // bypassed mirrors the user's flag.
         vn.muted    = false;
         vn.bypassed = n.bypassed;
+        // Stage 2: pass_kind is a *type-level* classification, so we
+        // look it up from the NodeLibrary (authoritative) rather than
+        // mirroring it on NodeInstance. See 03_pass_kind.md §2.3.
+        if (auto* nt = lib.find(n.type_id)) {
+            vn.pass_kind = nt->pass_kind;
+        }
         ir.nodes.push_back(vn);
     }
 

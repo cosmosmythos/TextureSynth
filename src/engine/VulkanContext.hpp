@@ -4,6 +4,7 @@
 #include <VkBootstrap.h>
 #include <mutex>
 #include <optional>
+#include <string>
 
 namespace te {
 
@@ -48,6 +49,21 @@ public:
     bool save_pipeline_cache(const std::string& path) const;
     bool load_pipeline_cache(const std::string& path);
 
+    // Debug object naming (VK_EXT_debug_utils). No-op if the extension is
+    // not available on this loader/driver. The name string must outlive the
+    // call (validation layer does not copy it - see Khronos VVL#1168);
+    // pass a std::string in scope.
+    // Apply a debug name to a Vulkan object. The name is forwarded to
+    // vkSetDebugUtilsObjectNameEXT, which is also intercepted by
+    // RenderDoc and any custom layer. Returns the VkResult of the
+    // underlying call. Returns VK_SUCCESS for harmless no-ops
+    // (null fn pointer / null handle / empty name) so callers can
+    // chain it without an if-guard. Long names (>255 chars) are
+    // truncated to fit the Vulkan spec limit
+    // (VK_MAX_DEBUG_UTILS_OBJECT_NAME_LENGTH_EXT = 256 including NUL).
+    VkResult set_debug_name(VkObjectType type, uint64_t handle,
+                            const std::string& name) const;
+
     vkb::Instance&        bootstrap_instance()  { return vkb_instance_; }
     vkb::PhysicalDevice&  bootstrap_phys()      { return vkb_phys_; }
     vkb::Device&          bootstrap_device()    { return vkb_device_; }
@@ -69,6 +85,11 @@ private:
     VmaAllocator     allocator_       = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
     VkPipelineCache  pipeline_cache_  = VK_NULL_HANDLE;
+
+    // PFN_vkSetDebugUtilsObjectNameEXT, loaded at init() if VK_EXT_debug_utils
+    // is available. Cached as a member so per-object naming is one call,
+    // not a GetDeviceProcAddr per object.
+    PFN_vkSetDebugUtilsObjectNameEXT set_debug_name_fn_ = nullptr;
 
     std::mutex       graphics_queue_mu_;
     std::mutex       transfer_queue_mu_;

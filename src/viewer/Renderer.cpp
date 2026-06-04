@@ -4,11 +4,19 @@
 
 namespace te {
 
-bool Renderer::init(VulkanContext& ctx, Swapchain& swapchain, Engine& engine, ImGuiLayer& imgui) {
+bool Renderer::init(VulkanContext& ctx, Swapchain& swapchain, Engine& engine, ImGuiLayer& imgui,
+                     RenderDocCapture* rdoc) {
     ctx_ = &ctx;
     swapchain_ = &swapchain;
     engine_ = &engine;
     imgui_ = &imgui;
+    rdoc_ = rdoc;
+
+    // Propagate RenderDoc availability to the UI so it can show or
+    // hide the "Capture Frame" button.
+    if (imgui_) {
+        imgui_->set_renderdoc_available(rdoc_ && rdoc_->is_available());
+    }
 
     create_command_buffers();
     create_sync_objects();
@@ -128,7 +136,19 @@ void Renderer::record_and_submit(PushConstants& pc, Graph& graph,
     vkBeginCommandBuffer(cmd, &begin_info);
 
     imgui_->begin_frame();
-    imgui_->render_ui(pc, graph, engine_->node_library(), graph_changed, recompile_requested);
+    bool capture_requested = false;
+    imgui_->render_ui(pc, graph, engine_->node_library(), graph_changed, recompile_requested,
+                      capture_requested);
+
+    // Edge-triggered RenderDoc capture. TriggerMultiFrameCapture is the
+    // artist-facing path: RenderDoc pops its own save dialog so the
+    // user picks where the .rdc goes. We trigger BEFORE recording the
+    // engine work so the next-present (this frame) is captured. The
+    // ImGui "Capture Frame" button is the trigger; pressing it sets
+    // capture_requested=true.
+    if (capture_requested && rdoc_ && rdoc_->is_available()) {
+        rdoc_->trigger_capture(1);
+    }
 
     if (engine_->has_pipeline()) {
         // Transition engine output: UNDEFINED -> GENERAL
@@ -233,9 +253,13 @@ void Renderer::record_and_submit(PushConstants& pc, Graph& graph,
         vkCmdPipelineBarrier2(cmd, &dep);
     }
 
-    // ImGui overlay
+    // ImGui overlay. If the engine has a pipeline, the blit above already
+    // covered the whole image, so LOAD_OP_LOAD preserves it. If not, we must
+    // CLEAR first or LOAD_OP_LOAD will smear garbage from the previous frame
+    // (because the swapchain image is uninitialized until the engine runs).
     imgui_->end_frame(cmd, swapchain_->image_views()[image_index],
-                      swapchain_->extent().width, swapchain_->extent().height);
+                      swapchain_->extent().width, swapchain_->extent().height,
+                      /*clear_first=*/!engine_->has_pipeline());
 
     // Transition swapchain: COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC_KHR
     VkImageMemoryBarrier2 to_present{};

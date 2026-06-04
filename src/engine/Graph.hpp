@@ -63,6 +63,27 @@ struct Socket {
 };
 
 
+// PassKind classification (Stage 2). Lives in Graph.hpp (not
+// PassPlan.hpp) so that NodeType can use it without creating a
+// include cycle: NodeLibrary includes Graph, GraphIR includes both,
+// PassPlan includes GraphIR. See 03_pass_kind.md §2.2 step 1 for
+// the include-chain reasoning.
+enum class PassKind : uint8_t {
+    // Legacy (kept for one release; check sites migrated in stage 2.3).
+    Dispatch,
+    Upload,                 // CPU/external source - end of a chain upstream
+    ResourceBind = Upload,  // deprecated alias; remove in a future stage
+
+    // Stage 2 classification (consumed by stages 3-6).
+    PurePixel,    // 1 texel in, 1 texel out - fuseable into a chain
+    Boundary,     // needs barriers, halo, or resolution change - chain break
+    Reduction,    // N texels in, 1 out - chain break (output is not 1:1)
+    Feedback,     // reads its own previous output - chain break (temporal)
+    Readback,     // GPU -> CPU - terminal node, end of every chain
+    DebugPreview, // materializes an intermediate for inspection
+};
+
+
 struct NodeParam {
     std::string name;
     std::string display_name;
@@ -88,6 +109,23 @@ struct NodeType {
     // Feature flags this node respects (from .node.json "variant_flags").
     // Empty = no compile-time variants. Populated by NodeRegistryLoader.
     std::vector<std::string> variant_flags;
+
+    // True if this node's glsl_function returns the canonical noise/gradient
+    // vec4(noise, grad.x, grad.y, 1) that the format post-process knows how
+    // to fold into the requested output format. Set by NodeRegistryLoader
+    // from the .node.json "format_sensitive" key. Only noise generators
+    // (perlin, simplex, value, gabor, worley, white_noise) opt in; combiners
+    // (blend, grayscale, invert, ...) and constant sources (color_const,
+    // image) produce final colors and must NOT set this, or the Mono path
+    // would collapse their output to a single channel.
+    bool is_format_sensitive = false;
+
+    // Stage 2: how this node participates in chain fusion. Set by
+    // NodeRegistryLoader from the .node.json "pass_kind" key (defaults to
+    // "pure_pixel"). Mirrored into ValidatedNode::pass_kind by the
+    // validator, then into ComputePass::pass_kind by GraphCompiler.
+    // Stages 3-6 (chain find, chain emit, dispatch) consume this.
+    PassKind pass_kind = PassKind::PurePixel;
 };
 
 

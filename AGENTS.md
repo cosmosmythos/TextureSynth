@@ -1,9 +1,59 @@
 # AGENTS.md — Mandatory rules for AI coding agents
 
-> **Read this file before running ANY build/clean/install/test command.**
-> Violating these rules will cost the user real internet data and several
-> minutes of redownload time. Every coding agent makes the same mistake
-> once; this file exists to make sure you don't.
+> **Read this file before running ANY build/clean/install/test command, AND
+> before answering any non-trivial technical question.**
+> Violating the build-cache rules costs real internet data. Violating the
+> explanation-style rules makes the answers unusable for the project owner.
+
+---
+
+## How to explain technical work (read this before answering design questions)
+
+The project owner is a **3D texture artist who is also a developer and the
+architect of this tool**. They are building TEXTURESYNTH to release as a
+**state-of-the-art industry tool inside Blender** — scalable, robust, fast,
+artist-friendly, non-blocking. Every explanation must serve that goal.
+
+When answering design / architecture / "how does X work" questions, every
+answer MUST include **three layers** in this order, in the same message:
+
+1. **Artist mental model first** (always)
+   - Use TEXTURESYNTH terms: graph, node, chain, output_node, dispatch, image, preview, slider
+   - Use Blender terms an artist knows: node editor, materials, render, viewport
+   - No analogies from outside domains (no "coffee shop", "car wash", "factory assembly line" — the project owner has explicitly rejected these)
+   - Show what the artist *sees* and *does* — clicks, drags, previews, errors
+   - "What changes for me as the artist?" answer in a small table
+
+2. **Architecture / data flow** (always)
+   - Which structs change, which files change, which engine stage is affected
+   - The artist sees the *result* of this layer; they don't see the layer itself
+   - Cite `file:line` for the code that implements it
+
+3. **Actual code or pseudo-code** (always, for non-trivial work)
+   - GLSL snippets for shader work
+   - C++ snippets for engine work
+   - JSON / manifest snippets for data
+   - One concrete example (perlin → invert → grayscale, or similar) walked through end to end
+
+**Hard rules for the explanation style**:
+- No filler. No "let me explain". No "in this response I will". Start with the table or the answer.
+- Use tables, bullets, short paragraphs. No walls of prose.
+- Length: 4-12 short lines for the artist layer, then the technical layers can be longer.
+- When using a phrase like "thread-local register", always follow it with "= a local variable in the shader = a slot on the GPU chip that holds 4 floats" — connect the abstract to the concrete the artist already knows from C++ / Blender.
+- If a question is conceptual (e.g., "what does this mean for me?"), the artist layer is the WHOLE answer. Don't add a "but here's the technical detail" footnote unless asked.
+- When the user asks "what changes for the artist day-to-day?", answer that FIRST and ONLY. Don't drift into GPU bandwidth numbers unless the user asks.
+- If the user says "I can't picture this" or "doesn't make sense" or "break it down" — they mean the artist layer is missing, not that the technical layer is wrong. Reset to the artist layer and rebuild from there.
+
+**When the user is in plan mode** (read-only), use this style for analysis,
+recommendations, and option comparisons. Do NOT make file edits.
+
+**When the user is in build mode**, apply this style and ALSO make the
+file changes / run the build / write the code the user asked for. Do not
+add commentary before/after the work — let the changes speak.
+
+---
+
+## 🚫 NEVER run these commands
 
 ---
 

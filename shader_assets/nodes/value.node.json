@@ -18,5 +18,7 @@
         { "name": "seed", "default": 0.0, "min": 0.0, "max": 65535.0, "step": 1.0, "integer": true }
     ],
     "shader": "value.glsl",
-    "entry": "node_value"
+    "entry": "node_value",
+    "format_sensitive": true,
+    "pass_kind": "pure_pixel"
 }

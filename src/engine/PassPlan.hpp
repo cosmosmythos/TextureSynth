@@ -1,5 +1,5 @@
 #pragma once
-#include "engine/GraphIR.hpp"
+#include "engine/GraphIR.hpp"   // transitively brings in PassKind from Graph.hpp
 #include "engine/NodeResource.hpp"
 #include "engine/ShaderVariantKey.hpp"
 #include <vector>
@@ -9,10 +9,8 @@
 namespace te {
 
 
-enum class PassKind : uint8_t {
-    Dispatch,     // normal compute pass
-    ResourceBind, // image/external source — no vkCmdDispatch, only state tracked
-};
+// PassKind enum itself lives in Graph.hpp so NodeType can use it without
+// a cycle. See 03_pass_kind.md §2.2 step 1 for the include-chain reasoning.
 
 
 enum class InputMode : uint8_t {
@@ -29,10 +27,11 @@ struct ComputePass {
     int          param_base_slot    = 0;
     uint32_t     input_socket_count = 0;
     std::string  shader_glsl;
-    PassKind     kind               = PassKind::Dispatch;
+    PassKind     kind               = PassKind::Dispatch;   // legacy binary (executor uses this)
+    PassKind     pass_kind          = PassKind::PurePixel;   // Stage 2 classification (stages 3-6 consume)
     InputMode    input_mode         = InputMode::PreSampled;
 
-    // Shader variant key — cache lookup is keyed by this, not source hash.
+    // Shader variant key -- cache lookup is keyed by this, not source hash.
     ShaderVariantKey variant_key;
 
     // Partial re-execution: set by GraphCompiler, mutated at runtime.
@@ -50,8 +49,41 @@ struct ComputePass {
 };
 
 
+// A Chain is a maximal run of adjacent PurePixel nodes that can be
+// fused into a single compute shader. The compiler builds these in
+// GraphCompiler::compile (Stage 3). Stage 4 (emit_chain_shader)
+// populates `glsl`. Stage 5 (FusedVariantKey) populates `variant_key`.
+// Stage 6 (per-chain dispatch) consumes them. Stage 3 only fills
+// `nodes`, `param_offsets`, `param_base_slot`, `total_params`,
+// `total_inputs`, and `total_outputs`.
+//
+// See 04_chains.md §3.1 for the struct spec, and
+// 06_chain_finding_research.md for the algorithm rationale.
+struct Chain {
+    std::vector<NodeId>   nodes;            // in topological order; first = head, last = tail
+    std::vector<uint32_t> param_offsets;    // SSBO offset of each node's params; size == nodes.size()
+    int                   param_base_slot = 0;  // SSBO slot of nodes[0]
+    uint32_t              total_inputs   = 0;   // sum across nodes (descriptor layout)
+    uint32_t              total_outputs  = 1;   // 1 in Phase 1; multi-output nodes are barriers (singleton chains)
+    uint32_t              total_params   = 0;   // sum across nodes (SSBO slice width)
+
+    // Filled by Stage 4 (emit_chain_shader). Empty for singleton or
+    // oversized chains; the runtime then falls back to the per-node path.
+    std::string           glsl;
+
+    // Filled by Stage 5 (FusedVariantKey). Empty for now; the cache
+    // lookup uses the per-node key until Stage 5 lands.
+
+    // Phase 1c: mirrors ComputePass::bypassed. If any node in the chain
+    // is bypassed, the chain is bypassed and the executor emits a
+    // clear-to-zero pass for the whole chain.
+    bool                  bypassed = false;
+};
+
+
 struct PassPlan {
     std::vector<ComputePass> passes;
+    std::vector<Chain>       chains;     // Stage 3: superset info for fused runtime
     ResourceUUID final_output_resource = {};
 };
 

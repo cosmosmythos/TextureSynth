@@ -34,6 +34,8 @@ add_library(engine STATIC
     src/engine/NodeRegistryLoader.cpp
     src/engine/GraphCompiler.cpp
     src/engine/GraphIR.cpp
+    src/engine/ChainFinder.cpp
+    src/engine/ChainShaderEmitter.cpp
     src/engine/ResourceManager.cpp
     src/engine/AsyncReadback.cpp
     src/engine/ImageUploader.cpp
@@ -57,7 +59,13 @@ add_executable(viewer
     src/viewer/Swapchain.cpp
     src/viewer/ImGuiLayer.cpp
     src/viewer/Renderer.cpp
+    src/viewer/RenderDocCapture.cpp
 )
+# RenderDoc capture API is a header-only library at src/viewer/third_party.
+# We do NOT link to renderdoc.dll at build time -- the DLL is found at
+# runtime via GetModuleHandleA when qrenderdoc attaches to the process.
+# This keeps the viewer binary usable with zero RenderDoc dependency.
+target_include_directories(viewer PRIVATE src/viewer/third_party)
 target_link_libraries(viewer PRIVATE engine glfw imgui)
 
 # Copy shaders next to executable

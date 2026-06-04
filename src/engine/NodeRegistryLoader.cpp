@@ -44,6 +44,25 @@ static ChannelFormat parse_channel_format(const std::string& s) {
 }
 
 
+// Stage 2: map .node.json "pass_kind" string -> PassKind enum.
+// Defaults to PurePixel (the safe fuseable option) if the key is missing
+// or unrecognized. Invalid keys are logged so authors notice, but the
+// fallback is non-fatal so a typo doesn't break the whole node set.
+PassKind NodeRegistryLoader::parse_pass_kind(const std::string& s) {
+    if (s == "pure_pixel")   return PassKind::PurePixel;
+    if (s == "boundary")     return PassKind::Boundary;
+    if (s == "reduction")    return PassKind::Reduction;
+    if (s == "feedback")     return PassKind::Feedback;
+    if (s == "upload")       return PassKind::Upload;
+    if (s == "readback")     return PassKind::Readback;
+    if (s == "debug_preview") return PassKind::DebugPreview;
+    if (!s.empty()) {
+        log_warn("Unknown pass_kind '" + s + "', defaulting to pure_pixel");
+    }
+    return PassKind::PurePixel;
+}
+
+
 // Resolve includes once per node, dedup symbols globally via #ifndef guards.
 static std::string assemble_glsl(const json& manifest,
                                  const fs::path& shader_path,
@@ -124,6 +143,16 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
             for (auto& f : m.value("variant_flags", json::array())) {
                 n.variant_flags.push_back(f.get<std::string>());
             }
+
+            // Opt-in flag for the format post-process (see Graph.hpp:is_format_sensitive).
+            // Only noise generators set this. Default false — a missing key in
+            // .node.json is the safe option (no post-process emitted).
+            n.is_format_sensitive = m.value("format_sensitive", false);
+
+            // Stage 2: how this node participates in chain fusion.
+            // See DEV_LOG/IMPLEMENTATION_PLAN_pass_fusion/03_pass_kind.md
+            // and shader_assets/nodes/README.md for the 7-kind reference table.
+            n.pass_kind = parse_pass_kind(m.value("pass_kind", "pure_pixel"));
 
             auto shader_file = m.at("shader").get<std::string>();
             std::unordered_set<std::string> loaded;

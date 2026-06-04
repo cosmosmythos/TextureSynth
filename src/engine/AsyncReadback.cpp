@@ -340,6 +340,14 @@ uint64_t AsyncReadback::submit(VulkanContext& ctx, Engine& engine, const PushCon
     if (generation > latest_submitted_generation_)
         latest_submitted_generation_ = generation;
 
+    // Tell VMA the frame index so vmaGetHeapBudgets()'s cached snapshot
+    // is force-refreshed on the next read. Without this, the snapshot
+    // is only refreshed every ~30 internal VMA operations, which is too
+    // lazy for the per-frame "VRAM used / budget" panel we expose via
+    // ResourceManager::get_vma_stats(). The ticket is a monotonically
+    // increasing counter, perfectly valid as a frame index.
+    vmaSetCurrentFrameIndex(ctx.allocator(), slot->ticket);
+
     engine.mark_all_clean();
     return slot->ticket;
 }

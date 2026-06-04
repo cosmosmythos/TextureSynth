@@ -12,6 +12,38 @@
 namespace te {
 
 // ---------------------------------------------------------------------------
+// Specialization helper.
+//
+// Builds a VkSpecializationInfo from a variant key's raw constants. Returns
+// nullptr when specialization_count == 0 (the common case today — no node
+// sets specialization constants yet).
+//
+// The returned pointer points to a function-local struct; it is only valid
+// until the function returns. Vulkan spec: vkCreateComputePipelines reads
+// pSpecializationInfo synchronously, so the caller's data only needs to
+// live for the duration of the create call. We follow the same pattern.
+//
+// VkSpecializationMapEntry.constantID is set to the array index (0..7),
+// which matches GLSL `layout(constant_id = N)`. Entries are sorted by ID
+// as Vulkan requires.
+static const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& vk,
+                                                   VkSpecializationMapEntry (&out_entries)[8],
+                                                   VkSpecializationInfo&   out_info) {
+    if (vk.specialization_count == 0) return nullptr;
+    const uint32_t n = vk.specialization_count > 8 ? 8 : vk.specialization_count;
+    for (uint32_t i = 0; i < n; ++i) {
+        out_entries[i].constantID = i;
+        out_entries[i].offset     = i * sizeof(uint32_t);
+        out_entries[i].size       = sizeof(uint32_t);
+    }
+    out_info.mapEntryCount = n;
+    out_info.pMapEntries   = out_entries;
+    out_info.dataSize      = n * sizeof(uint32_t);
+    out_info.pData         = vk.specialization.data();
+    return &out_info;
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle guard.
 //
 // Used at the top of every public mutator that requires a Ready engine.
@@ -92,8 +124,16 @@ bool Engine::init(VkSurfaceKHR surface,
 
     cache_ = std::make_unique<ShaderCache>(cache_dir);
 
+    // Loading zero nodes is a fatal init failure: a node-less engine cannot
+    // compile any graph, but the old behaviour silently continued, leaving
+    // set_graph() to fail with an obscure "unknown type" error two frames
+    // later (and the viewport to render black with no log). Refuse to come
+    // up in that state so the failure is visible at launch.
     if (NodeRegistryLoader::load_from_directory(node_lib_, nodes_dir, glsl_dir, &err) == 0) {
-        log_warn("no nodes loaded: " + err);
+        set_error_(EngineErrorCode::InitFailed,
+                   "no nodes loaded from '" + nodes_dir + "': " + err,
+                   EnginePhase::Init);
+        goto rollback;
     }
 
     output_storage_ = std::make_unique<Image>();
@@ -141,6 +181,11 @@ bool Engine::init(VkSurfaceKHR surface,
                            EnginePhase::Init);
                 goto rollback;
             }
+            const std::string ring_name = "param_ssbo_ring[" + std::to_string(i) + "]";
+            ctx_.set_debug_name(VK_OBJECT_TYPE_BUFFER, (uint64_t)param_buf_[i], ring_name);
+            // VMA-side name (queryable via vmaGetAllocationInfo().pName).
+            // See ResourceManager::create_image_ for the rationale.
+            vmaSetAllocationName(ctx_.allocator(), param_alloc_[i], ring_name.c_str());
             param_mapped_[i] = ai.pMappedData;
             std::memset(param_mapped_[i], 0, (size_t)sz);
             vmaFlushAllocation(ctx_.allocator(), param_alloc_[i], 0, VK_WHOLE_SIZE);
@@ -536,7 +581,19 @@ uint64_t Engine::set_graph(const Graph& graph) {
                 // its bindless slot.
                 if (!pass.bypassed) {
                     auto pipe = std::make_unique<ComputePipeline>();
-                    if (!pipe->create(ctx_, cached_spv[i], bindless_.pipeline_layout())) {
+                    const std::string pipe_name =
+                        "pipe_node_" + std::to_string(pass.node_id) + "_" + pass.type_id;
+                    pipe->set_name(pipe_name);
+                    // Specialization constants flow from the variant key. The
+                    // helper returns nullptr for the (today-common) case
+                    // specialization_count == 0, preserving prior behavior.
+                    // Note: VkSpecializationInfo has no sType (non-extensible
+                    // struct per Vulkan spec) — value-initialize only.
+                    VkSpecializationMapEntry entries[8];
+                    VkSpecializationInfo     spec{};
+                    const VkSpecializationInfo* spec_ptr =
+                        build_spec_info(pass.variant_key, entries, spec);
+                    if (!pipe->create(ctx_, cached_spv[i], bindless_.pipeline_layout(), spec_ptr)) {
                         set_error_(EngineErrorCode::PipelineCreation,
                                    "pipeline creation failed for node "
                                    + std::to_string(pass.node_id),
@@ -545,6 +602,9 @@ uint64_t Engine::set_graph(const Graph& graph) {
                         return 0;
                     }
                     pe.pipeline = std::move(pipe);
+                    ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
+                                        (uint64_t)pe.pipeline->pipeline(),
+                                        pe.pipeline->name());
                 }
                 assign_bindless_slots_(pe);
             }
@@ -562,6 +622,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
     for (auto& pass : compile_result.pass_plan.passes) {
         PendingPass pp;
         pp.name             = "node_" + std::to_string(pass.node_id);
+        pp.type_id          = pass.type_id;
         pp.input_count      = pass.input_socket_count;
         pp.output_resources = pass.output_resources;
         pp.input_resources  = pass.input_resources;
@@ -686,13 +747,28 @@ void Engine::poll_pending_compiles() {
                 }
                 cache_->store(pp.variant_key, r.spirv);
                 auto pipe = std::make_unique<ComputePipeline>();
-                if (!pipe->create(ctx_, r.spirv, bindless_.pipeline_layout())) {
+                const std::string pipe_name =
+                    "pipe_node_" + std::to_string(pp.node_id) + "_" + pp.type_id;
+                pipe->set_name(pipe_name);
+                // Specialization constants flow from the variant key. The
+                // helper returns nullptr for the (today-common) case
+                // specialization_count == 0, preserving prior behavior.
+                // Note: VkSpecializationInfo has no sType (non-extensible
+                // struct per Vulkan spec) — value-initialize only.
+                VkSpecializationMapEntry entries[8];
+                VkSpecializationInfo     spec{};
+                const VkSpecializationInfo* spec_ptr =
+                    build_spec_info(pp.variant_key, entries, spec);
+                if (!pipe->create(ctx_, r.spirv, bindless_.pipeline_layout(), spec_ptr)) {
                     set_error_(EngineErrorCode::PipelineCreation,
                                "pipeline creation failed for " + pp.name,
                                EnginePhase::GraphCompileFinish, pp.node_id);
                     return;
                 }
                 pe.pipeline = std::move(pipe);
+                ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
+                                    (uint64_t)pe.pipeline->pipeline(),
+                                    pe.pipeline->name());
             }
             assign_bindless_slots_(pe);
         }
@@ -1081,6 +1157,14 @@ void Engine::update_node_params_by_id(NodeId node_id, const std::vector<float>& 
                            (VkDeviceSize)(n    * sizeof(float)));
     }
     param_dirty_ = true;
+    // Seed the dispatch layer's dirty set BEFORE mark_downstream_dirty_ runs
+    // its BFS. mark_downstream_dirty_ writes to NodeResource::is_dirty
+    // (Layer 3) only; record_dispatch's propagate() expands from
+    // dirty_set_ (Layer 2). Without this line the next record_dispatch
+    // would early-exit on dirty_set_.any() == false and re-publish the
+    // previous frame's pixels via the async readback's synthetic-publish
+    // cache. (See DirtySet.hpp for the three-layer state machine.)
+    dirty_set_.mark_node(node_id);
     mark_downstream_dirty_(node_id);
 }
 
@@ -1149,6 +1233,10 @@ void Engine::update_node_params_by_name(NodeId node_id,
         vmaFlushAllocation(ctx_.allocator(), param_alloc_[param_write_idx_], off, size);
     }
     param_dirty_ = true;
+    // See update_node_params_by_id above. mark_downstream_dirty_ writes
+    // Layer 3 only; we have to seed Layer 2 (DirtySet) ourselves or the
+    // next record_dispatch will early-exit.
+    dirty_set_.mark_node(node_id);
     mark_downstream_dirty_(node_id);
 }
 

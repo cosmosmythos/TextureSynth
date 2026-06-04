@@ -12,5 +12,6 @@
         { "name": "amount", "default": 1.0, "min": 0.0, "max": 1.0 }
     ],
     "shader": "invert.glsl",
-    "entry": "node_invert"
+    "entry": "node_invert",
+    "pass_kind": "pure_pixel"
 }

@@ -25,6 +25,7 @@ bool BindlessTable::init(VulkanContext& ctx,
     if (vkCreateDescriptorPool(ctx.device(), &pci, nullptr, &pool_) != VK_SUCCESS) {
         log_error("BindlessTable: pool create failed"); return false;
     }
+    ctx.set_debug_name(VK_OBJECT_TYPE_DESCRIPTOR_POOL, (uint64_t)pool_, "bindless_pool");
 
     // ── Set layout — 6 bindings (huge arrays + samplers + SSBO) ────
     std::array<VkSampler, 1> imm_rep{samp_repeat};
@@ -69,6 +70,7 @@ bool BindlessTable::init(VulkanContext& ctx,
     if (vkAllocateDescriptorSets(ctx.device(), &ai, &set_) != VK_SUCCESS) {
         log_error("BindlessTable: set alloc failed"); return false;
     }
+    ctx.set_debug_name(VK_OBJECT_TYPE_DESCRIPTOR_SET, (uint64_t)set_, "bindless_set_0");
 
     VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, push_constant_size};
     VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};

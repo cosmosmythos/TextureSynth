@@ -14,5 +14,6 @@
     ],
     "params": [],
     "shader": "split_rgba.glsl",
-    "entry": "node_split_rgba"
+    "entry": "node_split_rgba",
+    "pass_kind": "boundary"
 }

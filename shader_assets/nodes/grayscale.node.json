@@ -22,5 +22,6 @@
         }
     ],
     "shader": "grayscale.glsl",
-    "entry": "node_grayscale"
+    "entry": "node_grayscale",
+    "pass_kind": "pure_pixel"
 }

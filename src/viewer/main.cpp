@@ -2,6 +2,7 @@
 #include "viewer/Swapchain.hpp"
 #include "viewer/Renderer.hpp"
 #include "viewer/ImGuiLayer.hpp"
+#include "viewer/RenderDocCapture.hpp"
 #include "engine/Engine.hpp"
 #include <iostream>
 #include <fstream>
@@ -12,6 +13,13 @@ using namespace te;
 
 int main() {
     try {
+        // RenderDoc capture API: must be initialized BEFORE the Vulkan
+        // instance is created, so that when qrenderdoc attaches to this
+        // process it can hook the instance creation. If RenderDoc is
+        // not attached, init() is a no-op.
+        RenderDocCapture rdoc;
+        rdoc.init();
+
         Window window;
         if (!window.init(1280, 720, "Texture Engine Viewer")) {
             return -1;
@@ -21,7 +29,12 @@ int main() {
         const char** glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
 
         Engine engine;
-        if (!engine.init(VK_NULL_HANDLE, glfw_exts, glfw_ext_count, false, "", "", "")) {
+        // Asset dirs are relative to the working directory the viewer is launched from.
+        // Launch from the repo root (the standard way: .\build\Release\viewer.exe) so
+        // these resolve correctly.
+        if (!engine.init(VK_NULL_HANDLE, glfw_exts, glfw_ext_count, false, "",
+                         "shader_assets/nodes", "shader_assets/glsl")) {
+            std::cerr << "FATAL: engine.init failed — check stderr for details\n";
             return -1;
         }
 
@@ -37,8 +50,11 @@ int main() {
             return -1;
         }
 
+        // Hand the capture wrapper to the renderer so it can start/end
+        // captures around the command buffer recording when the user
+        // clicks "Capture Frame" in the UI.
         Renderer renderer;
-        if (!renderer.init(engine.ctx(), swapchain, engine, imgui)) {
+        if (!renderer.init(engine.ctx(), swapchain, engine, imgui, &rdoc)) {
             return -1;
         }
 
@@ -55,7 +71,13 @@ int main() {
         graph.connections.push_back({0, 0, 1, 0}); // perlin output -> invert input
         graph.output_node = 1;                       // invert is the final output
 
-        // Initial graph compile
+        // Boot: set_graph is async (dispatches SPIR-V compile futures).
+        // Submit the initial graph ONCE, then spin poll_pending_compiles until
+        // has_pipeline() flips true. Don't keep re-submitting — each call bumps
+        // the generation and supersedes the in-flight compile, so the engine
+        // would never finish compiling.
+        bool booting_ = true;
+        bool initial_compile_submitted_ = false;
 
         while (!window.should_close()) {
             window.poll_events();
@@ -77,7 +99,15 @@ int main() {
             bool recompile_requested = false;
             renderer.record_and_submit(pc, graph, graph_changed, recompile_requested);
 
-            if (graph_changed || recompile_requested) {
+            if (booting_) {
+                if (!initial_compile_submitted_) {
+                    engine.set_graph(graph);
+                    initial_compile_submitted_ = true;
+                }
+                if (engine.has_pipeline()) {
+                    booting_ = false;
+                }
+            } else if (graph_changed || recompile_requested) {
                 engine.set_graph(graph);
             }
 

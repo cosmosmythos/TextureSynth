@@ -326,6 +326,53 @@ NB_MODULE(texturesynth_core, m) {
         .def("resource_budget_bytes", [](Engine& e) {
             return (uint64_t)e.resources().budget_bytes();
         })
+        .def("get_vma_stats", [](Engine& e) {
+            // Snapshot of memory telemetry. See VmaStatsReport in
+            // ResourceManager.hpp. Requires the engine to be initialized
+            // with VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT for the
+            // gpu_* and per-heap fields to be the real OS-reported numbers;
+            // without it, VMA falls back to a static 80%-of-heap-size
+            // estimate (still a valid number, but not "live VRAM").
+            auto s = e.resources().get_vma_stats(e.ctx());
+            nb::dict d;
+            d["node_resource_count"]      = (uint64_t)s.node_resource_count;
+            d["node_resource_bytes"]      = (uint64_t)s.node_resource_bytes;
+            d["retired_count"]            = (uint64_t)s.retired_count;
+            d["retired_bytes"]            = (uint64_t)s.retired_bytes;
+            d["vma_block_bytes"]          = (uint64_t)s.vma_block_bytes;
+            d["vma_allocation_bytes"]     = (uint64_t)s.vma_allocation_bytes;
+            d["vma_unused_range_bytes"]   = (uint64_t)s.vma_unused_range_bytes;
+            d["warning_threshold_bytes"]  = (uint64_t)s.warning_threshold_bytes;
+            // Back-compat: keep the old key too. New code should read
+            // warning_threshold_bytes; budget_bytes is a configured
+            // warning limit, not a GPU fact.
+            d["budget_bytes"]             = (uint64_t)s.warning_threshold_bytes;
+            d["gpu_budget_bytes"]         = (uint64_t)s.gpu_budget_bytes;
+            d["gpu_usage_bytes"]          = (uint64_t)s.gpu_usage_bytes;
+            d["gpu_pressure"]             = (double)s.gpu_pressure;
+            d["aliasing_efficiency"]      = s.aliasing_efficiency();
+            // Per-heap breakdown. Each entry is itself a dict so the
+            // Python side can iterate without writing a C++ binding per
+            // field. The 'label' field is one of {"DEVICE_LOCAL", "HOST"}.
+            nb::list heaps;
+            for (const auto& h : s.heap_stats) {
+                nb::dict hd;
+                hd["index"]                = (uint64_t)h.index;
+                hd["is_device_local"]      = h.is_device_local;
+                hd["label"]                = h.label;
+                hd["heap_size_bytes"]      = (uint64_t)h.heap_size_bytes;
+                hd["budget_bytes"]         = (uint64_t)h.budget_bytes;
+                hd["usage_bytes"]          = (uint64_t)h.usage_bytes;
+                hd["vma_allocation_bytes"] = (uint64_t)h.vma_allocation_bytes;
+                hd["vma_block_bytes"]      = (uint64_t)h.vma_block_bytes;
+                hd["vma_block_count"]      = (uint64_t)h.vma_block_count;
+                hd["vma_allocation_count"] = (uint64_t)h.vma_allocation_count;
+                hd["pressure"]             = (double)h.pressure;
+                heaps.append(hd);
+            }
+            d["heap_stats"] = heaps;
+            return d;
+        })
         .def("set_memory_budget_mb", [](Engine& e, size_t mb) {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::Idle);
