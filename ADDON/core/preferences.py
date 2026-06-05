@@ -1,20 +1,11 @@
-"""
-Addon preferences for TextureSynth.
-
-Currently exposes a single `log_level` enum. The C++ engine routes its
-log_info/log_warn/log_error messages through a Python callback (see
-cpp_module._cpp_log_sink); that callback reads the level from here and
-drops events below the threshold.
-
-Default = WARNING. Set to DEBUG in the addon prefs to see the full
-firehose (PassPlan compile/install, ResourceManager allocations, etc.)
-when diagnosing an issue from a user report.
-"""
+"""Addon preferences for TextureSynth.
+Exposes logging levels and debug settings."""
 import bpy
 from bpy.types import AddonPreferences
 from bpy.props import EnumProperty, BoolProperty
 
 from . import logging as _tslog
+from ..utils.rna import register_class, unregister_class
 
 _LOG_LEVELS = [
     ("ERROR",   "Errors only",        "Errors only. C++ warnings, info, and Python debug/info are silenced.", 0),
@@ -54,9 +45,9 @@ class TextureSynthPreferences(AddonPreferences):
 
 
 def register():
-    bpy.utils.register_class(TextureSynthPreferences)
+    register_class(TextureSynthPreferences)
     _tslog.update_level()
 
 
 def unregister():
-    bpy.utils.unregister_class(TextureSynthPreferences)
+    unregister_class(TextureSynthPreferences)

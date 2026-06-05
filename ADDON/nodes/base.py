@@ -1,17 +1,15 @@
 import bpy
 import uuid
 
-# Category color palette
 TS_CATEGORY_COLORS = {
-    'INPUT':   (0.20, 0.35, 0.55),   # blue-ish
-    'NOISE':   (0.25, 0.45, 0.30),   # green-ish
-    'COLOR':   (0.55, 0.40, 0.20),   # orange-ish
-    'FILTER':  (0.45, 0.25, 0.45),   # purple-ish
-    'BLEND':   (0.55, 0.30, 0.30),   # red-ish
-    'OUTPUT':  (0.15, 0.15, 0.15),   # neutral dark
+    'INPUT':   (0.20, 0.35, 0.55),
+    'NOISE':   (0.25, 0.45, 0.30),
+    'COLOR':   (0.55, 0.40, 0.20),
+    'FILTER':  (0.45, 0.25, 0.45),
+    'BLEND':   (0.55, 0.30, 0.30),
+    'OUTPUT':  (0.15, 0.15, 0.15),
 }
 
-# Format override items — order matches FORMAT_SOCKET_MAP in tree.py
 FORMAT_OVERRIDE_ITEMS = [
     ('DEFAULT', "Auto",    "Use the node type's declared output format"),
     ('MONO',    "Mono",    "Single-channel grayscale (R16_SFLOAT)"),
@@ -51,8 +49,7 @@ class TextureSynthNode(bpy.types.Node):
 
     format_override: bpy.props.EnumProperty(
         name="Format",
-        description="Override the output texture format for this node. "
-                    "Changes the socket color and the GPU allocation.",
+        description="Override the output texture format for this node.",
         items=FORMAT_OVERRIDE_ITEMS,
         default='DEFAULT',
         update=_on_format_override_change,
@@ -77,20 +74,14 @@ class TextureSynthNode(bpy.types.Node):
         return self.ts_uuid
 
     def stable_id(self) -> int:
-        """Return a deterministic uint64 derived from this node's UUID.
-
-        The C++ engine uses NodeId = uint64_t. We take the first 16 hex
-        characters (64 bits) of the 128-bit UUID — negligible collision
-        probability for any realistic graph size.
-        """
+        """Return a deterministic uint64 derived from this node's UUID."""
         h = self.ensure_ts_uuid()
         return int(h[:16], 16)
 
     ts_category: str = 'INPUT'
     supports_format_override: bool = False
 
-    # Stored output socket metadata — populated by factory.py's init.
-    # Maps socket_index -> (original_name, original_type).
+    # Stored output socket metadata: maps socket_index -> (original_name, original_type)
     _ts_output_meta: dict = {}
 
     def init(self, context):
@@ -114,14 +105,8 @@ class TextureSynthNode(bpy.types.Node):
         except Exception:
             pass
 
-    # ── Dynamic socket management ──────────────────────────────────
-
     def rebuild_output_sockets(self):
-        """Replace all output sockets to match the current format_override.
-
-        Called automatically when the format_override EnumProperty changes.
-        Preserves links on each socket by index.
-        """
+        """Replace all output sockets to match the current format_override, preserving links."""
         if not getattr(self, 'supports_format_override', False):
             return
         from .tree import socket_type_for_format, replace_socket

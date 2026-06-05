@@ -1,16 +1,10 @@
-"""
-Node Tree and Socket definitions for TextureSynth.
-
-Pure UI — no engine logic, no imports from core/.
-"""
-
+"""Node Tree and Socket definitions for TextureSynth UI."""
 import bpy
+from ..utils.rna import register_class, unregister_class
 
 
-# ── Format-specific socket types ──────────────────────────────────
+# -- Format-specific socket types
 # Each format gets its own socket class with a distinct color.
-# The draw() behavior is identical: label when linked, inline prop
-# when unlinked (so the user can set a default value without a link).
 
 def _make_socket_draw(bl_idname):
     """Return a draw() method that shows an inline node prop when unlinked."""
@@ -24,8 +18,21 @@ def _make_socket_draw(bl_idname):
     return draw
 
 
-class TS_DefaultSocket(bpy.types.NodeSocket):
-    """Default texture socket — used when no format override is set."""
+class TS_TextureSocket(bpy.types.NodeSocket):
+    """Common base for all TextureSynth data sockets to allow subclasses to be link-compatible."""
+    bl_idname = 'TS_TextureSocketType'
+    bl_label = "Texture Socket (base)"
+    
+    # Blender 4.0+ requires a draw method on NodeSocket subclasses.
+    draw = _make_socket_draw('TS_TextureSocketType')
+
+    @classmethod
+    def draw_color_simple(cls):
+        return (0.5, 0.5, 0.5, 1.0)
+
+
+class TS_DefaultSocket(TS_TextureSocket):
+    """Default texture socket used when no format override is set."""
     bl_idname = 'TS_DefaultSocketType'
     bl_label = "Texture Socket"
     draw = _make_socket_draw('TS_DefaultSocketType')
@@ -35,8 +42,8 @@ class TS_DefaultSocket(bpy.types.NodeSocket):
         return (0.78, 0.78, 0.2, 1.0)
 
 
-class TS_MonoSocket(bpy.types.NodeSocket):
-    """Mono / Float output — single-channel grayscale."""
+class TS_MonoSocket(TS_TextureSocket):
+    """Mono / Float output for single-channel grayscale."""
     bl_idname = 'TS_MonoSocketType'
     bl_label = "Mono Socket"
     draw = _make_socket_draw('TS_MonoSocketType')
@@ -46,8 +53,8 @@ class TS_MonoSocket(bpy.types.NodeSocket):
         return (0.5, 0.5, 0.5, 1.0)
 
 
-class TS_UVSocket(bpy.types.NodeSocket):
-    """UV / Vector output — two-channel coordinate data."""
+class TS_UVSocket(TS_TextureSocket):
+    """UV / Vector output for two-channel coordinate data."""
     bl_idname = 'TS_UVSocketType'
     bl_label = "UV Socket"
     draw = _make_socket_draw('TS_UVSocketType')
@@ -57,8 +64,8 @@ class TS_UVSocket(bpy.types.NodeSocket):
         return (0.39, 0.39, 0.78, 1.0)
 
 
-class TS_ColorSocket(bpy.types.NodeSocket):
-    """Color / RGBA output — full four-channel color data."""
+class TS_ColorSocket(TS_TextureSocket):
+    """Color / RGBA output for full four-channel color data."""
     bl_idname = 'TS_ColorSocketType'
     bl_label = "Color Socket"
     draw = _make_socket_draw('TS_ColorSocketType')
@@ -68,8 +75,8 @@ class TS_ColorSocket(bpy.types.NodeSocket):
         return (0.78, 0.78, 0.16, 1.0)
 
 
-class TS_IntSocket(bpy.types.NodeSocket):
-    """Integer ID output — integer identifier data."""
+class TS_IntSocket(TS_TextureSocket):
+    """Integer ID output for integer identifier data."""
     bl_idname = 'TS_IntSocketType'
     bl_label = "ID Socket"
     draw = _make_socket_draw('TS_IntSocketType')
@@ -79,11 +86,10 @@ class TS_IntSocket(bpy.types.NodeSocket):
         return (0.12, 0.6, 0.12, 1.0)
 
 
-# Backwards-compatible alias
 TextureSynthSocket = TS_DefaultSocket
 
 
-# ── Format ↔ Socket type mapping ──────────────────────────────────
+# -- Format socket mapping
 
 FORMAT_SOCKET_MAP = {
     'DEFAULT': 'TS_DefaultSocketType',
@@ -116,10 +122,7 @@ def socket_type_for_format(fmt):
 
 
 def replace_socket(socket, new_type, new_name=None):
-    """Replace a socket with a new type, preserving links and position.
-
-    Returns the new socket. The old socket reference becomes invalid.
-    """
+    """Replace a socket with a new type, preserving links and position."""
     socket_name = new_name or socket.name
     sockets = socket.node.outputs if socket.is_output else socket.node.inputs
     socket_pos = list(sockets).index(socket)
@@ -142,12 +145,12 @@ def replace_socket(socket, new_type, new_name=None):
     return new_socket
 
 
-# ── Node Tree ─────────────────────────────────────────────────────
+# -- Node Tree
 
 class TextureSynthTree(bpy.types.NodeTree):
     """Custom node tree for procedural texture authoring."""
     bl_idname = 'TextureSynthTreeType'
-    bl_label = "TextureSynth Editor"
+    bl_label = "TextureSynth Nodes"
     bl_icon = 'TEXTURE'
 
     @classmethod
@@ -163,9 +166,10 @@ class TextureSynthTree(bpy.types.NodeTree):
             pass
 
 
-# ── Registration ──────────────────────────────────────────────────
+# -- Registration
 
 classes = (
+    TS_TextureSocket,
     TS_DefaultSocket,
     TS_MonoSocket,
     TS_UVSocket,
@@ -177,9 +181,9 @@ classes = (
 
 def register():
     for cls in classes:
-        bpy.utils.register_class(cls)
+        register_class(cls)
 
 
 def unregister():
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+        unregister_class(cls)

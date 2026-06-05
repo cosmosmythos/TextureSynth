@@ -80,16 +80,14 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
     ok &= check_storage(VK_FORMAT_R16G16B16A16_SFLOAT,     "R16G16B16A16_SFLOAT");
     if (!ok) { log_error("Required storage formats not supported"); return false; }
 
-    // ── Graphics queue ─────────────────────────────────────────────
+    // Graphics queue
     auto gq  = vkb_device_.get_queue(vkb::QueueType::graphics);
     auto gqf = vkb_device_.get_queue_index(vkb::QueueType::graphics);
     if (!gq || !gqf) { log_error("no graphics queue"); return false; }
     graphics_queue_  = gq.value();
     graphics_family_ = gqf.value();
 
-    // ── Dedicated transfer queue (best effort) ─────────────────────
-    // vkb::QueueType::transfer prefers a family that has TRANSFER but
-    // NOT graphics/compute (DMA engine on discrete GPUs).
+    // Dedicated transfer queue (best effort). vkb::QueueType::transfer prefers a family with TRANSFER but NOT graphics/compute (DMA engine on discrete GPUs).
     auto tq  = vkb_device_.get_dedicated_queue(vkb::QueueType::transfer);
     auto tqf = vkb_device_.get_dedicated_queue_index(vkb::QueueType::transfer);
     if (tq && tqf && tqf.value() != graphics_family_) {
@@ -103,19 +101,9 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
         log_info("VulkanContext: using graphics queue for transfers");
     }
 
-    // ── VMA ────────────────────────────────────────────────────────
+    // VMA
     VmaAllocatorCreateInfo aci{};
-    // VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT: needed for vkCmdDispatch
-    //   indirect-address descriptor access (compute's storage buffer reads).
-    // VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT: without this, vmaGetHeapBudgets
-    //   returns a static 80%-of-heap-size estimate instead of the real OS-level
-    //   residency budget (DXGI on Windows, etc.). With it, VMA queries
-    //   VkPhysicalDeviceMemoryBudgetPropertiesEXT and returns actual VRAM
-    //   usage/limit. Required for the per-heap memory telemetry exposed
-    //   via ResourceManager::get_vma_stats() and the future artist-facing
-    //   "VRAM usage" panel. Requires VK_KHR_get_physical_device_properties2
-    //   at instance level (core in Vulkan 1.1+, so no extra work for us
-    //   on API 1.3).
+    // BUFFER_DEVICE_ADDRESS_BIT: needed for indirect-address descriptor access. EXT_MEMORY_BUDGET_BIT: without it vmaGetHeapBudgets returns static estimate instead of real OS-level residency budget.
     aci.flags            = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
                          | VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     aci.physicalDevice   = physical_device_;
@@ -126,17 +114,14 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
         log_error("VMA init failed"); return false;
     }
 
-    // ── Pipeline cache (P6) ────────────────────────────────────────
+    // Pipeline cache
     VkPipelineCacheCreateInfo pcci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     if (vkCreatePipelineCache(device_, &pcci, nullptr, &pipeline_cache_) != VK_SUCCESS) {
         log_warn("VkPipelineCache creation failed; pipelines will recompile cold");
         pipeline_cache_ = VK_NULL_HANDLE;
     }
 
-    // ── VK_EXT_debug_utils: vkSetDebugUtilsObjectNameEXT ────────────
-    // Core in Vulkan 1.1+ but still loaded by pointer to stay portable
-    // to older loaders and to avoid relying on the macro being defined
-    // by the current Vulkan header.
+    // VK_EXT_debug_utils: vkSetDebugUtilsObjectNameEXT. Core in Vulkan 1.1+ but loaded by pointer for portability.
     set_debug_name_fn_ = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
         vkGetDeviceProcAddr(device_, "vkSetDebugUtilsObjectNameEXT"));
     if (set_debug_name_fn_) {
@@ -194,21 +179,11 @@ bool VulkanContext::load_pipeline_cache(const std::string& path) {
 
 VkResult VulkanContext::set_debug_name(VkObjectType type, uint64_t handle,
                                        const std::string& name) const {
-    // No-op fast paths. We return VK_SUCCESS for these so callers
-    // can chain the call without an if-guard at every site.
+    // No-op fast paths. Return VK_SUCCESS so callers can chain without if-guard.
     if (!set_debug_name_fn_ || handle == 0 || name.empty()) {
         return VK_SUCCESS;
     }
-    // Vulkan spec: pObjectName has a max length of 256 bytes
-    // INCLUDING the trailing NUL. The constant
-    // VK_MAX_DEBUG_UTILS_OBJECT_NAME_LENGTH_EXT is not in every
-    // Vulkan header revision, so we hard-code 256 here (it has been
-    // stable since VK_EXT_debug_utils was promoted to core in
-    // Vulkan 1.1). VVL will reject a longer string with
-    // VUID-VkDebugUtilsObjectNameInfoEXT-pObjectName-parameter
-    // and return VK_ERROR_VALIDATION_FAILED_EXT. To keep callers
-    // happy (and to avoid passing a dangling pointer to a truncated
-    // string we don't store), we truncate proactively.
+    // Vulkan spec: pObjectName max 256 bytes including NUL. Hard-code 256; VVL rejects longer strings. Truncate proactively.
     constexpr size_t kMaxUsable = 256 - 1;  // 255 chars
     std::string trimmed = name;
     if (trimmed.size() > kMaxUsable) {
@@ -217,8 +192,7 @@ VkResult VulkanContext::set_debug_name(VkObjectType type, uint64_t handle,
                  + trimmed.substr(0, 32) + "...\"");
         trimmed.resize(kMaxUsable);
     }
-    // VVL does not copy pObjectName (Khronos VVL#1168); the std::string
-    // argument guarantees the bytes are live for the duration of this call.
+    // VVL does not copy pObjectName (VVL#1168); std::string guarantees bytes are live for call duration.
     VkDebugUtilsObjectNameInfoEXT info{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
     info.objectType   = type;
     info.objectHandle = handle;

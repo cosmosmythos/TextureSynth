@@ -6,9 +6,7 @@
 
 namespace te {
 
-// ---------------------------------------------------------------------------
 // Internal helpers
-// ---------------------------------------------------------------------------
 
 static bool has_node(const Graph& g, NodeId id) {
     for (auto& n : g.nodes)
@@ -22,13 +20,7 @@ static bool is_muted(const std::vector<NodeInstance>& nodes, NodeId id) {
     return false;
 }
 
-// Resolve the effective source of a muted node M's input[0].
-//   - If M is itself a source (no incoming connection at input[0]),
-//     returns {0, 0} meaning "severed" (downstream reads dummy).
-//   - If M's input[0] is fed by a non-muted node, returns that connection.
-//   - If the source is also muted, recurse until a non-muted ancestor is
-//     found or we hit a source (severed).
-// Safety: bounded by node count to defend against pathological chains.
+// Resolve the effective source of a muted node M's input[0]. If M has no input, returns {0,0} (severed). If source is non-muted, returns that connection. If source is also muted, recurse. Bounded by node count.
 static std::pair<NodeId, uint32_t> resolve_muted_source(
     NodeId M,
     const std::vector<NodeInstance>& nodes,
@@ -52,9 +44,7 @@ static std::pair<NodeId, uint32_t> resolve_muted_source(
     return {0, 0};  // chain too deep — treat as severed
 }
 
-// Topological sort via Kahn's algorithm over the validated node set.
-// Returns node IDs in evaluation order (sources first).
-// On cycle: returns false.
+// Topological sort via Kahn's algorithm. Returns node IDs in evaluation order. On cycle returns false.
 static bool topo_sort_ir(
     const std::vector<ValidatedNode>& nodes,
     const std::vector<ValidatedConnection>& conns,
@@ -88,9 +78,7 @@ static bool topo_sort_ir(
     return order.size() == nodes.size();
 }
 
-// ---------------------------------------------------------------------------
 // validate_graph
-// ---------------------------------------------------------------------------
 
 GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     GraphIRResult result;
@@ -196,17 +184,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         }
     }
 
-    // ── 6.5. Rewire connections around muted nodes (Phase 1c) ─────
-    // For each muted node M in the active subgraph, redirect all of M's
-    // outgoing connections to M's effective input[0] source (chasing
-    // through other muted ancestors). If the effective source is severed
-    // (no input[0] upstream), the connection is dropped entirely. We work
-    // on a local copy so the caller's Graph is untouched.
-    //
-    // After rewire, muted nodes are excluded from the validated node
-    // list (step 7); their input connections are also dropped (they no
-    // longer participate). Bypassed nodes, by contrast, stay in the IR
-    // and the compiler emits a clear-to-zero pass for them.
+    // Rewire connections around muted nodes (Phase 1c). Redirect outgoing connections to effective input[0] source. If severed, connection dropped. Muted nodes excluded from validated node list. Bypassed nodes stay in IR.
     std::vector<Connection> rewired_conns = graph.connections;
     for (auto& n : graph.nodes) {
         if (!n.muted) continue;
@@ -233,29 +211,21 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         vn.id       = n.id;
         vn.type_id  = n.type_id;
         vn.format_override = n.format_override;
-        // Prefer the user-supplied debug_name when set (Phase 1d);
-        // fall back to "type_id_id" so logs are still meaningful.
+        // Prefer user-supplied debug_name (Phase 1d); fall back to "type_id_id"
         vn.debug_name = n.debug_name.empty()
                       ? (n.type_id + "_" + std::to_string(n.id))
                       : n.debug_name;
-        // Muted is always false here (muted nodes are excluded above);
-        // bypassed mirrors the user's flag.
+        // Muted is always false here; bypassed mirrors the user's flag.
         vn.muted    = false;
         vn.bypassed = n.bypassed;
-        // Stage 2: pass_kind is a *type-level* classification, so we
-        // look it up from the NodeLibrary (authoritative) rather than
-        // mirroring it on NodeInstance. See 03_pass_kind.md §2.3.
+        // Stage 2: pass_kind is type-level, looked up from NodeLibrary (authoritative), not mirrored on NodeInstance.
         if (auto* nt = lib.find(n.type_id)) {
             vn.pass_kind = nt->pass_kind;
         }
         ir.nodes.push_back(vn);
     }
 
-    // Build node_index up front so we can use it as the authoritative
-    // "validated node IDs" set when filtering connections below. A
-    // connection's endpoints must both be in ir.nodes — this excludes
-    // edges pointing at muted nodes (which were rewired out) and any
-    // unreachable node that may have slipped through the rewire.
+    // Build node_index up front as authoritative validated-node-IDs set when filtering connections. Both endpoints must be in ir.nodes -- excludes edges to muted/rewired-out nodes.
     for (size_t i = 0; i < ir.nodes.size(); ++i) {
         ir.node_index[ir.nodes[i].id] = i;
     }
@@ -278,8 +248,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         return result;
     }
 
-    // (node_index was built earlier in step 7 so it could be used as
-    // the authoritative validated-node-IDs set when filtering ir.connections.)
+    // node_index was built in step 7 to serve as authoritative validated-node-IDs set for filtering ir.connections
 
     result.success = true;
     return result;

@@ -6,39 +6,16 @@
 
 namespace te::chain_shader {
 
-// ---------------------------------------------------------------------------
-// Stage 4.1 + 4.2: emit GLSL for a LINEAR chain (possibly with
-// multi-input nodes).
-//
-// A chain in this stage is a sequence of PurePixel nodes where:
-//   - the first node (head) has 0..N input sockets; every socket is
-//     fed by an external sampled image (u_sampled[pc.in_sampled_slots[s]])
-//   - every other node has 1..N input sockets; socket 0 is fed by the
-//     previous chain node's output (Local{i-1}), and any additional
-//     sockets are fed by external sampled images
-//   - every input is SocketType::Vec4 (no Sampler2D, no Float)
-//   - total external inputs across the whole chain <= MAX_PASS_INPUTS
-//     (push-constant slot budget)
-//
-// The result is a single .comp shader that runs all nodes in a single
-// dispatch. The push constant layout matches PassPushConstants so the
-// existing Engine can dispatch chains using the same struct (Stage 6
-// wires the actual vkCmdPushConstants; this stage only emits GLSL).
-//
-// Returns Result with ok()=false on any failure: caller should fall back
-// to the per-node path.
-// ---------------------------------------------------------------------------
+// Stage 4: emit GLSL for a LINEAR chain. A chain is a sequence of PurePixel nodes where head has 0..N external inputs, every other node has socket 0 fed by previous output (Local) and rest fed by external images. Every input must be Vec4. Total external inputs <= MAX_PASS_INPUTS. Returns Result with ok()=false on failure (caller falls back to per-node path).
 struct Result {
     std::string source;        // GLSL source (empty if !ok())
     std::string error;         // human-readable diagnostic on failure
-    uint32_t    external_inputs = 0;   // = max in_sampled_slots index used + 1
-                                       // (0 for source-only chains)
+    uint32_t    external_inputs = 0;   // max in_sampled_slots index + 1 (0 for source-only)
 
     [[nodiscard]] constexpr bool ok() const noexcept { return error.empty(); }
 };
 
-// Emit a fused GLSL shader for a chain. The chain must be linear per the
-// contract above; Result.ok() will be false otherwise.
+// Emit a fused GLSL shader for a chain. Chain must be linear; Result.ok() false otherwise.
 Result emit_linear(const Chain& chain, const GraphIR& ir,
                    const NodeLibrary& lib);
 

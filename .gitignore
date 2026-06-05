@@ -1,5 +1,6 @@
 # Production build outputs.
 build/
+ADDON_OLDER/
 out/
 dist/
 test_shader_cache/

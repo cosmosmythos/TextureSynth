@@ -30,8 +30,7 @@ public:
 
     bool any_in_flight() const;
 
-    // Block until every in-flight slot has finished. Required before
-    // any topology change that would invalidate descriptors/resources.
+    // Block until every in-flight slot has finished. Required before any topology change that would invalidate descriptors/resources.
     void drain(VulkanContext& ctx);
 
     // Publish pre-cached pixels without GPU work (for dirty-skip path).
@@ -65,10 +64,7 @@ private:
     uint32_t  current_capacity_h_ = 0;
     uint64_t  next_ticket_ = 1;
     uint64_t  latest_submitted_generation_ = 0;
-    // Set true on a successful init(), false on shutdown() and on the
-    // default-constructed state. submit() and poll() return early if false,
-    // so a use-after-shutdown at the AsyncReadback level is a clean no-op
-    // rather than a use-after-free on a null VkBuffer.
+    // Set true on init(), false on shutdown()/default state. submit()/poll() return early if false, making use-after-shutdown a clean no-op.
     bool      initialized_ = false;
 
     // Synthetic (CPU-cached) frame — populated by publish_synthetic().

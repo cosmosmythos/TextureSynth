@@ -12,21 +12,7 @@
 
 namespace te {
 
-// ---------------------------------------------------------------------------
-// Specialization helper.
-//
-// Builds a VkSpecializationInfo from a variant key's raw constants. Returns
-// nullptr when specialization_count == 0 (the common case today — no node
-// sets specialization constants yet).
-//
-// The returned pointer points to a function-local struct; it is only valid
-// until the function returns. Vulkan spec: vkCreateComputePipelines reads
-// pSpecializationInfo synchronously, so the caller's data only needs to
-// live for the duration of the create call. We follow the same pattern.
-//
-// VkSpecializationMapEntry.constantID is set to the array index (0..7),
-// which matches GLSL `layout(constant_id = N)`. Entries are sorted by ID
-// as Vulkan requires.
+// Specialization helper. Builds VkSpecializationInfo from variant key constants. Returns nullptr when specialization_count == 0. Data lives only for create call duration (Vulkan reads synchronously).
 static const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& vk,
                                                    VkSpecializationMapEntry (&out_entries)[8],
                                                    VkSpecializationInfo&   out_info) {
@@ -44,16 +30,7 @@ static const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& vk,
     return &out_info;
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle guard.
-//
-// Used at the top of every public mutator that requires a Ready engine.
-// The macro takes entry_mu_ for the *remainder of the function* (the
-// lock_guard's scope is the function body), so a concurrent Engine::shutdown
-// or Engine::init will block until the guarded method returns. The atomic
-// state check inside the lock makes the Ready/not-Ready decision and the
-// "return without doing anything" path both thread-safe.
-// ---------------------------------------------------------------------------
+// Lifecycle guard. Top of every public mutator that requires Ready. Holds entry_mu_ for function body. Concurrent shutdown/init blocks until method returns.
 #define TE_GUARD_READY(call)                                                     \
     std::lock_guard<std::recursive_mutex> te_lk(entry_mu_);                       \
     if (state_.load(std::memory_order_acquire) != EngineState::Ready) {          \
@@ -64,19 +41,7 @@ static const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& vk,
         return call;                                                             \
     }
 
-// ---------------------------------------------------------------------------
-// init
-//
-// Holds entry_mu_ for the entire body (state check + Vulkan construction +
-// state flip to Ready). A concurrent Engine::shutdown blocks on the lock
-// until init finishes, so a half-built engine is never torn down by
-// another thread. The state machine is:
-//
-//   Uninitialized/ShutDown/Error -> Initializing -> Ready
-//                                  (on success)
-//                                  -> Error
-//                                  (on failure, after best-effort teardown)
-// ---------------------------------------------------------------------------
+// init. Holds entry_mu_ for entire body. Concurrent shutdown blocks until init finishes. State machine: Uninitialized/ShutDown/Error -> Initializing -> Ready (or -> Error on failure).
 bool Engine::init(VkSurfaceKHR surface,
                   const char** extra_inst_exts, uint32_t extra_inst_ext_count,
                   bool enable_validation,
@@ -125,11 +90,7 @@ bool Engine::init(VkSurfaceKHR surface,
 
     cache_ = std::make_unique<ShaderCache>(cache_dir);
 
-    // Loading zero nodes is a fatal init failure: a node-less engine cannot
-    // compile any graph, but the old behaviour silently continued, leaving
-    // set_graph() to fail with an obscure "unknown type" error two frames
-    // later (and the viewport to render black with no log). Refuse to come
-    // up in that state so the failure is visible at launch.
+    // Loading zero nodes is fatal: a node-less engine cannot compile any graph. Refuse to come up so failure is visible at launch.
     if (NodeRegistryLoader::load_from_directory(node_lib_, nodes_dir, glsl_dir, &err) == 0) {
         set_error_(EngineErrorCode::InitFailed,
                    "no nodes loaded from '" + nodes_dir + "': " + err,
@@ -237,33 +198,16 @@ bool Engine::ensure_dummy_image_() {
 }
 
 
-// ---------------------------------------------------------------------------
-// shutdown
-//
-// Idempotent. Second / Nth call is a no-op. Holds entry_mu_ for the entire
-// teardown so a concurrent Engine::init or another Engine::shutdown blocks
-// until we're done. Tolerates VK_ERROR_DEVICE_LOST (the device is gone, so
-// just free what we hold and accept that the underlying VkInstance may
-// already be invalid).
-//
-// State transitions:
-//   Uninitialized -> ShutDown   (nothing to tear down; mark for idempotency)
-//   Ready         -> ShuttingDown -> ShutDown
-//   Error         -> ShuttingDown -> ShutDown   (best-effort partial cleanup)
-//   Initializing  / ShuttingDown: unreachable (we hold the lock).
-// ---------------------------------------------------------------------------
+// shutdown. Idempotent. Holds entry_mu_ for entire teardown. Tolerates VK_ERROR_DEVICE_LOST. State: Uninitialized -> ShutDown, Ready/Error -> ShuttingDown -> ShutDown.
 void Engine::shutdown() {
     std::lock_guard<std::recursive_mutex> lk(entry_mu_);
 
     const EngineState s = state_.load(std::memory_order_acquire);
-    if (s == EngineState::ShutDown) return;  // idempotent
+    if (s == EngineState::ShutDown) return;
     if (s == EngineState::Uninitialized) {
-        // Nothing to tear down. Flip to ShutDown so the next init() starts
-        // from a defined "re-arming" state.
         state_.store(EngineState::ShutDown, std::memory_order_release);
         return;
     }
-    // s is Ready or Error. Both have Vulkan state to clean up.
     state_.store(EngineState::ShuttingDown, std::memory_order_release);
     shutdown_internal_();
     state_.store(EngineState::ShutDown, std::memory_order_release);
@@ -271,8 +215,7 @@ void Engine::shutdown() {
 
 
 void Engine::shutdown_internal_() {
-    // Wait for the GPU to finish whatever it was doing. Tolerate device-lost
-    // so a sick GPU still allows the engine to clean up.
+    // Wait for the GPU to finish. Tolerate device-lost so a sick GPU still allows cleanup.
     if (ctx_.device()) {
         const VkResult w = vkDeviceWaitIdle(ctx_.device());
         if (w != VK_SUCCESS && w != VK_ERROR_DEVICE_LOST) {
@@ -741,9 +684,7 @@ std::vector<Engine::BakedImage> Engine::bake() {
 }
 
 
-// ---------------------------------------------------------------------------
-// rebuild_downstream_adj_ — build adjacency list for dirty propagation
-// ---------------------------------------------------------------------------
+// rebuild_downstream_adj_ -- build adjacency list for dirty propagation
 void Engine::rebuild_downstream_adj_() {
     downstream_adj_.clear();
     for (const auto& vn : current_ir_.nodes) {
@@ -880,9 +821,7 @@ void Engine::retire_all_passes_() {
 }
 
 
-// Stage 6: build chain_id_of_pass_, ChainExec array, and chain
-// membership table from the PassPlan. Called by both the cache-hit
-// and async-compile install paths after passes_ is populated.
+// Stage 6: build chain_id_of_pass_, ChainExec array, and membership table from PassPlan. Called by both cache-hit and async-compile paths after passes_ is populated.
 void Engine::populate_chains_(const PassPlan& plan) {
     chain_execs_.clear();
     chain_execs_.reserve(plan.chains.size());
@@ -978,10 +917,7 @@ void Engine::tick_retired() {
 }
 
 
-// Stage 6: dispatch a single chain. Issues the per-chain vkCmdDispatch
-// + the layout transitions for the head's external inputs and the
-// tail's output. Bypassed chains become a clear-to-zero pass on
-// every member's output.
+// Stage 6: dispatch a single chain. Issues vkCmdDispatch + layout transitions for head external inputs and tail output. Bypassed chains clear to zero.
 void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
                                     uint32_t gx, uint32_t gy, size_t chain_idx) {
     if (chain_idx >= chain_execs_.size()) return;
@@ -1101,7 +1037,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
     // Propagate dirty set through downstream graph before recording.
     dirty_set_.propagate(downstream_adj_);
 
-    // Defensive: if nothing is dirty, skip entirely (submit() should have caught this).
+    // Defensive: skip if nothing is dirty (submit() should have caught this)
     if (!dirty_set_.any()) return;
 
     auto transition = [&](VkImage img,
@@ -1123,8 +1059,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         vkCmdPipelineBarrier2(cmd, &dep);
     };
 
-    // 1. Transition dirty node images to GENERAL.
-    //    Clean passes' images stay in their current layout (GENERAL or SAMPLED).
+    // 1. Transition dirty node images to GENERAL. Clean passes' images stay in current layout.
     for (auto& pe : passes_) {
         if (!dirty_set_.is_dirty(pe.node_id)) continue;
         for (uint32_t i = 0; i < pe.output_count; ++i) {
@@ -1154,9 +1089,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         dummy_layout_ = VK_IMAGE_LAYOUT_GENERAL;
     }
 
-    // P1: Queue-family ownership acquire for freshly-uploaded images.
-    // Symmetric with the release barrier issued on the transfer queue.
-    // Must use IGNORED stage masks on srcStageMask (acquire side).
+    // P1: Queue-family ownership acquire for freshly-uploaded images. Symmetric with release barrier on transfer queue. Must use IGNORED srcStageMask (acquire side).
     if (!images_needing_acquire_.empty()) {
         std::vector<VkImageMemoryBarrier2> acquires;
         acquires.reserve(images_needing_acquire_.size());
@@ -1196,9 +1129,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
     }
 
-    // 4. Stage 6: chains first (one dispatch per chain, regardless of
-    //    member count), then non-chain passes. Chain member passes are
-    //    skipped in the per-pass loop via chain_id_of_pass_.
+    // 4. Stage 6: chains first (one dispatch per chain), then non-chain passes. Chain members skipped in per-pass loop via chain_id_of_pass_.
     bool final_pass_was_dirty = false;
 #ifndef TE_FORCE_NO_FUSION
     for (size_t ci = 0; ci < chain_execs_.size(); ++ci) {
@@ -1216,7 +1147,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
     }
 #endif
 
-    // 4. Incremental dispatch — only dirty passes.
+    // Incremental dispatch -- only dirty passes
     for (size_t i = 0; i < passes_.size(); ++i) {
         auto& pe = passes_[i];
 #ifndef TE_FORCE_NO_FUSION
@@ -1230,8 +1161,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         // and skip the pipeline bind. The output state is updated below as
         // usual; the clear-to-zero is issued in the dispatch branch.
         if (!pe.bypassed) {
-            // Emit input barriers ONLY for inputs whose source pass is dirty this frame
-            // or whose layout isn't already GENERAL (readable by compute).
+        // Emit input barriers only for inputs whose source pass is dirty this frame or whose layout isn't already GENERAL.
             for (const auto& inp : pe.input_resources) {
                 if (inp.node_id == 0) continue;  // unconnected → bound to dummy
                 auto* src = resources_.get(inp);
@@ -1263,12 +1193,9 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
             if (out_res) { out_res->is_dirty = false; out_res->layout = VK_IMAGE_LAYOUT_GENERAL; }
         }
 
-        // Phase 1c: bypassed pass — clear each output to zero via
-        // vkCmdClearColorImage. Image stays in VK_IMAGE_LAYOUT_GENERAL,
-        // which is a valid layout for the clear call. No pipeline, no
-        // dispatch, no push constants.
+        // Phase 1c: bypassed pass -- clear each output to zero via vkCmdClearColorImage. Image stays in GENERAL. No pipeline, no dispatch.
         if (pe.bypassed) {
-            VkClearColorValue zero{};  // all four components = 0
+            VkClearColorValue zero{};
             VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             for (uint32_t o = 0; o < pe.output_count; ++o) {
                 auto* out_res = resources_.get(pe.output_resources[o]);
@@ -1307,7 +1234,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         }
     }
 
-    // 5. Blit final pass output → output_ (only if the output pass ran).
+    // 5. Blit final pass output -> output_ (only if the output pass ran)
     auto* final_res = resources_.get(final_output_resource_);
     if (final_res && final_pass_was_dirty) {
         transition(final_res->image,
@@ -1358,9 +1285,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
 }
 
 
-// ---------------------------------------------------------------------------
 // Parameter SSBO upload
-// ---------------------------------------------------------------------------
 void Engine::mark_node_dirty(NodeId node_id) {
     dirty_set_.mark_node(node_id);
     any_pass_dirty_.store(true);
@@ -1432,13 +1357,7 @@ void Engine::update_node_params_by_id(NodeId node_id, const std::vector<float>& 
                            (VkDeviceSize)(n    * sizeof(float)));
     }
     param_dirty_ = true;
-    // Seed the dispatch layer's dirty set BEFORE mark_downstream_dirty_ runs
-    // its BFS. mark_downstream_dirty_ writes to NodeResource::is_dirty
-    // (Layer 3) only; record_dispatch's propagate() expands from
-    // dirty_set_ (Layer 2). Without this line the next record_dispatch
-    // would early-exit on dirty_set_.any() == false and re-publish the
-    // previous frame's pixels via the async readback's synthetic-publish
-    // cache. (See DirtySet.hpp for the three-layer state machine.)
+    // Seed dirty_set_ (Layer 2) before mark_downstream_dirty_ (Layer 3). Without this, record_dispatch would early-exit and re-publish stale pixels. See DirtySet.hpp for three-layer state machine.
     dirty_set_.mark_node(node_id);
     mark_downstream_dirty_(node_id);
 }
@@ -1473,8 +1392,7 @@ void Engine::update_node_params_by_name(NodeId node_id,
 
     auto* dst = static_cast<float*>(param_mapped_[param_write_idx_]);
 
-    // Phase 6: warn on keys the manifest doesn't know about — these are
-    // contract violations between Python and JSON.
+    // Phase 6: warn on keys the manifest doesn't know about -- contract violations between Python and JSON.
     std::unordered_set<std::string> known;
     known.reserve(type->params.size());
     for (auto& p : type->params) known.insert(p.name);
@@ -1508,9 +1426,7 @@ void Engine::update_node_params_by_name(NodeId node_id,
         vmaFlushAllocation(ctx_.allocator(), param_alloc_[param_write_idx_], off, size);
     }
     param_dirty_ = true;
-    // See update_node_params_by_id above. mark_downstream_dirty_ writes
-    // Layer 3 only; we have to seed Layer 2 (DirtySet) ourselves or the
-    // next record_dispatch will early-exit.
+    // See update_node_params_by_id above. Seed Layer 2 (DirtySet) ourselves or next record_dispatch will early-exit.
     dirty_set_.mark_node(node_id);
     mark_downstream_dirty_(node_id);
 }

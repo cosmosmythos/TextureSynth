@@ -4,7 +4,6 @@
 
 namespace te {
 
-// Constructor does NOTHING. No threads. No allocations.
 // Safe to call at any time, including during Python extension load.
 ShaderCompiler::ShaderCompiler() {}
 
@@ -18,7 +17,7 @@ void ShaderCompiler::ensure_workers() {
 }
 
 ShaderCompiler::~ShaderCompiler() {
-    if (!workers_started_) return; // nothing to clean up
+    if (!workers_started_) return;
     {
         std::lock_guard lk(queue_mu_);
         stop_ = true;
@@ -49,8 +48,7 @@ uint64_t ShaderCompiler::hash_source(const std::string& s) {
 }
 
 std::future<CompileResult> ShaderCompiler::compile_compute_async(std::string glsl, std::string name) {
-    // Start workers here, not in constructor — safe because by the time
-    // anyone calls compile_compute_async(), Python/Blender is fully loaded.
+    // Start workers here, not in constructor — safe because Python/Blender is fully loaded by the time compile_compute_async() is called.
     ensure_workers();
 
     auto promise = std::make_shared<std::promise<CompileResult>>();

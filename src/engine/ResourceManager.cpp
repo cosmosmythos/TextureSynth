@@ -80,12 +80,7 @@ bool ResourceManager::create_image_(VulkanContext& ctx, NodeResource& r,
         return false;
     }
     ctx.set_debug_name(VK_OBJECT_TYPE_IMAGE, (uint64_t)r.image, dbg);
-    // VMA's own name mechanism. Independent of vkSetDebugUtilsObjectNameEXT
-    // (per VMA docs: "does not automatically set it to the Vulkan buffer or
-    // image"). Populated via vmaGetAllocationInfo(alloc).pName and consumed
-    // by vmaBuildStatsString's JSON dump. Queryable in tests; useful when
-    // the VMA-side allocator is the only handle (e.g. linear sub-allocator
-    // pools that don't expose VkDeviceMemory directly).
+    // VMA's own name mechanism (independent of vkSetDebugUtilsObjectNameEXT). Populated via vmaGetAllocationInfo(alloc).pName, consumed by vmaBuildStatsString JSON dump.
     vmaSetAllocationName(ctx.allocator(), r.alloc, dbg.c_str());
 
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -217,10 +212,7 @@ VmaStatsReport ResourceManager::get_vma_stats(VulkanContext& ctx) const {
                          * pixel_bytes_(ret.res.format);
     }
 
-    // VMA API: vmaCalculateStatistics takes a VmaTotalStatistics*. The
-    // 'total' field is the rolled-up across all heaps/types. The
-    // per-heap breakdown is in ts.heapStats[heapIndex] (one entry per
-    // VkPhysicalDeviceMemoryProperties::memoryHeapCount).
+    // VMA API: vmaCalculateStatistics fills VmaTotalStatistics; total is rolled-up, heapStats is per-heap.
     VmaTotalStatistics ts{};
     vmaCalculateStatistics(ctx.allocator(), &ts);
     const VmaStatistics& s = ts.total.statistics;
@@ -228,20 +220,7 @@ VmaStatsReport ResourceManager::get_vma_stats(VulkanContext& ctx) const {
     r.vma_allocation_bytes    = (size_t)s.allocationBytes;
     r.vma_unused_range_bytes  = (size_t)(s.blockBytes - s.allocationBytes);
 
-    // Per-heap budget / usage. vmaGetHeapBudgets fills the array with
-    // real OS-level residency numbers when the allocator was created
-    // with VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT (see
-    // VulkanContext.cpp). Without the flag, VMA falls back to 80% of
-    // heap size -- still a valid number, but not the real VRAM gauge
-    // an artist-facing panel would want.
-    //
-    // Edge cases we handle:
-    //   1. memoryHeapCount == 0 (spec violation, but guard anyway)
-    //   2. Driver returns 0 for budget (VMA itself falls back to the
-    //      80% heuristic -- so this branch is mostly defensive)
-    //   3. usage > budget mid-frame (legal, just clamp pressure)
-    //   4. UMA systems (memoryHeapCount == 1, the single heap has both
-    //      DEVICE_LOCAL and HOST_VISIBLE types; isDeviceLocal is true)
+    // Per-heap budget / usage. Real OS-level numbers with EXT_MEMORY_BUDGET_BIT; 80% heuristic fallback otherwise. Edge cases: memoryHeapCount==0, zero budget, usage>budget, UMA systems.
     const VkPhysicalDeviceMemoryProperties* mem_props = nullptr;
     vmaGetMemoryProperties(ctx.allocator(), &mem_props);
     if (mem_props && mem_props->memoryHeapCount > 0) {
@@ -265,9 +244,7 @@ VmaStatsReport ResourceManager::get_vma_stats(VulkanContext& ctx) const {
             h.vma_block_count      = b.statistics.blockCount;
             h.vma_allocation_count = b.statistics.allocationCount;
 
-            // Pressure: usage / budget, clamped 0..1. When budget is 0
-            // (driver didn't populate the budget extension and VMA
-            // returned 0), default to 0 to avoid div-by-zero.
+            // Pressure: usage / budget, clamped 0..1. Zero when budget is 0 (avoids div-by-zero).
             if (h.budget_bytes > 0) {
                 h.pressure = (float)double(h.usage_bytes) / (float)double(h.budget_bytes);
                 if (h.pressure < 0.0f) h.pressure = 0.0f;

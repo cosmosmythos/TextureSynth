@@ -9,14 +9,16 @@ from . import panels
 
 
 def register():
-    # Preferences must register first so the C++ log sink (installed
-    # below) can read the user's preferred level.
+    # Register tree first to avoid console noise from SpaceNodeEditor.tree_type mismatch.
+    nodes.tree.register()
+
+    # Preferences must load before the C++ log sink starts reading the level.
     preferences.register()
 
-    # Load C++ engine first so dynamic node classes can be generated.
+    # Load C++ engine before generating dynamic node classes.
     cpp_module.load()
 
-    # Register RNA/UI classes before starting the timer.
+    # Register remaining RNA/UI classes.
     nodes.register()
     operators.register()
     panels.register()
@@ -26,13 +28,13 @@ def register():
 
 
 def unregister():
-    # Stop timer before unregistering node classes.
+    # Stop evaluation loop before tearing down classes.
     evaluation.unregister()
 
     panels.unregister()
     operators.unregister()
     nodes.unregister()
 
+    # Shut down Vulkan engine and clean up preferences.
     cpp_module.shutdown()
-
     preferences.unregister()

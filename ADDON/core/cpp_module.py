@@ -1,13 +1,6 @@
-"""
-C++ Module Loader
-Loads the wheel-provided texturesynth_core C++ module.
-
-The C++ side calls into Python via `set_log_callback(level, message)`.
-We filter the messages by the user's addon-preference log level so the
-console is silent by default; users can flip to DEBUG in addon prefs
-to get the full firehose for bug reports.
-"""
+"""C++ Module Loader: loads texturesynth_core C++ module and initializes engine."""
 import bpy
+import os
 
 from . import logging as _tslog
 
@@ -16,9 +9,7 @@ _engine = None    # Engine instance
 
 
 def _cpp_log_sink(level, message):
-    """Filter installed into the C++ engine. `level` is one of
-    '[info]  ', '[warn]  ', '[error] '. Drops events below the
-    addon-preference log_level."""
+    """Log filter callback filtering C++ logs by addon preferences."""
     lvl = level.strip().strip("[]").strip().upper()
     if lvl == "INFO" and not _tslog.is_enabled_for("INFO"):
         return
@@ -30,19 +21,13 @@ def _cpp_log_sink(level, message):
 
 
 def load():
-    """Load the C++ module and initialise the Vulkan engine.
-
-    Safe to call from register() — the DLL loader runs first,
-    then the import, then engine construction.
-    Non-fatal: errors are forwarded to the addon logger (which prints
-    at ERROR level); never raises.
-    """
+    """Load C++ module and initialise Vulkan engine. Returns success."""
     global _core, _engine
 
     if _engine is not None:
-        return True  # already loaded
+        return True
 
-    # Step 1 — ensure wheel-bundled DLLs are discoverable on Windows
+    # Ensure wheel-bundled DLLs are discoverable on Windows.
     try:
         from ..utils.dll_loader import add_wheel_dll_dirs
         add_wheel_dll_dirs("texturesynth_core")
@@ -50,7 +35,7 @@ def load():
     except Exception:
         pass
 
-    # Step 2 — import the pyd
+    # Import texturesynth_core binary module.
     try:
         import texturesynth_core as core
         _core = core
@@ -66,7 +51,7 @@ def load():
         _tslog.error(f"Core import exception: {e}")
         return False
 
-    # Step 3 — construct Engine (no threads started here)
+    # Instantiate engine.
     try:
         eng = _core.Engine()
     except Exception as e:
@@ -74,9 +59,8 @@ def load():
         _core = None
         return False
 
-    # Step 4 — init Vulkan (headless, no surface)
+    # Initialize headless Vulkan context and shader directories.
     try:
-        import os
         cache_dir = os.path.join(
             bpy.utils.user_resource('DATAFILES', path="texturesynth"),
             "shader_cache",

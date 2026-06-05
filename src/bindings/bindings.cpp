@@ -17,26 +17,8 @@ namespace nb = nanobind;
 using namespace nb::literals;
 using namespace te;
 
-// ---------------------------------------------------------------------------
 // ASYNC API
-// ---------------------------------------------------------------------------
-// check_engine_ready: throws RuntimeError + populates EngineError when the
-// engine is not in the Ready state. Mirrors the C++ TE_GUARD_READY macro
-// so Python callers see a uniform error experience across mutators.
-//
-// IMPORTANT: every bindings function that calls check_engine_ready must
-// first take engine.entry_mutex() for the full duration of the call. The
-// C++-side TE_GUARD_READY macro does this; the bindings side has to do
-// it explicitly because lambdas can't use the macro. The lock pattern
-// for every guarded function is:
-//
-//     std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
-//     check_engine_ready(engine, EnginePhase::Foo);
-//     // ... body ...
-//
-// Without the lock, a concurrent Engine::shutdown() could tear down
-// Vulkan resources between the state check and the body.
-// ---------------------------------------------------------------------------
+// check_engine_ready: throws RuntimeError + populates EngineError when engine not Ready. Mirrors TE_GUARD_READY. Every bindings function must take engine.entry_mutex() first (lambdas can't use the macro). Pattern: lock_guard -> check_engine_ready -> body. Without the lock, concurrent shutdown could tear down Vulkan resources between check and body.
 static void check_engine_ready(Engine& engine, EnginePhase phase) {
     if (engine.is_ready()) return;
     const Engine::EngineState s = engine.engine_state();
@@ -47,9 +29,7 @@ static void check_engine_ready(Engine& engine, EnginePhase phase) {
     throw std::runtime_error("engine not Ready");
 }
 
-// submit_render: records + submits a dispatch+copy job on a free ring slot.
-// Returns ticket > 0 on success, 0 if all slots busy (retry next tick).
-// NEVER blocks the main thread.
+// submit_render: records + submits dispatch+copy on a free ring slot. Returns ticket > 0 on success, 0 if busy. NEVER blocks.
 static uint64_t submit_render(Engine& engine, PushConstants pc, uint64_t generation) {
     std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
     check_engine_ready(engine, EnginePhase::Submit);
@@ -84,8 +64,7 @@ static uint64_t submit_render(Engine& engine, PushConstants pc, uint64_t generat
     return ticket;
 }
 
-// poll_readback: non-blocking. Returns None if nothing ready,
-// else (numpy[H,W,4], generation).
+// poll_readback: non-blocking. Returns None or (numpy[H,W,4], generation)
 static nb::object poll_readback(Engine& engine) {
     std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
     check_engine_ready(engine, EnginePhase::Readback);
@@ -98,9 +77,7 @@ static nb::object poll_readback(Engine& engine) {
     // Cache last-presented frame for synthetic republish on dirty-skip.
     engine.stash_last_presented(pixels, w, h, gen);
 
-    // Allocate a heap buffer the ndarray will own via nb::capsule.
-    // Stack-allocated std::vector data would dangle after this function returns,
-    // so we copy into a new[] block whose lifetime is governed by the capsule deleter.
+    // Allocate heap buffer owned by nb::capsule (stack-allocated vector would dangle after return).
     const size_t count = static_cast<size_t>(h) * w * 4;
     float* data = new float[count];
     std::memcpy(data, pixels.data(), count * sizeof(float));
@@ -309,23 +286,21 @@ NB_MODULE(texturesynth_core, m) {
         // Call from unregister() on Blender's main thread.
         .def("shutdown", &Engine::shutdown)
 
-        // Submit a new graph for async compilation. Returns generation id, or 0 on failure.
+        // Submit a new graph for async compilation. Returns generation id or 0 on failure.
         .def("set_graph", [](Engine& e, const Graph& g) -> uint64_t {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::GraphSubmit);
             return e.set_graph(g);
         })
 
-        // Re-target the preview at a different node. Cheap on cache hit; recompiles
-        // the chain shader only if the new output is in a different chain.
+        // Re-target the preview at a different node. Cheap on cache hit; recompiles chain shader only if new output is in a different chain.
         .def("set_active_node", [](Engine& e, uint64_t id) -> uint64_t {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::GraphSubmit);
             return e.set_active_node(id);
         })
 
-        // Synchronous readback of the active node's output as a numpy array
-        // (shape = [H, W, 4], dtype = float32, RGBA in [0,1]).
+        // Synchronous readback of active node's output as numpy array (shape=[H,W,4], float32, RGBA).
         .def("readback_sync", [](Engine& e) -> nb::ndarray<nb::numpy, float, nb::shape<-1, -1, 4>> {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::Submit);
@@ -344,10 +319,7 @@ NB_MODULE(texturesynth_core, m) {
                 data, 3, shape, owner);
         })
 
-        // Bake all named Graph::output_targets (or the active node if no
-        // targets). Returns a list of {name, w, h, ndarray(rgba float)}.
-        // The host decides the format (Blender: bpy.data.images; viewer:
-        // float texture; CLI: numpy → EXR/PNG/TIFF).
+        // Bake all named Graph::output_targets (or active node if no targets). Returns list of {name, w, h, ndarray(rgba float)}.
         .def("bake", [](Engine& e) {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::Submit);
@@ -386,8 +358,7 @@ NB_MODULE(texturesynth_core, m) {
         .def("current_revision", &Engine::current_revision)
         .def("current_graph", &Engine::current_graph, nb::rv_policy::reference)
         .def("resource_count", [](Engine& e) {
-            // Count of live per-node images held by ResourceManager.
-            // Cheap O(1) via internal map size -- exposed for Python diagnostics.
+            // Count of live per-node images (O(1), exposed for Python diagnostics).
             return (int)e.resources_live_count();
         })
         .def("resource_bytes", [](Engine& e) {
@@ -397,12 +368,7 @@ NB_MODULE(texturesynth_core, m) {
             return (uint64_t)e.resources().budget_bytes();
         })
         .def("get_vma_stats", [](Engine& e) {
-            // Snapshot of memory telemetry. See VmaStatsReport in
-            // ResourceManager.hpp. Requires the engine to be initialized
-            // with VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT for the
-            // gpu_* and per-heap fields to be the real OS-reported numbers;
-            // without it, VMA falls back to a static 80%-of-heap-size
-            // estimate (still a valid number, but not "live VRAM").
+            // Snapshot of memory telemetry (VmaStatsReport). Requires EXT_MEMORY_BUDGET_BIT for real OS-reported numbers; otherwise 80%-heuristic fallback.
             auto s = e.resources().get_vma_stats(e.ctx());
             nb::dict d;
             d["node_resource_count"]      = (uint64_t)s.node_resource_count;
@@ -413,17 +379,13 @@ NB_MODULE(texturesynth_core, m) {
             d["vma_allocation_bytes"]     = (uint64_t)s.vma_allocation_bytes;
             d["vma_unused_range_bytes"]   = (uint64_t)s.vma_unused_range_bytes;
             d["warning_threshold_bytes"]  = (uint64_t)s.warning_threshold_bytes;
-            // Back-compat: keep the old key too. New code should read
-            // warning_threshold_bytes; budget_bytes is a configured
-            // warning limit, not a GPU fact.
+            // Back-compat: keep old key too. New code should read warning_threshold_bytes.
             d["budget_bytes"]             = (uint64_t)s.warning_threshold_bytes;
             d["gpu_budget_bytes"]         = (uint64_t)s.gpu_budget_bytes;
             d["gpu_usage_bytes"]          = (uint64_t)s.gpu_usage_bytes;
             d["gpu_pressure"]             = (double)s.gpu_pressure;
             d["aliasing_efficiency"]      = s.aliasing_efficiency();
-            // Per-heap breakdown. Each entry is itself a dict so the
-            // Python side can iterate without writing a C++ binding per
-            // field. The 'label' field is one of {"DEVICE_LOCAL", "HOST"}.
+            // Per-heap breakdown (dict so Python iterates without per-field C++ binding).
             nb::list heaps;
             for (const auto& h : s.heap_stats) {
                 nb::dict hd;
@@ -473,8 +435,7 @@ NB_MODULE(texturesynth_core, m) {
         .def("last_error_record", &Engine::last_error_record, nb::rv_policy::reference)
         .def("clear_error",       &Engine::clear_error)
 
-        // Upload node slider values into the GPU parameter SSBO. Call before dispatch.
-        // Replaces the old push-constant hot_params approach -- no 28-float limit.
+        // Upload node slider values into GPU parameter SSBO. Call before dispatch.
         .def("update_node_params_by_id",
             [](Engine& e, uint64_t id, const std::vector<float>& p) {
                 std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
@@ -516,8 +477,7 @@ NB_MODULE(texturesynth_core, m) {
 
         .def("total_param_floats", &Engine::total_param_floats)
 
-        // Dispatch + CPU readback. Only call after has_pipeline() == True.
-        // MUST be called from Blender's main thread (timer callback). Never from a Python thread.
+        // Dispatch + CPU readback. Only call after has_pipeline() == True. MUST be called from Blender's main thread.
         .def("submit_render", &submit_render,
              "pc"_a, "generation"_a = 0,
              "Async: submits a render job. Returns ticket (>0) or 0 if ring full.")

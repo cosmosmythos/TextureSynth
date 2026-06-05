@@ -6,18 +6,7 @@ namespace te {
 
 using NodeId = uint64_t;
 
-// ---------------------------------------------------------------------------
-// EngineError -- structured error channel for the C++/Python product surface.
-//
-// Every Engine entry point that can fail (init, set_graph, submit_render,
-// upload_image, release_image, shutdown) populates a single EngineError
-// record reachable via Engine::last_error_record(). The record persists
-// until the next successful call clears it.
-//
-// Code + phase let callers (Blender addon, tests) dispatch on machine-readable
-// reasons without parsing log text. The message is for humans; the node id
-// pinpoints which node in the graph caused the failure (0 when not applicable).
-// ---------------------------------------------------------------------------
+// EngineError -- structured error channel. Every failing entry point populates a single record reachable via Engine::last_error_record(). The record persists until the next successful call clears it. Code + phase let callers dispatch on machine-readable reasons; message is for humans; failed_node pinpoints the graph node (0 when N/A).
 
 enum class EngineErrorCode : uint32_t {
     None = 0,
@@ -93,10 +82,7 @@ struct EngineError {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Stringification for log lines and Python repr. Used by Engine::set_error_
-// to produce readable "[CodeName @ PhaseName]" prefixes.
-// ---------------------------------------------------------------------------
+// Stringification for log lines and Python repr. Used by Engine::set_error_ to produce "[CodeName @ PhaseName]" prefixes.
 inline const char* engine_error_code_name(EngineErrorCode c) noexcept {
     switch (c) {
         case EngineErrorCode::None:                return "None";

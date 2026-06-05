@@ -1,14 +1,11 @@
-"""Texture-tree-aware connector ops.
-   • Ctrl+Shift+RMB drag from node A onto node B -> insert Blend(A,B) between them.
-   • Ctrl+Shift+LMB release on a node           -> wire its first output to Output node.
-     (Uses RELEASE event instead of CLICK to avoid interference with node selection)
-"""
+"""Connector operators for node tree shortcuts (Blend insertion and Output auto-wire)."""
 import bpy
 from mathutils import Vector
 from ..utils.node_utils import offset_node_location, frame_adjust
 
 
-# ── helpers ──────────────────────────────────────────────────────────
+# -- Helpers
+
 def _ts_tree(context):
     sd = context.space_data
     if sd and sd.type == 'NODE_EDITOR' and sd.tree_type == 'TextureSynthTreeType':
@@ -16,9 +13,7 @@ def _ts_tree(context):
     return None
 
 def _node_under_cursor(tree, mouse_region, region):
-    """Return the topmost node whose rect contains the region-space mouse pos."""
-    # node.location is in tree space; we need to convert region pixels → tree space.
-    # Use region_to_view to get tree-space coords.
+    """Return the topmost node at the region-space mouse position."""
     x, y = region.view2d.region_to_view(mouse_region[0], mouse_region[1])
     hit = None
     for n in tree.nodes:
@@ -27,7 +22,7 @@ def _node_under_cursor(tree, mouse_region, region):
         loc = n.location
         w, h = n.dimensions
         if loc.x <= x <= loc.x + w and loc.y - h <= y <= loc.y:
-            hit = n  # last hit = topmost in iter order
+            hit = n
     return hit
 
 def _first_output(node):
@@ -37,7 +32,8 @@ def _first_free_input(node):
     return next((s for s in node.inputs if s.enabled and not s.is_linked), None)
 
 
-# ── Ctrl+Shift+RMB drag: insert Blend(A, B) ──────────────────────────
+# -- Blend Connector
+
 class TS_OT_connect_blend(bpy.types.Operator):
     bl_idname  = "texturesynth.connect_blend"
     bl_label   = "Connect with Blend"
@@ -81,13 +77,13 @@ class TS_OT_connect_blend(bpy.types.Operator):
         blend.location = (a.location + b.location) * 0.5 + Vector((180, 0))
         t.links.new(oa, blend.inputs[0])
         t.links.new(ob, blend.inputs[1])
-        # Optional: auto-wire to existing Output if present and free.
         out = next((n for n in t.nodes if n.bl_idname == 'TS_Output_Node'), None)
         if out and not out.inputs[0].is_linked:
             t.links.new(blend.outputs[0], out.inputs[0])
 
 
-# ── Ctrl+Shift+LMB click: wire node → Output ─────────────────────────
+# -- Output Connector
+
 class TS_OT_connect_to_output(bpy.types.Operator):
     bl_idname  = "texturesynth.connect_to_output"
     bl_label   = "Connect to Output"
@@ -106,22 +102,20 @@ class TS_OT_connect_to_output(bpy.types.Operator):
         out = next((n for n in tree.nodes if n.bl_idname == 'TS_Output_Node'), None)
         if out is None:
             out = tree.nodes.new('TS_Output_Node')
-            # Position output node to the right of source node, using Sverchok pattern
             offset_node_location(src, out, [100, 0])
-            # If source node is in a frame, place output in same frame
             frame_adjust(src, out)
         osock = _first_output(src)
         isock = out.inputs[0]
         if osock is None:
             return {'CANCELLED'}
-        # Replace any existing link.
         for l in list(isock.links):
             tree.links.remove(l)
         tree.links.new(osock, isock)
         return {'FINISHED'}
 
 
-# ── keymap registration ─────────────────────────────────────────────
+# -- Keymaps
+
 _KEYMAPS = []
 
 def _register_keymaps():
@@ -130,13 +124,11 @@ def _register_keymaps():
         return
     km = kc.keymaps.new(name="Node Editor", space_type='NODE_EDITOR')
 
-    # Ctrl+Shift+RMB drag
     kmi = km.keymap_items.new(
         TS_OT_connect_blend.bl_idname, 'RIGHTMOUSE', 'PRESS',
         ctrl=True, shift=True)
     _KEYMAPS.append((km, kmi))
 
-    # Ctrl+Shift+LMB release (Sverchok pattern: RELEASE avoids node-selection interference)
     kmi = km.keymap_items.new(
         TS_OT_connect_to_output.bl_idname, 'LEFTMOUSE', 'RELEASE',
         ctrl=True, shift=True)

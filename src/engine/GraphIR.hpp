@@ -8,20 +8,7 @@
 
 namespace te {
 
-// ---------------------------------------------------------------------------
-// GraphIR — Validated, immutable internal graph representation.
-//
-// GraphIR is the gate between "what Python/Blender gave us" and "what the
-// compiler/scheduler is allowed to consume."  Every field has been checked:
-//   - All node types exist in the NodeLibrary.
-//   - All socket indexes are in bounds.
-//   - The output node exists and is reachable.
-//   - The graph is acyclic (DAG).
-//   - Only the active subgraph (reachable from output) is included.
-//
-// GraphIR is cheap to copy (vectors of small structs) and is intended to be
-// stored as a const snapshot alongside a GraphRevisionId.
-// ---------------------------------------------------------------------------
+// GraphIR -- validated, immutable internal graph representation. Types exist, sockets in bounds, output reachable, DAG, active subgraph only. Cheap to copy.
 
 using GraphRevisionId = uint64_t;
 
@@ -30,14 +17,10 @@ struct ValidatedNode {
     std::string type_id;          // references NodeType::id
     std::string debug_name;       // human-readable label for logging/debugging
     ChannelFormat format_override = ChannelFormat::RGBA;
-    // Phase 1c: mirror of NodeInstance flags. muted nodes should be absent
-    // from the active subgraph after validation rewires; bypassed nodes
-    // remain so the compiler can emit a clear pass for them.
+    // Phase 1c: muted nodes are absent after validation rewires; bypassed nodes remain so compiler can emit clear pass.
     bool muted    = false;
     bool bypassed = false;
-    // Stage 2: mirror of NodeType::pass_kind, copied by validate_graph
-    // when populating the IR. Source of truth is NodeType (type-level
-    // classification, not a per-instance override).
+    // Stage 2: mirror of NodeType::pass_kind, copied by validate_graph. Source of truth is NodeType (type-level, not per-instance).
     PassKind pass_kind = PassKind::PurePixel;
 };
 
@@ -74,12 +57,7 @@ struct GraphIRResult {
     std::string error;           // human-readable on failure
 };
 
-// ---------------------------------------------------------------------------
 // Validate a raw Graph against a NodeLibrary and produce a GraphIR.
-//
-// On success:  result.success == true,  result.ir is ready for compilation.
-// On failure:  result.success == false, result.error describes the problem.
-// ---------------------------------------------------------------------------
 GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib);
 
 } // namespace te

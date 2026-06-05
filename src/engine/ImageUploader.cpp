@@ -167,10 +167,7 @@ uint64_t ImageUploader::submit(VulkanContext& ctx,
 
     // 3. Release / final transition.
     if (qfot) {
-        // Queue family ownership release: transfer → graphics.
-        // Per Vulkan spec, the release barrier on src queue and the
-        // acquire barrier on dst queue must use IGNORED for the
-        // *opposite* stage masks (release has no dstStage; acquire has no srcStage).
+        // Queue family ownership release: transfer -> graphics. Release has no dstStage; acquire has no srcStage.
         VkImageMemoryBarrier2 rel{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         rel.srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT;
         rel.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -232,13 +229,7 @@ std::vector<ImageUploader::Completion> ImageUploader::poll(VulkanContext& ctx) {
         if (s.state != SlotState::InFlight) continue;
         if (vkGetFenceStatus(ctx.device(), s.fence) != VK_SUCCESS) continue;
 
-        // If we did a QFOT release on the transfer queue, the acquire on the
-        // graphics queue is required before any compute sampling. We issue
-        // it lazily inside Engine::record_dispatch on first use, because
-        // the image will be bound there anyway. To make that cheap, we
-        // mark the image's layout as TRANSFER_DST so the dispatch path
-        // emits the acquire barrier naturally.
-        // (Engine integration below handles this.)
+        // If QFOT release was issued on transfer queue, acquire on graphics queue is done lazily in Engine::record_dispatch on first use.
 
         Completion c;
         c.node_id = s.node_id;

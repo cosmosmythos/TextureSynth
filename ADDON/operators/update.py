@@ -1,9 +1,4 @@
-"""
-Manual "Update Texture" operator.
-
-Useful when auto-update is off, or for debugging.
-"""
-
+"""Manual operator to force a texture recompute from the current node graph."""
 import bpy
 
 
@@ -28,12 +23,4 @@ classes = (
     TEXTURESYNTH_OT_update,
 )
 
-
-def register():
-    for cls in classes:
-        bpy.utils.register_class(cls)
-
-
-def unregister():
-    for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+register, unregister = bpy.utils.register_classes_factory(classes)

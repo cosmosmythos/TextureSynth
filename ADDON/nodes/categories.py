@@ -27,12 +27,23 @@ classes = (
     NODE_MT_category_texturesynth,
 )
 
+
+def _register_extra():
+    bpy.types.NODE_MT_add.append(_draw_add_menu)
+
+
+def _unregister_extra():
+    bpy.types.NODE_MT_add.remove(_draw_add_menu)
+
+
+# Wrap register/unregister to add/remove draw callback to NODE_MT_add.
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.NODE_MT_add.append(_draw_add_menu)
+    _register_extra()
+
 
 def unregister():
-    bpy.types.NODE_MT_add.remove(_draw_add_menu)
+    _unregister_extra()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

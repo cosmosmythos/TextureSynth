@@ -9,22 +9,16 @@
 
 namespace te::chain_shader {
 
-// ===========================================================================
 // Internal helpers
-// ===========================================================================
 namespace {
 
-// C++17 std::visit trick: an "overloaded" visitor composed of lambdas.
-// Lets us write `std::visit(overloaded{[](A){...}, [](B){...}}, variant)`
-// with type-dispatched lambdas instead of a hand-rolled switch.
+// C++17 std::visit trick: "overloaded" visitor composed of lambdas. Lets us write type-dispatched lambdas instead of hand-rolled switch.
 template <typename... Ts>
 struct Overloaded : Ts... { using Ts::operator()...; };
 template <typename... Ts>
 Overloaded(Ts...) -> Overloaded<Ts...>;
 
-// Source of one input to one node in a chain.
-//   External -- fetched from a pre-sampled image at pc.in_sampled_slots[i]
-//   Local    -- the previous chain node's local output (vec4, register-only)
+// Source of one input to one node: External (pre-sampled image at pc.in_sampled_slots[i]) or Local (previous node's output, register-only)
 struct External { uint32_t slot; };        // index into pc.in_sampled_slots[]
 struct Local    { size_t  index; };       // index into _local_<index>
 using InputSrc = std::variant<External, Local>;
@@ -44,7 +38,7 @@ struct EmitPlan {
     std::string            error;
 };
 
-// Index connections by destination for O(1) lookup.
+// Index connections by destination for O(1) lookup
 using ConnByDst = std::unordered_map<
         NodeId,
         std::vector<std::pair<uint32_t /*dst_socket*/, NodeId /*src_node*/>>>;
@@ -57,21 +51,7 @@ using ConnByDst = std::unordered_map<
     return out;
 }
 
-// Validate the chain is linear (Stage 4.1 + 4.2 contract) and build
-// the per-node input-source map.
-//
-// A chain is "linear" iff:
-//   - every node has 0..N input sockets (multi-input supported since 4.2)
-//   - every input is SocketType::Vec4
-//   - for the head (i==0), every input socket is either unconnected or
-//     fed by a node OUTSIDE the chain
-//   - for non-head nodes (i>0):
-//       * socket 0 is fed by the previous chain node's output (Local)
-//       * all other sockets are unconnected OR fed by a node outside
-//         the chain (External)
-//   - the first node's input (if any) comes from outside the chain
-//   - total external inputs across the whole chain <= MAX_PASS_INPUTS
-//     (push-constant slot limit)
+// Validate the chain is linear and build per-node input-source map. Linear iff: every node has 0..N Vec4 inputs; head sockets are unconnected or fed from outside chain; non-head socket 0 is fed by predecessor (Local), other sockets are unconnected/external; total external inputs <= MAX_PASS_INPUTS.
 [[nodiscard]] EmitPlan build_emit_plan(const Chain& chain,
                                         const GraphIR& ir,
                                         const NodeLibrary& lib) noexcept {
@@ -110,11 +90,7 @@ using ConnByDst = std::unordered_map<
             return plan;
         }
 
-        // Stage 4.2: per-socket input resolution. Each socket s of
-        // node i is resolved to either Local{i-1} (only for socket 0
-        // of non-head nodes fed by the previous chain node) or
-        // External{next_external_slot++} (head, unconnected, or any
-        // mid-chain socket that isn't the predecessor's output).
+        // Per-socket input resolution: socket s of node i -> Local{i-1} (socket 0 of non-head fed by predecessor) or External{++next_external_slot} (head, unconnected, or non-predecessor mid-chain socket).
         for (uint32_t s = 0; s < type->inputs.size(); ++s) {
             const auto& sock = type->inputs[s];
             if (sock.type != SocketType::Vec4) {
@@ -134,9 +110,7 @@ using ConnByDst = std::unordered_map<
             const bool connected = (conn_src != 0);
 
             if (i == 0) {
-                // Head: every socket is external. A connection to a
-                // node inside the chain would violate the chain-finder
-                // contract (heads are by definition the first node).
+                // Head: every socket is external. A connection inside the chain violates the chain-finder contract.
                 if (connected && chain_pos.count(conn_src)) {
                     plan.error = "head chain node " + type->id +
                                  " socket " + std::to_string(s) +
@@ -145,12 +119,7 @@ using ConnByDst = std::unordered_map<
                 }
                 ne.inputs.push_back(External{next_external_slot++});
             } else {
-                // Mid-chain: socket 0 fed by predecessor = Local.
-                // Everything else (unconnected, or fed by a node OUTSIDE
-                // the chain) is External. A socket fed by a chain-internal
-                // node that is NOT the predecessor IS a true non-linearity
-                // and must be rejected -- we cannot route to it from a
-                // non-immediate predecessor inside a single fused shader.
+                // Mid-chain: socket 0 fed by predecessor = Local. Everything else (unconnected or outside-chain) = External. A chain-internal non-predecessor connection is rejected (non-linearity).
                 if (s == 0 && connected
                     && chain_pos.count(conn_src)
                     && chain_pos.at(conn_src) == i - 1) {
@@ -183,19 +152,7 @@ using ConnByDst = std::unordered_map<
     return plan;
 }
 
-// GLSL string emitted verbatim at the top of every chain shader.
-// Layout matches PassPushConstants byte-for-byte; see the static_assert
-// in emit_linear below.
-//
-// Key design points:
-//   - We declare the same bindless set 0 as the per-node path. Chains
-//     are not a separate pipeline layout; they share the global table
-//     so the engine can swap them in for per-pass dispatches without
-//     rebinding descriptors (Stage 6 optimization).
-//   - pc.out_storage_slots[0] is the chain's final output image slot.
-//     Slots [1..3] are unused; the 12-byte waste keeps the push-
-//     constant struct layout-identical to PassPushConstants, which
-//     means Stage 6 can dispatch chains using the same struct.
+// GLSL header. Layout matches PassPushConstants byte-for-byte (same bindless set 0, same push constant struct). pc.out_storage_slots[0] is the chain's output; slots [1..3] unused (12-byte waste keeps struct layout identical).
 constexpr const char* CHAIN_HEADER = R"glsl(
 #version 460
 #extension GL_EXT_nonuniform_qualifier : require
@@ -221,9 +178,7 @@ layout(push_constant) uniform PC {
 
 )glsl";
 
-// Emit a GLSL expression that loads this node's input `i`.
-//   External -> texelFetch from pc.in_sampled_slots[i]
-//   Local    -> the previous chain node's local
+// Emit GLSL expression loading this node's input: External -> texelFetch, Local -> previous local
 [[nodiscard]] std::string emit_input_load(const InputSrc& src) {
     return std::visit(Overloaded{
         [](const External& e) -> std::string {
@@ -236,13 +191,10 @@ layout(push_constant) uniform PC {
     }, src);
 }
 
-// Emit a single node's call: result = node_<id>(uv, inputs..., params...)
-// where params are read from the chain's SSBO slice at the right offset.
+// Emit a single node's GLSL call: result = node_<id>(uv, inputs..., params...) from chain's SSBO slice at the right offset.
 void emit_node_call(std::ostringstream& s, const NodeEmit& ne,
                     const NodeType& type) {
-    // Single shared _result variable in main(). Each call ASSIGNS to it;
-    // redeclaring `vec4 _result = ...` on every call would be a GLSL
-    // redefinition error in the same function scope.
+    // Single shared _result variable in main(). Each call ASSIGNS to it (redeclaring per call would be a GLSL redefinition error).
     s << "    _result = node_" << type.id << "(uv";
     for (const auto& src : ne.inputs) {
         s << ", " << emit_input_load(src);
@@ -259,9 +211,7 @@ void emit_node_call(std::ostringstream& s, const NodeEmit& ne,
 
 } // namespace
 
-// ===========================================================================
 // Public API
-// ===========================================================================
 Result emit_linear(const Chain& chain, const GraphIR& ir,
                    const NodeLibrary& lib) {
     Result result;
@@ -271,10 +221,7 @@ Result emit_linear(const Chain& chain, const GraphIR& ir,
         return result;
     }
 
-    // The push-constant struct in GLSL must match PassPushConstants
-    // byte-for-byte. The per-node path relies on the same invariant
-    // (GraphCompiler.cpp:91); we replicate it here so Stage 6 can
-    // dispatch chains without a different push-constant struct.
+    // Push-constant struct in GLSL must match PassPushConstants byte-for-byte (same invariant as per-node path).
     static_assert(sizeof(float) == 4, "GLSL float must be 4 bytes");
     static_assert(sizeof(uint32_t) == 4, "GLSL uint must be 4 bytes");
     // 16 (global) + 16 (out_storage_slots[4]) + 4*4 (base,count,ring,pad-ish)
@@ -284,12 +231,7 @@ Result emit_linear(const Chain& chain, const GraphIR& ir,
     std::ostringstream s;
     s << CHAIN_HEADER;
 
-    // Emit each UNIQUE glsl_function once. Multiple occurrences of the
-    // same node type in a chain (e.g. step,step,step) must not produce
-    // duplicate function definitions -- GLSL rejects them. We dedup on
-    // the function body string; types that share the same body share
-    // the definition. This is the standard include-guard-style
-    // dedup that the NodeRegistryLoader relies on for `includes`.
+    // Emit each UNIQUE glsl_function once (GLSL rejects duplicate defs). Dedup on function body string.
     std::unordered_set<std::string> emitted;
     for (const auto& ne : plan.nodes) {
         const ValidatedNode* inst = ir.find(ne.node_id);
@@ -300,11 +242,7 @@ Result emit_linear(const Chain& chain, const GraphIR& ir,
         }
     }
 
-    // Format post-process: if the tail is format_sensitive (noise
-    // generators) and the instance requested a non-RGBA format, collapse
-    // _local_<last> through one of the _fmt_* helpers before imageStore.
-    // Noise nodes return (noise, grad.x, grad.y, 1); we map that to the
-    // requested output layout.
+    // Format post-process: if tail is format_sensitive and format != RGBA, collapse _local_<last> through _fmt_* helper before imageStore.
     const ValidatedNode* tail_inst =
         plan.nodes.empty() ? nullptr : ir.find(plan.nodes.back().node_id);
     const NodeType* tail_type =
@@ -357,10 +295,7 @@ Result emit_linear(const Chain& chain, const GraphIR& ir,
           << "(_local_" << (plan.nodes.size() - 1) << ");\n";
     }
 
-    // Final imageStore. The chain's output goes to the storage slot
-    // passed via push constants. We use slot 0 of out_storage_slots to
-    // match the per-pass convention; Stage 6 will populate this from
-    // chain.glsl's call site.
+    // Final imageStore. Output goes to storage slot 0 from push constants (matches per-pass convention).
     if (!plan.nodes.empty()) {
         s << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _local_"
           << (plan.nodes.size() - 1) << ");\n";

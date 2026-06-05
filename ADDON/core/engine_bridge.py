@@ -1,10 +1,5 @@
-"""
-Engine Bridge — the ONLY file that talks to texturesynth_core.
-
-Node identity uses persistent UUID-derived uint64 IDs from TextureSynthNode.stable_id().
-This makes graph identity independent of Blender's node ordering, node renaming,
-and undo/redo proxy invalidation.
-"""
+"""Engine Bridge: provides interface between Blender addon and texturesynth_core C++ module.
+Uses stable_id() to make graph identity independent of Blender node ordering or invalidation."""
 import bpy
 from . import cpp_module
 from . import logging as _tslog
@@ -14,6 +9,7 @@ _last_active_fingerprint = None
 _submitted_generation = 0
 _last_applied_generation = 0
 _last_pushed_param_hash = None
+_last_active_node_id = None
 
 
 def _find_node_tree():
@@ -31,19 +27,41 @@ def _find_node_tree():
         nt for nt in bpy.data.node_groups
         if getattr(nt, "bl_idname", None) == "TextureSynthTreeType"
     ]
-    for nt in candidates:
-        has_output = any(n.bl_idname == "TS_Output_Node" for n in nt.nodes)
-        if has_output and len(nt.links) > 0:
-            return nt
     return candidates[0] if candidates else None
 
 
+def _resolve_preview_root(tree):
+    """Pick the node whose upstream subgraph is the current preview.
+    Prefers TS_Output_Node; falls back to the active node, then any TS node.
+    Returns (root, name_to_id, id_to_name, topo_order, reachable_ids).
+    """
+    name_to_id, id_to_name = _build_id_maps(tree)
+    root = None
+    for n in tree.nodes:
+        if n.bl_idname == 'TS_Output_Node':
+            root = n
+            break
+    if root is None:
+        active = getattr(tree.nodes, "active", None)
+        if (active is not None
+                and getattr(active, "sv_type", None) is not None
+                and active.name in name_to_id):
+            root = active
+        else:
+            for n in tree.nodes:
+                if getattr(n, "sv_type", None) is not None and n.name in name_to_id:
+                    root = n
+                    break
+    if root is None:
+        return None, name_to_id, id_to_name, [], set()
+    order, reachable = _get_active_subgraph_topo_order(tree, root, name_to_id)
+    return root, name_to_id, id_to_name, order, reachable
+
+
 def _node_stable_id(node):
-    """Get the UUID-derived uint64 from a TextureSynth node.
-    Falls back to hash(node.name) for nodes that don't have stable_id() (shouldn't happen)."""
+    """Get the UUID-derived uint64 from a TextureSynth node, falling back to name hash."""
     if hasattr(node, 'stable_id'):
         return node.stable_id()
-    # Fallback: deterministic hash from name (for safety only)
     return hash(node.name) & 0xFFFFFFFFFFFFFFFF
 
 
@@ -64,10 +82,7 @@ def _node_by_name(tree, name):
 
 
 def _get_active_subgraph_topo_order(tree, output_node, name_to_id):
-    """Topo sort of nodes reachable upstream from output_node.
-
-    Returns (order_ids, reachable_ids_set). All identity via node.name -> stable_id.
-    """
+    """Get topological sort order and reachable IDs upstream from output_node."""
     reachable_names = set()
 
     def trace(node):
@@ -143,41 +158,43 @@ def _build_graph_and_params(tree):
     pc.seed = 42
     pc.time = 0.0
 
-    # Find Output node
-    output_node = None
-    for n in tree.nodes:
-        if n.bl_idname == 'TS_Output_Node':
-            output_node = n
-            break
-    if output_node is None:
+    root, name_to_id, id_to_name, order, reachable_ids = _resolve_preview_root(tree)
+    if root is None or not order:
         return None, None, None
 
-    name_to_id, id_to_name = _build_id_maps(tree)
-    output_node_name = output_node.name
+    output_node = root if root.bl_idname == 'TS_Output_Node' else None
 
-    # Find a valid link feeding the Output node
     output_src_id = None
-    for link in tree.links:
-        if not link.is_valid:
-            continue
-        if link.to_node is None or link.from_node is None:
-            continue
-        if link.to_node.name != output_node_name:
-            continue
-        src = link.from_node
-        if src.bl_idname == 'NodeUndefined':
-            continue
-        if src.name in name_to_id:
-            output_src_id = name_to_id[src.name]
-            break
+    active = getattr(tree.nodes, "active", None)
+    if (output_node is not None
+            and active is not None
+            and hasattr(active, "stable_id")
+            and getattr(active, "sv_type", None) is not None
+            and active is not output_node
+            and active.name in name_to_id
+            and name_to_id[active.name] in reachable_ids):
+        output_src_id = name_to_id[active.name]
+    if output_src_id is None and output_node is not None:
+        for link in tree.links:
+            if not link.is_valid:
+                continue
+            if link.to_node is None or link.from_node is None:
+                continue
+            if link.to_node.name != output_node.name:
+                continue
+            src = link.from_node
+            if src.bl_idname == 'NodeUndefined':
+                continue
+            if src.name in name_to_id:
+                output_src_id = name_to_id[src.name]
+                break
+    if output_src_id is None and root is not None and root.name in name_to_id:
+        output_src_id = name_to_id[root.name]
 
     if output_src_id is None:
         return None, None, None
 
-    order, reachable_ids = _get_active_subgraph_topo_order(
-        tree, output_node, name_to_id)
-
-    # Add nodes to graph (skip Output marker — it has no sv_type)
+    # Add nodes to graph, skipping Output node which is a marker.
     for nid in order:
         nname = id_to_name.get(nid)
         if nname is None:
@@ -190,16 +207,8 @@ def _build_graph_and_params(tree):
         if getattr(node, 'sv_type', None) is None:
             continue
         fmt_override = node.get_format_override() if hasattr(node, 'get_format_override') else None
-        # node.name is the Blender user-visible label ("Perlin Noise.001");
-        # pass it as debug_name so engine logs and error messages refer to the
-        # operator's actual node, not "perlin_42".
-        # Mute semantics: Blender's Node.mute means "remove this node from the
-        # graph; downstream reads this node's input[0] source" (the "Mute"
-        # convention in Blender's Compositor/Shader editor). The engine
-        # `muted` flag implements that: validator rewires connections
-        # around muted nodes so downstream gets the upstream value.
-        # Engine `bypassed` is a different concept (output goes to zero) and
-        # is not currently exposed in Blender. Setting it to False here.
+        
+        # Pass name to engine for logging. Mute rewires connections in the engine.
         is_muted = bool(getattr(node, 'mute', False))
         graph.add_node(
             nid, node.sv_type, fmt_override, node.name,
@@ -207,7 +216,6 @@ def _build_graph_and_params(tree):
             bypassed=False,
         )
 
-    # Collect parameters in same topological order
     node_params = []
     for nid in order:
         nname = id_to_name.get(nid)
@@ -224,25 +232,16 @@ def _build_graph_and_params(tree):
 
     graph.set_output(output_src_id)
 
-    # Add the Output node's named bake targets to the graph. Each target
-    # is (source_node_id, name). The engine's bake() iterates them in
-    # order and produces one BakedImage per target. Rows with empty
-    # source_node are skipped (artist hasn't picked a source yet).
-    for t in (output_node.targets if output_node else []):
-        raw = (getattr(t, "source_node", "") or "").strip()
-        if not raw:
-            # Empty source defaults to the live-preview source — artist
-            # convenience so a newly-added target doesn't need a second
-            # value before the bake is usable.
-            sid = output_src_id
-        else:
-            try:
-                sid = int(raw, 0)
-            except ValueError:
-                continue
-        graph.add_output_target(sid, t.name or "Unnamed")
+    # Map linked Output node input sockets to graph output targets.
+    for sock in (output_node.inputs if output_node else []):
+        if not sock.is_linked or not sock.links:
+            continue
+        src = sock.links[0].from_node
+        if src is None or not hasattr(src, "stable_id"):
+            continue
+        graph.add_output_target(int(src.stable_id()), sock.name or "Unnamed")
 
-    # Add edges — skip Output marker
+    # Add connections between nodes.
     for link in tree.links:
         if not link.is_valid:
             continue
@@ -254,7 +253,7 @@ def _build_graph_and_params(tree):
         d_name = dst.name
         if s_name not in name_to_id or d_name not in name_to_id:
             continue
-        if d_name == output_node_name or s_name == output_node_name:
+        if output_node is not None and (d_name == output_node.name or s_name == output_node.name):
             continue
         s_id = name_to_id[s_name]
         d_id = name_to_id[d_name]
@@ -283,13 +282,9 @@ def _build_push_constants(tree):
     pc.seed = 42
     pc.time = 0.0
 
-    name_to_id, id_to_name = _build_id_maps(tree)
-    output_node = next((n for n in tree.nodes
-                        if n.bl_idname == 'TS_Output_Node'), None)
-    if output_node is None:
+    root, name_to_id, id_to_name, order, _ = _resolve_preview_root(tree)
+    if root is None or not order:
         return None, []
-
-    order, _ = _get_active_subgraph_topo_order(tree, output_node, name_to_id)
 
     node_params = []
     for nid in order:
@@ -312,7 +307,7 @@ def _get_resolution():
     try:
         return bpy.context.scene.texturesynth_resolution
     except (AttributeError, TypeError):
-        return 512
+        return 1024
 
 
 def _get_render_resolution(res):
@@ -344,7 +339,7 @@ def _blit_to_image(pixels, width, height):
 
 
 def _invalidate_output_image():
-    """Clear the output image to black so artists see a failed render clearly."""
+    """Clear the output image to see a failed render clearly."""
     import numpy as np
     img = bpy.data.images.get("TS_Preview2D")
     if img is None:
@@ -361,17 +356,11 @@ def _invalidate_output_image():
                 area.tag_redraw()
 
 
-# ── Public API ──────────────────────────────────────────────────────
-
 def _params_signature(tree):
-    """Cheap hash of all active-subgraph slider values. Used to skip
-    redundant async dispatches when nothing changed."""
-    name_to_id, id_to_name = _build_id_maps(tree)
-    output_node = next((n for n in tree.nodes
-                        if n.bl_idname == 'TS_Output_Node'), None)
-    if output_node is None:
+    """Get a lightweight hash signature of all active parameters in the graph."""
+    root, name_to_id, id_to_name, order, _ = _resolve_preview_root(tree)
+    if root is None or not order:
         return None
-    order, _ = _get_active_subgraph_topo_order(tree, output_node, name_to_id)
     parts = []
     for nid in order:
         nname = id_to_name.get(nid)
@@ -393,26 +382,18 @@ def _params_signature(tree):
 
 
 def _active_subgraph_fingerprint(tree):
-    """Stable hash of (active nodes + their types + active connections + output target).
-    Uses UUID-based stable IDs, making the fingerprint independent of Blender node order."""
-    output_node = next((n for n in tree.nodes
-                        if n.bl_idname == 'TS_Output_Node'), None)
-    if output_node is None:
-        return ("no_output",)
-    name_to_id, id_to_name = _build_id_maps(tree)
-    order, reachable = _get_active_subgraph_topo_order(
-        tree, output_node, name_to_id)
-    # node identity: stable_id + sv_type + mute (engine muted, i.e. rewire)
-    # Including mute in the fingerprint ensures a mute-toggle triggers a
-    # topology resubmit. Mute maps to the engine's `muted` flag, which
-    # changes the dispatch path (rewire-around vs normal pipeline).
+    """Get stable topology fingerprint of active nodes, connections, and output source."""
+    root, name_to_id, id_to_name, order, reachable = _resolve_preview_root(tree)
+    if root is None or not order:
+        return ("no_root",)
+
     node_part = tuple(
         (nid,
          getattr(_node_by_name(tree, id_to_name.get(nid, '')), 'sv_type', None),
          bool(getattr(_node_by_name(tree, id_to_name.get(nid, '')), 'mute', False)))
         for nid in order
     )
-    # active links only (using stable IDs)
+
     link_part = []
     for link in tree.links:
         if not link.is_valid:
@@ -432,12 +413,15 @@ def _active_subgraph_fingerprint(tree):
             continue
         link_part.append((sid, so, did, di))
     link_part.sort()
-    # output source
-    out_src = None
-    for link in tree.links:
-        if link.is_valid and link.to_node and link.to_node.name == output_node.name:
-            out_src = _node_stable_id(link.from_node) if link.from_node else None
-            break
+
+    if root.bl_idname == 'TS_Output_Node':
+        out_src = None
+        for link in tree.links:
+            if link.is_valid and link.to_node and link.to_node.name == root.name:
+                out_src = _node_stable_id(link.from_node) if link.from_node else None
+                break
+    else:
+        out_src = _node_stable_id(root) if root else None
     return (node_part, tuple(link_part), out_src)
 
 
@@ -460,11 +444,11 @@ def upload_node_image(node):
         
     import numpy as np
     try:
-        # Blender's image.pixels holds float RGBA values flatly.
+        # Extract flat float RGBA pixels from Blender image.
         pixels = np.empty(w * h * 4, dtype=np.float32)
         image.pixels.foreach_get(pixels)
         
-        # Call the C++ engine to allocate staging buffer and upload to Vulkan image.
+        # Upload pixels to Vulkan engine.
         success = engine.upload_image(nid, pixels, w, h)
         return success
     except Exception as e:
@@ -497,18 +481,14 @@ def submit_graph():
 
     graph, pc, _ = _build_graph_and_params(tree)
     if graph is None:
-        # Transient invalid state during editing (e.g. user dragging a link
-        # away from a socket, Output node missing). DO NOT invalidate the
-        # last successful render — the artist's viewport stays stable.
+        # Return early on transient invalid state (e.g., missing Output node).
         _last_active_fingerprint = None
         _submitted_generation = 0
         return 0
 
-    # Scan and pre-upload active Image Input nodes before setting the graph
-    name_to_id, id_to_name = _build_id_maps(tree)
-    output_node = next((n for n in tree.nodes if n.bl_idname == 'TS_Output_Node'), None)
-    if output_node:
-        order, _ = _get_active_subgraph_topo_order(tree, output_node, name_to_id)
+    # Pre-upload images from active image nodes.
+    root, name_to_id, id_to_name, order, _ = _resolve_preview_root(tree)
+    if root and order:
         for nid in order:
             nname = id_to_name.get(nid)
             if nname:
@@ -531,19 +511,14 @@ def submit_graph():
     _submitted_generation = generation
     _last_applied_generation = 0
     _last_pushed_param_hash = None
+
     _push_params_using_stable_ids(tree, engine)
     sync_node_errors(tree)
     return generation
 
 
 def update_params_only(force_submit: bool = False):
-    """Async render. Returns one of:
-       'landed'      — fresh pixels were blitted this tick
-       'in_flight'   — a job is queued/running, keep ticking
-       'idle'        — nothing to do (no changes, ring quiet)
-       'invalid'     — engine/tree/pipeline not ready
-    Caller (evaluation.py) decides what to do with each state.
-    """
+    """Trigger async render dispatch and return status: landed, in_flight, idle, or invalid."""
     global _last_active_fingerprint, _last_applied_generation
     global _last_pushed_param_hash
 
@@ -551,13 +526,19 @@ def update_params_only(force_submit: bool = False):
     if engine is None or not engine.has_pipeline():
         return 'invalid'
 
-    # ── FAST PATH: idle drain. No tree walk. No logs. No push.
+    # Fast path: poll readback queue without checking/submitting params.
     if not force_submit:
         return _poll_and_blit(engine)
 
-    # ── SLOW PATH: dispatch a render.
+    # Slow path: check active node and submit render request.
     tree = _find_node_tree()
     if tree is None:
+        return 'invalid'
+
+    # Active change = topology change; force full re-submit.
+    if _check_active_node_change(tree, engine):
+        from .evaluation import request_topology_update
+        request_topology_update()
         return 'invalid'
 
     res = _get_resolution()
@@ -567,7 +548,6 @@ def update_params_only(force_submit: bool = False):
     engine.set_precision(0 if precision_str == 'R8'
                          else 1 if precision_str == 'R16' else 2)
 
-    # Stale-pipeline detection.
     fp = _active_subgraph_fingerprint(tree)
     if fp != _last_active_fingerprint:
         from .evaluation import request_topology_update
@@ -582,7 +562,6 @@ def update_params_only(force_submit: bool = False):
         if _submitted_generation and not engine.is_generation_ready(_submitted_generation):
             return _poll_and_blit(engine)
 
-        # Skip push+submit if params unchanged since last submit.
         sig = _params_signature(tree)
         if sig is not None and sig == _last_pushed_param_hash:
             return _poll_and_blit(engine)
@@ -601,9 +580,34 @@ def update_params_only(force_submit: bool = False):
         return 'invalid'
 
 
+def _check_active_node_change(tree, engine):
+    """Update preview target in engine if selected node changed. Returns True on update."""
+    global _last_active_node_id, _last_pushed_param_hash
+    active = getattr(tree.nodes, "active", None)
+    if active is None:
+        return False
+    if not hasattr(active, "stable_id"):
+        return False
+    if getattr(active, 'sv_type', None) is None:
+        return False
+    new_id = active.stable_id()
+    if new_id == _last_active_node_id:
+        return False
+    try:
+        gen = int(engine.set_active_node(new_id))
+    except Exception as e:
+        _tslog.error(f"set_active_node({new_id}) failed: {e}")
+        return False
+    _last_active_node_id = new_id
+    if gen:
+        _submitted_generation = gen
+    # invalidate param hash on every active change
+    _last_pushed_param_hash = None
+    return True
+
+
 def _poll_and_blit(engine):
-    """Drain at most one completed result. Drops stale gens. Returns
-    'landed' if we blitted something new, else 'idle'."""
+    """Poll engine for finished frames, blit to image, and return status."""
     global _last_applied_generation
     try:
         result = engine.poll_readback()
@@ -616,9 +620,7 @@ def _poll_and_blit(engine):
 
     pixels, gen = result
 
-    # ── Stale-gen guard ─────────────────────────────────────────────
-    # If C++ hands us a result older than what we've already applied,
-    # drop it silently. (Shouldn't happen post-Fix-B in C++, but defensive.)
+    # Stale generation guard: ignore old frames.
     if gen != 0 and gen < _last_applied_generation:
         return 'idle'
 
@@ -641,9 +643,6 @@ def sync_node_errors(tree):
     fid = engine.failed_node()
     last_err = engine.last_error()
 
-    # If failed_node is 0, we should ensure all nodes are cleared of error states.
-    # If failed_node is non-zero, we mark that specific node as failed (red color + stashed message),
-    # and clear the error on all other nodes.
     from ..nodes.base import TS_CATEGORY_COLORS
     name_to_id, id_to_name = _build_id_maps(tree)
     failed_node_name = id_to_name.get(fid) if fid != 0 else None
@@ -652,15 +651,13 @@ def sync_node_errors(tree):
         if getattr(node, 'sv_type', None) is None and node.bl_idname != 'TS_Output_Node':
             continue
         
-        # Check if this node is the one that failed
+        # Reset colors for all nodes and highlight compile failure on the failed node.
         if failed_node_name and node.name == failed_node_name:
-            # Set custom color to a vibrant red (0.8, 0.1, 0.1)
             node.use_custom_color = True
             node.color = (0.8, 0.1, 0.1)
             if hasattr(node, 'ts_compile_error'):
                 node.ts_compile_error = last_err
         else:
-            # Reset color back to its category color
             cat = getattr(node, 'ts_category', 'FILTER')
             color = TS_CATEGORY_COLORS.get(cat, (0.45, 0.25, 0.45))
             node.color = color
@@ -670,23 +667,15 @@ def sync_node_errors(tree):
 
 
 def _push_params_using_stable_ids(tree, engine):
-    """Send slider values keyed by UUID-derived stable IDs.
-
-    Uses name-based binding (Phase 6) so that reordering parameters in a
-    node's JSON manifest cannot silently shift slider values between
-    unrelated params. The Python node must expose `get_named_parameters()`
-    returning {param_name: float}; if it doesn't, we fall back to the
-    positional API for backward compatibility.
-    """
-    layout = engine.param_layout()  # dict {stable_id:int -> base:int}
+    """Send node parameters to engine using name-based or positional binding."""
+    layout = engine.param_layout()
     for node in tree.nodes:
         if getattr(node, 'sv_type', None) is None:
             continue
         nid = _node_stable_id(node)
         if nid not in layout:
-            continue  # node not in active subgraph
+            continue
 
-        # Preferred: name-based binding.
         if hasattr(node, 'get_named_parameters'):
             try:
                 kv = node.get_named_parameters()
@@ -696,7 +685,6 @@ def _push_params_using_stable_ids(tree, engine):
             except Exception:
                 pass
 
-        # Fallback: positional (legacy). Should not happen post-Phase 6.
         if hasattr(node, 'get_parameters'):
             params = node.get_parameters()
             engine.update_node_params_by_id(nid, params)

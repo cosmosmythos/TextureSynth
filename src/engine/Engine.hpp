@@ -43,12 +43,7 @@ struct PassExec {
 
     bool output_layout_is_general = false;
 
-    // Phase 1c: mirror of ComputePass::bypassed. When true, the executor
-    // skips the compute dispatch and issues vkCmdClearColorImage on each
-    // output resource (writes zero, leaves image in VK_IMAGE_LAYOUT_GENERAL).
-    // Bypassed passes still allocate output storage / sampled bindless
-    // slots (assign_bindless_slots_ runs) so downstream passes that read
-    // the bypassed output get a valid (zeroed) source.
+    // Phase 1c: mirror of ComputePass::bypassed. When true, executor clears output to zero via vkCmdClearColorImage. Bypassed passes still allocate bindless slots so downstream passes get a valid source.
     bool bypassed = false;
 };
 
@@ -57,10 +52,7 @@ struct RetiredPass {
     uint32_t frames_remaining = MAX_FRAMES_IN_FLIGHT + 2;
 };
 
-// Stage 6: per-chain runtime state. The chain's compute pipeline is
-// built once per cache key; the tail pass index gives us the
-// out_storage_slot that the chain's final imageStore writes to
-// (Stage 5.x spec fix: TAIL, not HEAD).
+// Stage 6: per-chain runtime state. Pipeline built once per cache key; tail pass index gives the out_storage_slot for the chain's final imageStore.
 struct ChainExec {
     std::unique_ptr<ComputePipeline> pipeline;
     std::vector<uint32_t>            member_pass_indices;   // into passes_
@@ -81,20 +73,10 @@ public:
 
     uint64_t set_graph(const Graph& graph);
 
-    // Set the "active" node whose output is shown in the preview. Equivalent
-    // to set_graph() with the same nodes/connections but a different
-    // output_node. Cheap if the cache has the chain shader for the new
-    // output's chain; otherwise the chain shader recompiles.
+    // Set the "active" node whose output is shown in the preview. Equivalent to set_graph() with same graph but different output_node. Cheap if cache has the chain shader.
     uint64_t set_active_node(NodeId node_id);
 
-    // Bake all named output targets, in declaration order. For each target,
-    // re-targets the engine at target.source_node, dispatches one frame, and
-    // reads back synchronously. Returns raw RGBA float32 pixels (row-major,
-    // length = w*h*4) per target — the host owns the format (Blender fills
-    // bpy.types.Image.pixels, the viewer shows a float texture, a CLI tool
-    // writes EXR/PNG/TIFF with its own codec). If output_targets is empty,
-    // bakes the active node under the name "output". Blocks on the GPU
-    // readback — call from a background thread if needed.
+    // Bake all named output targets in declaration order. Returns raw RGBA32F pixels per target. If output_targets is empty, bakes active node as "output". Blocks on GPU readback.
     struct BakedImage {
         std::string name;            // matches Graph::OutputTarget::name
         uint32_t    width  = 0;
@@ -103,9 +85,7 @@ public:
     };
     std::vector<BakedImage> bake();
 
-    // Synchronous readback of the current output (one image, the active node).
-    // Lower-level than bake() — callers that want one image without iterating
-    // named targets use this.
+    // Synchronous readback of the current output (active node). Lower-level than bake().
     BakedImage readback_sync();
 
     const NodeLibrary& node_library() const { return node_lib_; }
@@ -158,13 +138,11 @@ public:
         last_presented_h_ = 0;
     }
 
-    // Phase 5: records the full PassPlan with per-pass barriers.
+    // Records the full PassPlan with per-pass barriers.
     void record_dispatch(VkCommandBuffer cmd, const PushConstants& pc);
 
     bool has_pipeline() const { return !passes_.empty(); }
-    // Number of vkCmdDispatch issued by the most recent record_dispatch.
-    // 0 means the engine early-exited (no pipeline, or nothing dirty).
-    // Useful for verifying "is the engine actually running?" in the dev viewer.
+    // Number of vkCmdDispatch issued by most recent record_dispatch. 0 means early-exit. Useful for dev viewer.
     uint64_t last_dispatch_count() const noexcept { return last_dispatch_count_; }
     uint64_t compile_generation()  const { return compile_generation_; }
     uint64_t installed_generation() const { return installed_generation_; }
@@ -201,10 +179,7 @@ public:
     EngineState engine_state() const noexcept { return state_.load(std::memory_order_acquire); }
     bool is_ready() const noexcept { return engine_state() == EngineState::Ready; }
 
-    // The mutex that serialises every public mutator. Exposed for the
-    // bindings layer (and for tests) so they can hold the lock for the
-    // full duration of a multi-step operation, eliminating the window
-    // where Engine::shutdown could interleave with an in-flight call.
+    // Serialises every public mutator. Exposed for bindings/tests so they can hold lock for multi-step operations, preventing Engine::shutdown from interleaving.
     std::recursive_mutex& entry_mutex() noexcept { return entry_mu_; }
 
     // Counter updated by record_dispatch.
@@ -221,7 +196,7 @@ public:
     // Async readback ring. Public because bindings.cpp drives it.
     AsyncReadback& async_readback() { return async_; }
 
-    // ── Dirty tracking: skip GPU submit when nothing changed ──────────
+    // Dirty tracking: skip GPU submit when nothing changed
     bool any_pass_dirty() const noexcept       { return any_pass_dirty_.load(); }
     void mark_all_clean() { 
         any_pass_dirty_.store(false);
@@ -233,10 +208,10 @@ public:
     void stash_last_presented(const std::vector<float>& pixels,
                               uint32_t w, uint32_t h, uint64_t generation);
 
-    // Resource UUID written by the final pass — readback copies from this image.
+    // Resource UUID written by the final pass -- readback copies from this image.
     ResourceUUID final_output_resource() const { return final_output_resource_; }
 
-    // Persistent external images uploaded from Blender (keyed by node stable ID)
+    // Persistent external images uploaded from Blender (keyed by node stable ID).
     bool upload_image(uint64_t node_id, const float* pixels, uint32_t width, uint32_t height);
     bool release_image(uint64_t node_id);
 
@@ -250,28 +225,20 @@ private:
     void mark_downstream_dirty_(NodeId root);
     void rebuild_downstream_adj_();
 
-    // Stage 6: build ChainExec array + chain_id_of_pass_ + chain
-    // membership table from the PassPlan. Called by both the
-    // cache-hit and compile-finish install paths.
+    // Stage 6: build ChainExec array + chain_id_of_pass_ + membership table from PassPlan. Called by both cache-hit and compile-finish paths.
     void populate_chains_(const PassPlan& plan);
 
-    // Stage 6: dispatch a single chain. Issues the per-chain
-    // vkCmdDispatch + the layout transitions for head inputs and
-    // the tail's output. Bypassed chains become a clear-to-zero pass.
+    // Stage 6: dispatch a single chain. Issues vkCmdDispatch + layout transitions for head inputs and tail output. Bypassed chains become clear-to-zero.
     void record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
                                 uint32_t gx, uint32_t gy, size_t chain_idx);
 
-    // Reverse-construction-order tear-down. Tolerates a not-fully-initialised
-    // engine and ignores VK_ERROR_DEVICE_LOST. Used by both Engine::shutdown
-    // (normal path) and Engine::init's rollback (after a partial init).
+    // Reverse-construction-order tear-down. Tolerates not-fully-initialised engine and ignores VK_ERROR_DEVICE_LOST. Used by shutdown and init rollback.
     void shutdown_internal_();
 
-    // Bindless slot assignment for a pass (sampled inputs + storage output).
+    // Bindless slot assignment for a pass (sampled inputs + storage output)
     void assign_bindless_slots_(PassExec& pe);
 
-    // Build a ComputePipeline from a SPIR-V blob + variant key. Shared by
-    // the cache-hit and async-compile-finish install paths. On failure,
-    // sets the engine error and returns false.
+    // Build a ComputePipeline from SPIR-V blob + variant key. Shared by cache-hit and async-compile paths. On failure sets engine error.
     bool create_pass_pipeline_(PassExec& pe,
                                NodeId node_id,
                                const std::string& type_id,
@@ -279,8 +246,7 @@ private:
                                const ShaderVariantKey& variant_key,
                                const std::vector<uint32_t>& spirv);
 
-    // Phase 0: single point of truth for failure reporting. Mirrors to the
-    // legacy last_error_/failed_node_id_ fields for backward compat and logs.
+    // Single point of truth for failure reporting. Mirrors to legacy last_error_/failed_node_id_ for backward compat.
     void set_error_(EngineErrorCode code,
                     std::string message,
                     EnginePhase phase,
@@ -304,12 +270,6 @@ private:
     uint32_t        dummy_sampled_slot_ = BindlessTable::INVALID_SLOT;
 
     ResourceManager resources_;
-    // Bindless slot tracking for ResourceManager-owned images.
-    // Keyed by ResourceUUID: sampled slot used when read, storage slot when written.
-    std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash> res_sampled_slot_;
-    std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash> res_storage_slot_;
-    // Bindless slots for external uploaded images (image_registry_).
-    std::unordered_map<uint64_t, uint32_t> ext_sampled_slot_;
 
     uint32_t        output_w_ = 512, output_h_ = 512;
 
@@ -327,7 +287,12 @@ private:
     bool param_dirty_ = false;
     uint32_t       param_write_idx_ = 0;
 
-    // The one global bindless table — set 0, bound forever.
+    // Bindless slot tracking: ResourceManager-owned images (keyed by ResourceUUID) and external uploaded images.
+    std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash> res_sampled_slot_;
+    std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash> res_storage_slot_;
+    std::unordered_map<uint64_t, uint32_t> ext_sampled_slot_;
+
+    // The one global bindless table -- set 0, bound forever.
     BindlessTable  bindless_;
 
     std::unique_ptr<Image> output_storage_;
@@ -338,9 +303,7 @@ private:
     std::vector<RetiredPass> retired_passes_;
     ResourceUUID  final_output_resource_ = {};
 
-    // Stage 6: chain executables (one per fused chain in plan.chains).
-    // chain_id_of_pass_[i] gives the chain index for passes_[i], or
-    // UINT32_MAX if the pass is not part of a chain (barrier / singleton).
+    // Stage 6: chain executables (one per fused chain). chain_id_of_pass_[i] gives chain index for passes_[i], or UINT32_MAX if not in a chain.
     std::vector<ChainExec> chain_execs_;
     std::vector<uint32_t>   chain_id_of_pass_;
 
@@ -366,9 +329,7 @@ private:
     std::vector<PendingPass> pending_passes_;
     bool                     pending_active_ = false;
     ResourceUUID             pending_final_output_ = {};
-    // Stage 6: the PassPlan whose async compile is in flight (or
-    // just completed). poll_pending_compiles consumes it once the
-    // pass plans are installed.
+    // Stage 6: the PassPlan whose async compile is in flight. poll_pending_compiles consumes it once installed.
     PassPlan                 pending_pass_plan_;
 
     std::unordered_map<NodeId, int> param_base_slot_;
@@ -384,7 +345,7 @@ private:
 
     std::atomic<bool> any_pass_dirty_{true};
 
-    // Lifecycle state machine (see public EngineState enum above).
+    // Lifecycle state machine
     std::atomic<EngineState> state_{EngineState::Uninitialized};
     std::recursive_mutex     entry_mu_;
     std::vector<float> last_presented_pixels_;

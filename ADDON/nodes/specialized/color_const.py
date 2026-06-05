@@ -1,21 +1,9 @@
-"""
-Color Input node.
-
-Backed by shader_assets/nodes/color_const.node.json + color_const.glsl.
-
-JSON param order (MUST be matched by get_parameters):
-    [mode, r, g, b, a]
-
-Modes:
-    mode = 0.0  -> Grayscale  : output (v, v, v, 1)
-    mode = 1.0  -> RGBA       : output (r, g, b, a)
-"""
+"""Color Input node supporting Grayscale and RGBA modes."""
 import bpy
 from ..base import TextureSynthNode
 from ._common import update_param
 
-
-SV_TYPE = "color_const"   # matches color_const.node.json `id`
+SV_TYPE = "color_const"
 
 
 class TS_ColorConst_Node(TextureSynthNode):
@@ -51,7 +39,7 @@ class TS_ColorConst_Node(TextureSynthNode):
     )
 
     def init(self, context):
-        super().init(context)              # assigns ts_uuid
+        super().init(context)
         self.outputs.new('TS_DefaultSocketType', "")
 
     def draw_buttons(self, context, layout):
@@ -65,7 +53,7 @@ class TS_ColorConst_Node(TextureSynthNode):
             layout.prop(self, "gray_value", slider=True)
 
     def get_parameters(self):
-        # Order: [mode, r, g, b, a]
+        # Param order: [mode, r, g, b, a]
         if self.mode == 'RGBA':
             c = self.color_data
             return [1.0, float(c[0]), float(c[1]), float(c[2]), float(c[3])]

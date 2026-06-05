@@ -8,8 +8,7 @@ namespace te {
 
 using ChainId = uint32_t;   // NodeId is defined in Graph.hpp
 
-// Owns the "which passes need to run this frame" decision.
-// Decoupled from PassPlan so unit-testable.
+// Owns the "which passes need to run this frame" decision. Decoupled from PassPlan for unit-testability.
 class DirtySet {
 public:
     void mark_node(uint64_t node_id) {
@@ -58,10 +57,7 @@ public:
         return all_dirty_ || dirty_nodes_.count(node_id) > 0;
     }
 
-    // Stage 6: chain-level dirty query. True iff the chain is unknown
-    // (conservative), all_dirty_, or any member is in dirty_nodes_.
-    // Cached per chain id; the cache is invalidated in mark_node,
-    // mark_topology_change, clear, and set_chain_membership.
+    // Stage 6: chain-level dirty query. True if chain unknown (conservative), all_dirty_, or any member in dirty_nodes_. Cached per chain id; invalidated by mark_node, mark_topology_change, clear, set_chain_membership.
     bool is_chain_dirty(ChainId c) const {
         if (all_dirty_) return true;
         auto cit = chain_dirty_cache_.find(c);
@@ -89,9 +85,7 @@ public:
         chain_dirty_cache_.clear();
     }
 
-    // Stage 6: set the chain membership (called once per graph compile).
-    // Note: does NOT reset all_dirty_ -- topology changes go through
-    // mark_topology_change(). The membership is just a lookup table.
+    // Stage 6: set chain membership (once per graph compile). Does NOT reset all_dirty_ (topology changes use mark_topology_change()).
     void set_chain_membership(std::unordered_map<ChainId, std::vector<NodeId>> m) {
         chain_members_ = std::move(m);
         chain_dirty_cache_.clear();

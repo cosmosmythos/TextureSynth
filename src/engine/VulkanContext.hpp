@@ -27,8 +27,7 @@ public:
     VkQueue           graphics_queue()  const { return graphics_queue_; }
     uint32_t          graphics_family() const { return graphics_family_; }
 
-    // Transfer queue: distinct family if available, otherwise == graphics_queue.
-    // Always non-null after init().
+    // Transfer queue: distinct family if available, otherwise == graphics_queue. Always non-null after init().
     VkQueue           transfer_queue()  const { return transfer_queue_; }
     uint32_t          transfer_family() const { return transfer_family_; }
     bool              has_dedicated_transfer() const { return transfer_queue_ != graphics_queue_; }
@@ -38,8 +37,7 @@ public:
     // Pipeline cache shared across all ComputePipeline::create() calls.
     VkPipelineCache   pipeline_cache()  const { return pipeline_cache_; }
 
-    // Thread-safe queue submission. Hold for the duration of vkQueueSubmit.
-    // Vulkan spec: vkQueueSubmit is NOT thread-safe; one thread per VkQueue at a time.
+    // Thread-safe queue submission. Hold for duration of vkQueueSubmit (NOT thread-safe per spec).
     std::mutex& graphics_queue_mutex() { return graphics_queue_mu_; }
     std::mutex& transfer_queue_mutex() {
         return has_dedicated_transfer() ? transfer_queue_mu_ : graphics_queue_mu_;
@@ -49,18 +47,7 @@ public:
     bool save_pipeline_cache(const std::string& path) const;
     bool load_pipeline_cache(const std::string& path);
 
-    // Debug object naming (VK_EXT_debug_utils). No-op if the extension is
-    // not available on this loader/driver. The name string must outlive the
-    // call (validation layer does not copy it - see Khronos VVL#1168);
-    // pass a std::string in scope.
-    // Apply a debug name to a Vulkan object. The name is forwarded to
-    // vkSetDebugUtilsObjectNameEXT, which is also intercepted by
-    // RenderDoc and any custom layer. Returns the VkResult of the
-    // underlying call. Returns VK_SUCCESS for harmless no-ops
-    // (null fn pointer / null handle / empty name) so callers can
-    // chain it without an if-guard. Long names (>255 chars) are
-    // truncated to fit the Vulkan spec limit
-    // (VK_MAX_DEBUG_UTILS_OBJECT_NAME_LENGTH_EXT = 256 including NUL).
+    // Debug object naming (VK_EXT_debug_utils). No-op if extension unavailable. Name must outlive call (VVL does not copy it - VVL#1168). Returns VK_SUCCESS for no-ops so callers can chain without if-guard. Names >255 chars truncated to Vulkan spec limit.
     VkResult set_debug_name(VkObjectType type, uint64_t handle,
                             const std::string& name) const;
 
@@ -86,9 +73,7 @@ private:
     VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
     VkPipelineCache  pipeline_cache_  = VK_NULL_HANDLE;
 
-    // PFN_vkSetDebugUtilsObjectNameEXT, loaded at init() if VK_EXT_debug_utils
-    // is available. Cached as a member so per-object naming is one call,
-    // not a GetDeviceProcAddr per object.
+    // PFN_vkSetDebugUtilsObjectNameEXT, loaded at init() if available. Cached so per-object naming is one call, not GetDeviceProcAddr per object.
     PFN_vkSetDebugUtilsObjectNameEXT set_debug_name_fn_ = nullptr;
 
     std::mutex       graphics_queue_mu_;

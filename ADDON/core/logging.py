@@ -1,20 +1,10 @@
-"""
-Logging helpers for the TextureSynth addon.
-
-The C++ engine has its own log_info/log_warn/log_error pipeline (see
-src/engine/Logging.hpp). The Python side installs a callback via
-`texturesynth_core.set_log_callback(level, message)` and that callback
-filters by level here, so the user only sees events they can act on.
-
-Default level: WARNING (errors + warnings). Switch to DEBUG in the
-addon prefs to get the full firehose.
-"""
+"""Logging helpers for the TextureSynth addon.
+Filters messages received from the C++ texturesynth_core log sink based on preferences."""
 import logging
 import bpy
 
 LOGGER_NAME = "texturesynth"
 
-# ── module-level logger ───────────────────────────────────────────────
 _log = logging.getLogger(LOGGER_NAME)
 if not _log.handlers:
     _h = logging.StreamHandler()
@@ -22,13 +12,11 @@ if not _log.handlers:
     _log.addHandler(_h)
 _log.propagate = False
 
-
 _LEVELS = ("ERROR", "WARNING", "INFO", "DEBUG")
 
 
 def _prefs_level() -> str:
-    """Read the current log_level from addon preferences. Safe to call
-    before bpy.context is fully available (returns 'ERROR' as a safe default)."""
+    """Read log_level from preferences, defaulting to ERROR if context is not ready."""
     try:
         addon = bpy.context.preferences.addons.get(__package__ or "texturesynth")
         if addon is None:
@@ -45,15 +33,12 @@ def update_level():
 
 
 def is_enabled_for(level_name: str) -> bool:
-    """True if a message at `level_name` would actually be emitted given
-    the user's current preference. Use to skip expensive string formatting
-    on the hot path."""
+    """Check if a log level is enabled to avoid formatting overhead."""
     cur = getattr(logging, _prefs_level(), logging.ERROR)
     want = getattr(logging, level_name, logging.DEBUG)
     return want >= cur
 
 
-# ── convenience helpers ───────────────────────────────────────────────
 def debug(msg, *args, **kwargs):
     if is_enabled_for("DEBUG"):
         _log.debug(msg, *args, **kwargs)

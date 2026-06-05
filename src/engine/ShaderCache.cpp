@@ -7,8 +7,7 @@
 namespace te {
 
 ShaderCache::ShaderCache(std::string dir) : dir_(std::move(dir)) {
-    // Directory creation is handled safely by Python in cpp_module.py
-    // to bypass MSVC C++ standard library locale locking bugs.
+    // Directory creation is handled by Python in cpp_module.py to bypass MSVC locale locking bugs.
 }
 
 std::string ShaderCache::path_for_spv_(uint64_t hash) const {
@@ -22,9 +21,7 @@ std::string ShaderCache::path_for_spv_(uint64_t hash) const {
 }
 
 std::string ShaderCache::path_for_sidecar_(uint64_t hash) const {
-    // Sidecar lives next to the .spv. Suffix ".spv.key.json" makes
-    // a "ls" of the cache directory human-readable (the two files
-    // share a prefix, the .spv.key.json suffix flags them as a pair).
+    // Sidecar lives next to the .spv. Suffix ".spv.key.json" flags the pair for human-readable listing.
     std::ostringstream oss;
     oss << std::hex << hash << ".spv.key.json";
     std::string filename = oss.str();
@@ -41,8 +38,7 @@ std::optional<std::vector<uint32_t>> ShaderCache::read_spv_(const std::string& p
     if (size % 4 != 0) return std::nullopt;
     f.seekg(0);
     std::vector<uint32_t> data(size / 4);
-    // SPIR-V magic 0x07230203 -- a corrupt or stale cache file
-    // won't start with it; let the caller fall through to recompile.
+    // SPIR-V magic 0x07230203 -- corrupt/stale cache won't start with it; caller falls through to recompile.
     if (data.empty() || data[0] != 0x07230203u) {
         log_warn("Shader Cache: Invalid SPIR-V blob ignored");
         return std::nullopt;
@@ -98,9 +94,7 @@ void ShaderCache::store(const ShaderVariantKey& key, const std::vector<uint32_t>
 
 std::optional<std::vector<uint32_t>> ShaderCache::load(const FusedVariantKey& key) const {
     const uint64_t h = key.hash();
-    // Sidecar is the equality re-check. If it's missing (older cache
-    // entry, partial write), treat as a miss -- the next store will
-    // create it. This is the latent-risk fix for hash collisions.
+    // Sidecar is the equality re-check. If missing (older cache entry, partial write), treat as miss -- next store creates it.
     if (!sidecar_matches_(h, key)) return std::nullopt;
     return read_spv_(path_for_spv_(h));
 }

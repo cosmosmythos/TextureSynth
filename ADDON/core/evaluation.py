@@ -1,22 +1,5 @@
-"""
-Evaluation Loop — timer-based update system.
-
-State semantics (all booleans are "user intent" sticky flags):
-  _topology_dirty : graph structure changed; needs resubmit
-  _params_dirty   : only slider values changed; just re-dispatch
-  _compiling      : a compile is in flight (informational)
-  _force_render   : render must happen on the next tick where
-                    has_pipeline() is True. NEVER cleared except
-                    by a successful render or by unregister().
-
-Invariant:
-  • A failed submit (transient: no output link, no tree) does NOT
-    clear _force_render. The user's last successful submit may still
-    be compiling; when it lands we must still render it.
-  • A submit_graph() success implicitly satisfies _force_render's
-    intent for the previous topology — but we keep it set because
-    the new submit's render is also pending.
-"""
+"""Evaluation Loop: manages the event-driven updates (msgbus) and minimal timer polling.
+Drains Vulkan compilation fence signals and GPU readbacks periodically."""
 import bpy
 from . import cpp_module
 from . import engine_bridge
@@ -26,6 +9,9 @@ _topology_dirty = False
 _params_dirty   = False
 _compiling      = False
 _force_render   = False
+_last_active_node_id = None
+
+_msgbus_owner = object()
 
 
 def request_topology_update():
@@ -38,8 +24,58 @@ def request_param_update():
     _params_dirty = True
 
 
+def _find_ts_trees():
+    """Yield all TextureSynth node trees in the current .blend."""
+    for ng in bpy.data.node_groups:
+        if getattr(ng, "bl_idname", None) == "TextureSynthTreeType":
+            yield ng
+
+
+def _on_node_select_change():
+    """Callback fired on node selection change. Detects active node changes and requests re-render."""
+    engine = cpp_module.get_engine()
+    if engine is None or not engine.has_pipeline():
+        return
+    for tree in _find_ts_trees():
+        active = getattr(tree.nodes, "active", None)
+        if active is None or not hasattr(active, "stable_id"):
+            continue
+        if getattr(active, "sv_type", None) is None:
+            continue
+        try:
+            new_id = int(active.stable_id())
+        except (TypeError, ValueError):
+            continue
+        if new_id == engine_bridge._last_active_node_id:
+            continue
+        
+        # Force a param update and render dispatch if selection changed.
+        if engine_bridge._check_active_node_change(tree, engine):
+            try:
+                engine_bridge.update_params_only(force_submit=True)
+            except Exception as e:
+                _tslog.error(f"active-node dispatch exception: {e}")
+
+
+def _subscribe_msgbus():
+    """Subscribe to node select changes to trigger preview updates on selection."""
+    bpy.msgbus.subscribe_rna(
+        key=(bpy.types.Node, "select"),
+        owner=_msgbus_owner,
+        args=(),
+        notify=_on_node_select_change,
+    )
+
+
+def _load_post_handler(dummy):
+    """Re-subscribe msgbus after .blend load (msgbus is cleared on load)."""
+    bpy.msgbus.clear_by_owner(_msgbus_owner)
+    _subscribe_msgbus()
+
+
 def _evaluation_timer():
     global _topology_dirty, _params_dirty, _compiling, _force_render
+    global _last_active_node_id
 
     if not cpp_module.is_loaded():
         return 1.0
@@ -47,7 +83,7 @@ def _evaluation_timer():
     if engine is None:
         return 1.0
 
-    # 1. Always poll compile queue.
+    # Poll Vulkan async compile queue.
     try:
         engine.poll_pending_compiles()
     except Exception as e:
@@ -61,7 +97,14 @@ def _evaluation_timer():
     except Exception as e:
         _tslog.error(f"sync errors exception: {e}")
 
-    # 2. Topology change → resubmit.
+    # Poll for active-node change (msgbus on Nodes.active is unreliable in 4.2+).
+    try:
+        if tree is not None and engine_bridge._check_active_node_change(tree, engine):
+            engine_bridge.update_params_only(force_submit=True)
+    except Exception as e:
+        _tslog.error(f"active-node poll exception: {e}")
+
+    # Resubmit graph if topology changed.
     if _topology_dirty:
         _topology_dirty = False
         generation = engine_bridge.submit_graph()
@@ -69,17 +112,17 @@ def _evaluation_timer():
             _params_dirty = False
             _force_render = True
             _compiling = not engine.is_generation_ready(generation)
-        # else: transient invalid — keep _force_render as-is.
+            _last_active_node_id = None
         return 0.25
 
     submitted = engine_bridge.submitted_generation()
     ready = bool(submitted and engine.is_generation_ready(submitted))
 
-    # 3. Compile-finished detection.
+    # Check if compiling is finished.
     if _compiling and ready:
         _compiling = False
 
-    # 4. Decide whether to dispatch this tick.
+    # Render if graph is ready and params or topology changed.
     needs_dispatch = ready and (_force_render or _params_dirty)
 
     if needs_dispatch:
@@ -92,14 +135,13 @@ def _evaluation_timer():
         if state == 'landed':
             _force_render = False
             _params_dirty = False
-        # 'in_flight' or 'idle' → keep ticking; don't clear flags.
         return 0.05
 
-    # 5. Still compiling — fast tick.
+    # Sleep less if still compiling shaders.
     if _compiling:
         return 0.05
 
-    # 6. Idle but ring may have a straggler. Poll-only, no submit.
+    # Poll for readback if frames are in flight.
     if engine.async_in_flight():
         try:
             engine_bridge.update_params_only(force_submit=False)
@@ -114,15 +156,23 @@ def register():
     if not bpy.app.timers.is_registered(_evaluation_timer):
         bpy.app.timers.register(_evaluation_timer,
                                 first_interval=0.5, persistent=True)
+    if _load_post_handler not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_load_post_handler)
+    _subscribe_msgbus()
 
 
 def unregister():
     global _topology_dirty, _params_dirty, _compiling, _force_render
+    global _last_active_node_id
     _topology_dirty = _params_dirty = _compiling = _force_render = False
-    # Reset bridge state too so a re-register starts clean.
+    _last_active_node_id = None
     engine_bridge._last_active_fingerprint = None
     engine_bridge._submitted_generation = 0
     engine_bridge._last_applied_generation = 0
     engine_bridge._last_pushed_param_hash = None
+    engine_bridge._last_active_node_id = None
     if bpy.app.timers.is_registered(_evaluation_timer):
         bpy.app.timers.unregister(_evaluation_timer)
+    bpy.msgbus.clear_by_owner(_msgbus_owner)
+    if _load_post_handler in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_load_post_handler)

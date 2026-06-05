@@ -1,32 +1,20 @@
-"""
-Image Input node.
-
-Backed by shader_assets/nodes/image.node.json + image.glsl.
-
-JSON param order (MUST be matched by get_parameters):
-    [u_offset, v_offset, u_scale, v_scale]
-"""
+"""Image Input node supporting local file loading and offset/scale controls."""
 import bpy
 from ..base import TextureSynthNode
 from ._common import update_param
 from ...core import logging as _tslog
 
-
-SV_TYPE = "image"   # matches image.node.json `id`
+SV_TYPE = "image"
 
 
 def update_image_prop(self, context):
-    """
-    Callback when the user selects or changes the image datablock.
-    Uploads the image to Vulkan immediately, then triggers a fast render redispatch.
-    """
+    """Callback to upload image to Vulkan and trigger parameter render update."""
     try:
         from ...core.engine_bridge import upload_node_image
         upload_node_image(self)
     except Exception as e:
         _tslog.error(f"update_image_prop upload exception: {e}")
     
-    # Request standard parameter rendering redispatch
     update_param(self, context)
 
 
@@ -70,7 +58,7 @@ class TS_Image_Node(TextureSynthNode):
     )
 
     def init(self, context):
-        super().init(context)              # assigns ts_uuid
+        super().init(context)
         self.outputs.new('TS_DefaultSocketType', "Color")
 
     def draw_buttons(self, context, layout):
@@ -87,7 +75,7 @@ class TS_Image_Node(TextureSynthNode):
         col.prop(self, "v_scale")
 
     def get_parameters(self):
-        # Order: [u_offset, v_offset, u_scale, v_scale]
+        # Param order: [u_offset, v_offset, u_scale, v_scale]
         return [
             float(self.u_offset),
             float(self.v_offset),

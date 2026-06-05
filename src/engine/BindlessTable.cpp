@@ -10,7 +10,7 @@ bool BindlessTable::init(VulkanContext& ctx,
                          VkSampler samp_clamp,
                          VkSampler samp_mirror,
                          uint32_t push_constant_size) {
-    // ── Pool (UPDATE_AFTER_BIND) ───────────────────────────────────
+    // Pool (UPDATE_AFTER_BIND)
     std::array<VkDescriptorPoolSize, 4> sizes{};
     sizes[0] = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_SAMPLED};
     sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_STORAGE};
@@ -27,7 +27,7 @@ bool BindlessTable::init(VulkanContext& ctx,
     }
     ctx.set_debug_name(VK_OBJECT_TYPE_DESCRIPTOR_POOL, (uint64_t)pool_, "bindless_pool");
 
-    // ── Set layout — 6 bindings (huge arrays + samplers + SSBO) ────
+    // Set layout -- 6 bindings (arrays + samplers + SSBO)
     std::array<VkSampler, 1> imm_rep{samp_repeat};
     std::array<VkSampler, 1> imm_clp{samp_clamp};
     std::array<VkSampler, 1> imm_mir{samp_mirror};
@@ -47,7 +47,7 @@ bool BindlessTable::init(VulkanContext& ctx,
 
     std::array<VkDescriptorBindingFlags, 6> flags{
         bindless_flags, bindless_flags, 0, 0, 0,
-        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT   // SSBO rebound each ring swap...PARTIALLY_BOUND so unused tail slots in future are legal. Written once.
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT   // SSBO rebound each ring swap; PARTIALLY_BOUND so unused tail slots are legal.
     };
     VkDescriptorSetLayoutBindingFlagsCreateInfo bfci{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
@@ -82,8 +82,7 @@ bool BindlessTable::init(VulkanContext& ctx,
         log_error("BindlessTable: pipeline layout create failed"); return false;
     }
 
-    // Reserve slot 0 as a permanent sentinel — never returned by alloc.
-    // This guarantees in_sampled_slots[i] == 0 is always safe (reads zero pixel).
+    // Reserve slot 0 as permanent sentinel -- never returned by alloc. Guarantees slot 0 always safe (reads zero pixel).
     sampled_next_ = 1;
     storage_next_ = 1;
 

@@ -22,10 +22,7 @@ bool ComputePipeline::create(VulkanContext& ctx,
     stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = module_;
     stage.pName  = "main";
-    // spec is nullptr for un-specialized pipelines (preserves prior behavior).
-    // Vulkan spec: pSpecializationInfo is read synchronously by
-    // vkCreateComputePipelines, so the caller's data only needs to live
-    // until the create call returns.
+    // spec is nullptr for un-specialized pipelines. pSpecializationInfo is read synchronously by vkCreateComputePipelines.
     stage.pSpecializationInfo = spec;
 
     VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};

@@ -1,17 +1,4 @@
-"""Windows DLL loader helpers.
-
-Blender extensions ship binary wheels repaired with `delvewheel`, which places
-external DLL dependencies in a sibling "<package>.libs" folder next to the `.pyd`.
-
-On Windows, Python may fail to import the extension module if that directory is not
-on the DLL search path. Since Python 3.8, the correct way to extend the DLL search
-path is `os.add_dll_directory`.
-
-This module provides a small helper to be called *before* importing binary modules.
-
-Pattern from: gp_autointerpolate/utils/dll_loader.py
-"""
-
+"""Windows DLL loader helper to dynamically extend DLL search paths for wheel-provided binaries."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,18 +6,12 @@ import os
 import sys
 from typing import Iterable, List
 
-
 _added_dirs: List[os.PathLike] = []
 
 
 def _candidate_lib_dirs(module_stem: str) -> Iterable[Path]:
-    """Return possible DLL-containing directories for a given module/package name.
-
-    `delvewheel` commonly uses `<distname>.libs/`, but depending on install layout
-    (notably Blender Extensions), wheels may also end up with DLLs located under
-    `<distname>-<ver>.data/platlib/`.
-    """
-    # Add-on-local folder
+    """Return candidate directories containing DLL dependencies for the given module stem."""
+    # Add-on-local folder.
     yield Path(__file__).resolve().parent.parent / f"{module_stem}.libs"
 
     for p in sys.path:
@@ -39,11 +20,10 @@ def _candidate_lib_dirs(module_stem: str) -> Iterable[Path]:
         except Exception:
             continue
 
-        # Typical delvewheel layout
+        # Typical delvewheel layout.
         yield pp / f"{module_stem}.libs"
 
-        # Blender Extensions observed layout:
-        #   texturesynth_core-1.0.0.data/platlib/*.dll
+        # Blender Extensions layout.
         data_glob = f"{module_stem}-*.data"
         try:
             for data_dir in pp.glob(data_glob):
@@ -56,13 +36,7 @@ def _candidate_lib_dirs(module_stem: str) -> Iterable[Path]:
 
 
 def add_wheel_dll_dirs(module_stem: str) -> None:
-    """Add wheel-bundled DLL directories to Windows DLL search path.
-
-    Safe to call multiple times.
-
-    Args:
-        module_stem: e.g. "texturesynth_core" or "texturesynth"
-    """
+    """Add wheel-bundled DLL directories to Windows DLL search path."""
     if sys.platform != "win32":
         return
 

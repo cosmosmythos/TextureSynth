@@ -1,9 +1,4 @@
-"""
-Sidebar panel for TextureSynth — Node Editor N-panel.
-
-Shows engine status, resolution control, and manual update button.
-"""
-
+"""Sidebar panel for TextureSynth in the Node Editor N-panel."""
 import bpy
 from ..core import cpp_module
 
@@ -26,26 +21,18 @@ class TEXTURESYNTH_PT_sidebar(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
 
-        # Engine status
         box = layout.box()
         if cpp_module.is_loaded():
             box.label(text="Engine: Ready", icon='CHECKMARK')
         else:
             box.label(text="Engine: Not loaded", icon='ERROR')
 
-        # Resolution and format controls
         col = layout.column(align=True)
         col.prop(context.scene, "texturesynth_resolution")
         col.prop(context.scene, "texturesynth_precision")
         col.prop(context.scene, "texturesynth_proxy_scale")
 
-        # Manual update
         layout.operator("texturesynth.update", icon='FILE_REFRESH')
-
-        # Bake the output node's named targets to bpy.data.images.
-        layout.separator()
-        layout.label(text="Bake targets:")
-        layout.operator("texturesynth.bake", icon='RENDER_STILL')
 
 
 classes = (
@@ -59,18 +46,17 @@ def on_precision_update(self, context):
 
 
 def on_proxy_scale_update(self, context):
-    # Proxy scale changes the render resolution, so the engine's image
-    # allocation must be resized — that's a topology-level change, not
-    # just a param re-dispatch.
+    # Render resolution changed, trigger topology update to resize allocations.
     from ..core.evaluation import request_topology_update
     request_topology_update()
 
 
-def register():
+def _register_extra():
+    """Add Scene custom properties used by the panel."""
     bpy.types.Scene.texturesynth_resolution = bpy.props.IntProperty(
         name="Resolution",
         description="Output texture resolution (square)",
-        default=512,
+        default=1024,
         min=64,
         max=4096,
         subtype='PIXEL',
@@ -97,6 +83,20 @@ def register():
         default='1.0',
         update=on_proxy_scale_update,
     )
+
+
+def _unregister_extra():
+    if hasattr(bpy.types.Scene, "texturesynth_resolution"):
+        del bpy.types.Scene.texturesynth_resolution
+    if hasattr(bpy.types.Scene, "texturesynth_precision"):
+        del bpy.types.Scene.texturesynth_precision
+    if hasattr(bpy.types.Scene, "texturesynth_proxy_scale"):
+        del bpy.types.Scene.texturesynth_proxy_scale
+
+
+# Wrap registration to also register/unregister Scene properties.
+def register():
+    _register_extra()
     for cls in classes:
         bpy.utils.register_class(cls)
 
@@ -104,9 +104,4 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-    if hasattr(bpy.types.Scene, "texturesynth_resolution"):
-        del bpy.types.Scene.texturesynth_resolution
-    if hasattr(bpy.types.Scene, "texturesynth_precision"):
-        del bpy.types.Scene.texturesynth_precision
-    if hasattr(bpy.types.Scene, "texturesynth_proxy_scale"):
-        del bpy.types.Scene.texturesynth_proxy_scale
+    _unregister_extra()

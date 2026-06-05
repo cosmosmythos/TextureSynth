@@ -4,7 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_set>
-#include <nlohmann/json.hpp>   // header-only, add to deps
+#include <nlohmann/json.hpp>   // header-only
 
 namespace te {
 namespace fs = std::filesystem;
@@ -15,7 +15,7 @@ static std::string slurp(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     std::ostringstream ss; ss << f.rdbuf();
     std::string s = ss.str();
-    // Strip UTF-8 BOM if present (EF BB BF) — shaderc rejects it mid-shader.
+    // Strip UTF-8 BOM if present (EF BB BF) - shaderc rejects it mid-shader.
     if (s.size() >= 3 &&
         static_cast<unsigned char>(s[0]) == 0xEF &&
         static_cast<unsigned char>(s[1]) == 0xBB &&
@@ -44,10 +44,7 @@ static ChannelFormat parse_channel_format(const std::string& s) {
 }
 
 
-// Stage 2: map .node.json "pass_kind" string -> PassKind enum.
-// Defaults to PurePixel (the safe fuseable option) if the key is missing
-// or unrecognized. Invalid keys are logged so authors notice, but the
-// fallback is non-fatal so a typo doesn't break the whole node set.
+// Stage 2: map .node.json "pass_kind" string -> PassKind enum. Defaults to PurePixel if key missing/unrecognized; logs invalid keys but does not abort.
 PassKind NodeRegistryLoader::parse_pass_kind(const std::string& s) {
     if (s == "pure_pixel")   return PassKind::PurePixel;
     if (s == "boundary")     return PassKind::Boundary;
@@ -76,12 +73,7 @@ static std::string assemble_glsl(const json& manifest,
                 log_warn("missing include: " + p.string());
                 continue;
             }
-            // Guards in the file prevent duplicate-symbol errors when
-            // multiple nodes pull the same include — final shader still
-            // gets the body once per #include site, but GLSL #ifndef
-            // (after a future preprocessor pass) or simple string-dedup
-            // at GraphCompiler level handles it. For now, emit once here
-            // by relying on the guard macros.
+            // Guards in the file prevent duplicate-symbol errors when multiple nodes pull the same include — final shader still gets the body once per #include site. For now, emit once by relying on the guard macros.
             out << slurp(p) << "\n";
         }
     }
@@ -144,14 +136,10 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                 n.variant_flags.push_back(f.get<std::string>());
             }
 
-            // Opt-in flag for the format post-process (see Graph.hpp:is_format_sensitive).
-            // Only noise generators set this. Default false — a missing key in
-            // .node.json is the safe option (no post-process emitted).
+            // Opt-in flag for the format post-process (Graph.hpp:is_format_sensitive). Only noise generators set this. Default false.
             n.is_format_sensitive = m.value("format_sensitive", false);
 
-            // Stage 2: how this node participates in chain fusion.
-            // See DEV_LOG/IMPLEMENTATION_PLAN_pass_fusion/03_pass_kind.md
-            // and shader_assets/nodes/README.md for the 7-kind reference table.
+            // Stage 2: how this node participates in chain fusion (7-kind reference: shader_assets/nodes/README.md).
             n.pass_kind = parse_pass_kind(m.value("pass_kind", "pure_pixel"));
 
             auto shader_file = m.at("shader").get<std::string>();
@@ -159,7 +147,7 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
             n.glsl_function = assemble_glsl(
                 m, fs::path(nodes_dir) / shader_file, glsl_dir, loaded);
 
-            lib.add_public(std::move(n));   // see NodeLibrary change below
+            lib.add_public(std::move(n));
             ++count;
         } catch (const std::exception& e) {
             log_error(std::string("node parse failed: ") + entry.path().string() + " - " + e.what());

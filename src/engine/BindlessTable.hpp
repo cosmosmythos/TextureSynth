@@ -7,15 +7,7 @@ namespace te {
 
 class VulkanContext;
 
-// One global, persistent descriptor set holding:
-//   binding 0 — sampled_images[MAX_SAMPLED]   (UPDATE_AFTER_BIND, PARTIALLY_BOUND)
-//   binding 1 — storage_images[MAX_STORAGE]   (UPDATE_AFTER_BIND, PARTIALLY_BOUND)
-//   binding 2 — sampler samp_repeat  (immutable)
-//   binding 3 — sampler samp_clamp   (immutable)
-//   binding 4 — sampler samp_mirror  (immutable)
-//
-// One pipeline layout (push constants only, no per-pass set).
-// Bound once via vkCmdBindDescriptorSets; never rebound.
+// One global, persistent descriptor set: binding 0 = sampled_images[MAX_SAMPLED] (UPDATE_AFTER_BIND, PARTIALLY_BOUND), binding 1 = storage_images[MAX_STORAGE], bindings 2-4 = immutable samplers (repeat, clamp, mirror). One pipeline layout (push constants only). Bound once; never rebound.
 class BindlessTable {
 public:
     static constexpr uint32_t MAX_SAMPLED = 4096;

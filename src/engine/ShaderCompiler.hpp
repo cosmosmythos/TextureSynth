@@ -16,7 +16,7 @@ struct CompileResult {
     bool success = false;
     std::vector<uint32_t> spirv;
     std::string error_log;
-    ShaderVariantKey variant_key;  // replaces source_hash
+    ShaderVariantKey variant_key;
 };
 
 class ShaderCompiler {
@@ -24,12 +24,9 @@ public:
     ShaderCompiler();
     ~ShaderCompiler();
 
-    // Submit a GLSL compute shader to be compiled off the main thread.
     std::future<CompileResult> compile_compute_async(std::string glsl, std::string name);
 
-    // Synchronous wrapper for the chain path. Chain compile is short
-    // (small SPIR-V, one shader) and runs at set_graph time, so the
-    // thread-pool hop is not worth the bookkeeping.
+    // Sync wrapper. Chain compile is short (small SPIR-V) and runs at set_graph time; thread-pool hop not worth the cost.
     CompileResult compile_compute_sync(std::string glsl, std::string name) {
         return compile_compute_async(std::move(glsl), std::move(name)).get();
     }
@@ -39,9 +36,7 @@ public:
 private:
     void worker_loop();
 
-    // Threads are NOT started in the constructor.
-    // Called on first compile_compute_async() to avoid CRT TLS issues
-    // when the compiler is constructed during Python extension load.
+    // NOT started in constructor. Called on first compile_compute_async() to avoid CRT TLS issues during Python extension load.
     void ensure_workers();
 
     std::vector<std::thread> workers_;

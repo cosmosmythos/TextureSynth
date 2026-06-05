@@ -11,11 +11,7 @@ namespace te {
 
 class VulkanContext;
 
-// Async, pooled image uploader. Replaces Image::upload_pixels' synchronous path.
-// - One persistent command pool per slot (transient + resettable).
-// - One staging buffer per slot, grown on demand.
-// - Fence-tracked: poll() returns finished slots without blocking.
-// - Uses ctx.transfer_queue() and acquires its mutex for submission.
+// Async, pooled image uploader. Fence-tracked slots on transfer queue.
 class ImageUploader {
 public:
     static constexpr uint32_t SLOT_COUNT = 4;
@@ -29,10 +25,7 @@ public:
     bool init(VulkanContext& ctx);
     void shutdown(VulkanContext& ctx);
 
-    // Submit a non-blocking upload. Returns ticket > 0 on success,
-    // 0 if the ring is full (caller retries next tick).
-    // `out_image` will be created/recreated to match (w,h) and populated
-    // by the GPU. Caller may NOT touch out_image until poll() returns it.
+    // Submit a non-blocking upload. Returns ticket > 0 on success, 0 if ring full. Caller may NOT touch image until poll() returns it.
     uint64_t submit(VulkanContext& ctx,
                     uint64_t node_id,
                     const float* pixels, uint32_t w, uint32_t h,
@@ -64,9 +57,7 @@ private:
         uint64_t node_id = 0;
         uint64_t ticket  = 0;
 
-        // Bookkeeping for the QFOT acquire on the graphics queue.
-        // If transfer family != graphics family, we issued a release
-        // barrier on transfer and need a matching acquire later.
+        // Bookkeeping for QFOT acquire on graphics queue. Set when transfer family != graphics family.
         bool needs_acquire_on_graphics = false;
         uint32_t job_w = 0, job_h = 0;
 
