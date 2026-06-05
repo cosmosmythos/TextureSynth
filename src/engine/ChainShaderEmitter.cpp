@@ -161,10 +161,10 @@ constexpr const char* CHAIN_HEADER = R"glsl(
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform texture2D u_sampled[];
-layout(set = 0, binding = 1) writeonly uniform image2D u_storage[];
+layout(set = 0, binding = 1, rgba32f) writeonly uniform image2D u_storage[];
 layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[3];
 
-layout(push_constant) uniform PC {
+layout(push_constant, std430) uniform PC {
     uint  resolution_x;
     uint  resolution_y;
     uint  seed;
@@ -251,9 +251,9 @@ Result emit_linear(const Chain& chain, const GraphIR& ir,
         tail_type && tail_type->is_format_sensitive
         && tail_inst->format_override != ChannelFormat::RGBA;
     if (tail_needs_format) {
-        s << "vec4 _fmt_mono(vec4 v)  { return vec4(v.x, 0.0, 0.0, 0.0); }\n"
+        s << "vec4 _fmt_mono(vec4 v)  { return vec4(v.x, v.x, v.x, 1.0); }\n"
              "vec4 _fmt_uv(vec4 v)    { return vec4(v.y, v.z, 0.0, 1.0); }\n"
-             "vec4 _fmt_rgb(vec4 v)   { return vec4(v.xxx, 1.0); }\n"
+             "vec4 _fmt_rgb(vec4 v)   { return vec4(v.rgb, 1.0); }\n"
              "vec4 _fmt_rgba(vec4 v)  { return v; }\n"
              "vec4 _fmt_id(vec4 v)    { return v; }\n"
              "vec4 _fmt_metadata(vec4 v) { return v; }\n\n";

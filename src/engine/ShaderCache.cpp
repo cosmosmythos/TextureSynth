@@ -38,7 +38,7 @@ std::optional<std::vector<uint32_t>> ShaderCache::read_spv_(const std::string& p
     if (size % 4 != 0) return std::nullopt;
     f.seekg(0);
     std::vector<uint32_t> data(size / 4);
-    // SPIR-V magic 0x07230203 -- corrupt/stale cache won't start with it; caller falls through to recompile.
+    f.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size));
     if (data.empty() || data[0] != 0x07230203u) {
         log_warn("Shader Cache: Invalid SPIR-V blob ignored");
         return std::nullopt;

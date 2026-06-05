@@ -44,7 +44,7 @@ private:
     std::condition_variable  queue_cv_;
     std::queue<std::function<void()>> tasks_;
     std::atomic<bool>        stop_{false};
-    bool                     workers_started_{false};
+    std::atomic<bool>        workers_started_{false};
 };
 
 } // namespace te

@@ -119,7 +119,7 @@ uint32_t BindlessTable::alloc_storage_slot() {
 
 
 void BindlessTable::free_sampled_slot(uint32_t s) {
-    if (s != INVALID_SLOT && s < MAX_SAMPLED) sampled_free_.push_back(s);
+    if (s != INVALID_SLOT && s < MAX_SAMPLED && s != 0) sampled_free_.push_back(s);
 }
 
 

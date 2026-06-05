@@ -103,7 +103,7 @@ static std::string emit_node_shader(const ValidatedNode& vn,
 
     // ── Bindless set 0 (forever-bound) ─────────────────────────────
     s << "layout(set = 0, binding = 0) uniform texture2D u_sampled[];\n";
-    s << "layout(set = 0, binding = 1) writeonly uniform image2D u_storage[];\n";
+    s << "layout(set = 0, binding = 1, rgba32f) writeonly uniform image2D u_storage[];\n";
     s << "layout(set = 0, binding = 2) uniform sampler samp_repeat;\n";
     s << "layout(set = 0, binding = 3) uniform sampler samp_clamp;\n";
     s << "layout(set = 0, binding = 4) uniform sampler samp_mirror;\n";
@@ -111,7 +111,7 @@ static std::string emit_node_shader(const ValidatedNode& vn,
     "node_params[" << BindlessTable::PARAM_RING_SIZE << "];\n\n";
 
     // ── Push constants ─────────────────────────────────────────────
-    s << "layout(push_constant) uniform PC {\n"
+    s << "layout(push_constant, std430) uniform PC {\n"
       << "    uint  resolution_x;\n"
       << "    uint  resolution_y;\n"
       << "    uint  seed;\n"

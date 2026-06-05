@@ -956,7 +956,8 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
         b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
                         | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.oldLayout = src->layout;
+        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         b.image     = src->image;
         b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};

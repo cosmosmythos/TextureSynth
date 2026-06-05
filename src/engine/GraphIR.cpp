@@ -20,7 +20,11 @@ static bool is_muted(const std::vector<NodeInstance>& nodes, NodeId id) {
     return false;
 }
 
-// Resolve the effective source of a muted node M's input[0]. If M has no input, returns {0,0} (severed). If source is non-muted, returns that connection. If source is also muted, recurse. Bounded by node count.
+// Sentinel used to mark connections severed by muted-node rewire.
+// UINT64_MAX is never a valid NodeId (which starts from 0).
+constexpr NodeId SEVERED = ~NodeId{0};
+
+// Resolve the effective source of a muted node M's input[0]. If M has no input, returns {SEVERED,0} (severed). If source is non-muted, returns that connection. If source is also muted, recurse. Bounded by node count.
 static std::pair<NodeId, uint32_t> resolve_muted_source(
     NodeId M,
     const std::vector<NodeInstance>& nodes,
@@ -39,9 +43,9 @@ static std::pair<NodeId, uint32_t> resolve_muted_source(
                 break;
             }
         }
-        if (!found) return {0, 0};  // severed
+        if (!found) return {SEVERED, 0};  // severed
     }
-    return {0, 0};  // chain too deep — treat as severed
+    return {SEVERED, 0};  // chain too deep — treat as severed
 }
 
 // Topological sort via Kahn's algorithm. Returns node IDs in evaluation order. On cycle returns false.
@@ -192,9 +196,9 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         auto eff = resolve_muted_source(n.id, graph.nodes, graph.connections);
         for (auto& c : rewired_conns) {
             if (c.src_node != n.id) continue;
-            if (eff.first == 0) {
+            if (eff.first == SEVERED) {
                 // Severed: mark for removal (filtered out in step 7).
-                c.src_node = 0;
+                c.src_node = SEVERED;
             } else {
                 c.src_node   = eff.first;
                 c.src_socket = eff.second;
@@ -233,7 +237,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     // Populate validated connections (both endpoints in ir.nodes, and
     // the source isn't the severed sentinel from rewire).
     for (auto& c : rewired_conns) {
-        if (c.src_node == 0) continue;                                // severed
+        if (c.src_node == SEVERED) continue;                                // severed
         if (!ir.node_index.count(c.src_node)) continue;               // not in IR
         if (!ir.node_index.count(c.dst_node)) continue;               // not in IR
         ir.connections.push_back({c.src_node, c.src_socket,

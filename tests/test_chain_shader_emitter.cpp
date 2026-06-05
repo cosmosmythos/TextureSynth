@@ -184,7 +184,7 @@ TEST(ChainEmitter, HeaderDeclaresVersionAndPushConstants) {
     auto ch = get_chain_for_node(f.compiled, 1);
     ASSERT_FALSE(ch.glsl.empty());
     EXPECT_THAT(ch.glsl, HasSubstr("#version 460"));
-    EXPECT_THAT(ch.glsl, HasSubstr("layout(push_constant) uniform PC"));
+    EXPECT_THAT(ch.glsl, HasSubstr("layout(push_constant, std430) uniform PC"));
     EXPECT_THAT(ch.glsl, HasSubstr("uint  resolution_x"));
     EXPECT_THAT(ch.glsl, HasSubstr("uint  out_storage_slots[4]"));
     EXPECT_THAT(ch.glsl, HasSubstr("uint  in_sampled_slots[8]"));
@@ -202,7 +202,7 @@ TEST(ChainEmitter, HeaderDeclaresBindlessSet0) {
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
     EXPECT_THAT(ch.glsl, HasSubstr("layout(set = 0, binding = 0) uniform texture2D u_sampled"));
-    EXPECT_THAT(ch.glsl, HasSubstr("layout(set = 0, binding = 1) writeonly uniform image2D u_storage"));
+    EXPECT_THAT(ch.glsl, HasSubstr("layout(set = 0, binding = 1, rgba32f) writeonly uniform image2D u_storage"));
     EXPECT_THAT(ch.glsl, HasSubstr("layout(set = 0, binding = 5, std430) readonly buffer NodeParams"));
     EXPECT_THAT(ch.glsl, HasSubstr("node_params[3]"));   // matches PARAM_RING_SIZE
 }
