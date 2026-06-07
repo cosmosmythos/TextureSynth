@@ -7,7 +7,7 @@
 #include <unordered_set>
 #include <variant>
 
-namespace te::chain_shader {
+namespace te {
 
 // Internal helpers
 namespace {
@@ -307,4 +307,4 @@ Result emit_linear(const Chain& chain, const GraphIR& ir,
     return result;
 }
 
-} // namespace te::chain_shader
+} // namespace te

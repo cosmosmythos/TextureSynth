@@ -1,7 +1,8 @@
 // =============================================================================
-// node_simplex — Tileable Simplex FBM with Analytical Derivatives (psrdnoise2)
+// node_simplex — Tileable Simplex FBM (Multi-Seed RGB)
 // =============================================================================
-// Output: vec4(noise, ∂n/∂x, ∂n/∂y, 1)  — all remapped to [0,1].
+// Output: vec4(noise_R, noise_G, noise_B, 1)  — Houdini convention.
+// Each channel is an independent simplex noise with a different seed offset.
 // =============================================================================
 
 vec4 node_simplex(vec2 uv,
@@ -24,8 +25,11 @@ vec4 node_simplex(vec2 uv,
            + vec2(offsetX, offsetY)
            + vec2(pc.time * speed);
 
-    vec2 grad;
-    float n = ts_fbm_simplex(p, ivec2(iperX, iperY), ioct, lacunarity, gain, rotation, iseed, grad);
+    ivec2 per = ivec2(iperX, iperY);
 
-    return vec4(ts_to_unit(n), ts_to_unit(grad.x), ts_to_unit(grad.y), 1.0);
+    float r = ts_fbm_simplex(p, per, ioct, lacunarity, gain, rotation, iseed);
+    float g = ts_fbm_simplex(p, per, ioct, lacunarity, gain, rotation, iseed + 379u);
+    float b = ts_fbm_simplex(p, per, ioct, lacunarity, gain, rotation, iseed + 757u);
+
+    return vec4(ts_to_unit(r), ts_to_unit(g), ts_to_unit(b), 1.0);
 }

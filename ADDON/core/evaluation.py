@@ -113,7 +113,7 @@ def _evaluation_timer():
             _force_render = True
             _compiling = not engine.is_generation_ready(generation)
             _last_active_node_id = None
-        return 0.25
+        return 0.01
 
     submitted = engine_bridge.submitted_generation()
     ready = bool(submitted and engine.is_generation_ready(submitted))

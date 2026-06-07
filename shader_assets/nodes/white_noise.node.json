@@ -2,7 +2,7 @@
     "id": "white",
     "display_name": "White Noise",
     "description": "Per-pixel hash noise. Grain, dithering, stochastic seeds.",
-    "includes": ["math_common", "noise_common"],
+    "includes": ["remap", "noise_common"],
     "inputs": [],
     "outputs": [
         { "name": "color", "type": "vec4" }

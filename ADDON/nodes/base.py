@@ -1,14 +1,6 @@
 import bpy
 import uuid
 
-TS_CATEGORY_COLORS = {
-    'INPUT':   (0.20, 0.35, 0.55),
-    'NOISE':   (0.25, 0.45, 0.30),
-    'COLOR':   (0.55, 0.40, 0.20),
-    'FILTER':  (0.45, 0.25, 0.45),
-    'BLEND':   (0.55, 0.30, 0.30),
-    'OUTPUT':  (0.15, 0.15, 0.15),
-}
 
 FORMAT_OVERRIDE_ITEMS = [
     ('DEFAULT', "Auto",    "Use the node type's declared output format"),
@@ -88,10 +80,6 @@ class TextureSynthNode(bpy.types.Node):
         """Called when the node is first created. Subclasses should call super()."""
         if not getattr(self, "ts_uuid", ""):
             self.ts_uuid = uuid.uuid4().hex
-        color = TS_CATEGORY_COLORS.get(self.ts_category)
-        if color:
-            self.use_custom_color = True
-            self.color = color
 
     def copy(self, node):
         """Called when the node is duplicated. Generate a fresh UUID."""

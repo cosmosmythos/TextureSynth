@@ -10,8 +10,9 @@ vec4 node_value(vec2 uv,
            + vec2(offsetX, offsetY)
            + vec2(pc.time * speed);
 
-    vec2 grad;
-    float n = ts_fbm_value(p, iper, ioct, lacunarity, gain, iseed, grad);
+    float r = ts_fbm_value(p, iper, ioct, lacunarity, gain, iseed);
+    float g = ts_fbm_value(p, iper, ioct, lacunarity, gain, iseed + 379u);
+    float b = ts_fbm_value(p, iper, ioct, lacunarity, gain, iseed + 757u);
 
-    return vec4(ts_to_unit(n), ts_to_unit(grad.x), ts_to_unit(grad.y), 1.0);
+    return vec4(ts_to_unit(r), ts_to_unit(g), ts_to_unit(b), 1.0);
 }

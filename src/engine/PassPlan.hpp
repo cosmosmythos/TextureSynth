@@ -7,9 +7,7 @@
 #include <cstdint>
 
 namespace te {
-
-
-// PassKind enum lives in Graph.hpp to avoid cycles. See 03_pass_kind.md for include-chain reasoning.
+// PassKind enum lives in Graph.hpp to avoid cycles.
 
 
 enum class InputMode : uint8_t {
@@ -30,7 +28,7 @@ struct ComputePass {
     PassKind     pass_kind          = PassKind::PurePixel;   // Stage 2 classification (stages 3-6 consume)
     InputMode    input_mode         = InputMode::PreSampled;
 
-    // Shader variant key -- cache lookup is keyed by this, not source hash.
+    // Cache lookup is keyed by this, not source hash.
     ShaderVariantKey variant_key;
 
     // Partial re-execution: set by GraphCompiler, mutated at runtime.
@@ -72,6 +70,17 @@ struct PassPlan {
     std::vector<ComputePass> passes;
     std::vector<Chain>       chains;     // Stage 3: superset info for fused runtime
     ResourceUUID final_output_resource = {};
+
+    // Stage 6 aliasing: per-pass chain index (UINT32_MAX = not in chain).
+    // Precomputed here rather than re-derived in Engine::populate_chains_.
+    std::vector<uint32_t> chain_index_of_pass;
+
+    struct ResourceLifetime {
+        uint32_t first_pass = UINT32_MAX;  // pass index that writes this resource
+        uint32_t last_pass  = 0;           // last pass index that reads it
+    };
+    std::unordered_map<ResourceUUID, ResourceLifetime, ResourceUUIDHash> lifetimes;
+    std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash> color_classes;
 };
 
 

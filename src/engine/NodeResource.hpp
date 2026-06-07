@@ -18,6 +18,8 @@ struct NodeResource {
     std::string   debug_name;
     bool          is_dirty     = true;
     uint64_t      last_evaluated_revision = 0;
+    uint32_t      alias_group_id = 0;     // >0 means pooled with VMA_CAN_ALIAS_BIT
+    uint64_t      alias_gen      = 0;     // group current_gen when this was last written
 };
 
 } // namespace te

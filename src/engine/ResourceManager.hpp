@@ -46,6 +46,11 @@ struct VmaStatsReport {
     size_t  vma_allocation_bytes   = 0;   // VmaStats::allocationBytes
     size_t  vma_unused_range_bytes = 0;   // blockBytes - allocationBytes
 
+    // Device-local-only rollup (excludes host-visible staging buffers).
+    // Aliasing only applies to device-local images, so this is the
+    // physically meaningful number for an "aliasing efficiency" check.
+    size_t  device_local_allocation_bytes = 0;
+
     // Configured soft limit (not GPU budget); logs warning when exceeded.
     size_t  warning_threshold_bytes = 0;
 
@@ -57,11 +62,13 @@ struct VmaStatsReport {
     // Per-heap breakdown. Size == device's memoryHeapCount (including non-device-local heaps).
     std::vector<VmaHeapStats> heap_stats;
 
-    // Global aliasing ratio: VMA physical bytes / logical bytes. 1.0 = perfect; <1.0 = aliasing saving memory (Stage 6); >1.0 = fragmentation/overhead.
+    // Aliasing ratio over device-local memory only. 1.0 = perfect; <1.0
+    // = aliasing is saving VRAM (Stage 6); >1.0 = fragmentation/overhead.
+    // Excludes host-visible staging buffers which never alias.
     double aliasing_efficiency() const {
         return node_resource_bytes == 0
                  ? 1.0
-                 : double(vma_allocation_bytes) / double(node_resource_bytes);
+                 : double(device_local_allocation_bytes) / double(node_resource_bytes);
     }
 };
 
@@ -70,13 +77,15 @@ public:
     // Soft limit, MB. Default 1 GB. allocate_for_graph() returns false when exceeded.
     void set_memory_budget_mb(size_t mb) { budget_bytes_ = mb * 1024ull * 1024ull; }
 
-    // Allocate one image per (node_id, output_index=0) in the active subgraph. Returns false if budget exceeded.
+    // Allocate one image per (node_id, output_index) in the active subgraph. Returns false if budget exceeded.
+    // When color_classes is provided, resources sharing a color > 0 alias VkDeviceMemory (Stage 6 aliasing).
     bool allocate_for_graph(VulkanContext& ctx,
                             const GraphIR& ir,
                             const NodeLibrary& lib,
                             uint32_t width, uint32_t height,
                             VkFormat default_format,
-                            std::string* error = nullptr);
+                            std::string* error = nullptr,
+                            const std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash>* color_classes = nullptr);
 
     // Defer destruction; caller must call tick() each frame.
     void retire_all(VulkanContext& ctx);
@@ -99,6 +108,18 @@ public:
     // Read-only view of the live resource map. Exposed for tests. Do not mutate.
     const auto& live_resources() const { return live_; }
 
+    // Access alias pool generation counter for staleness detection.
+    const auto& alias_pools() const { return alias_pools_; }
+
+    // Record a write to an aliased resource: increment group generation and
+    // stamp the resource. Called by Engine after issuing a write-barrier.
+    void record_alias_write(uint32_t group_id, NodeResource& r) {
+        if (group_id == 0 || group_id > alias_pools_.size()) return;
+        auto& ag = alias_pools_[group_id - 1];
+        ag.current_gen++;
+        r.alias_gen = ag.current_gen;
+    }
+
     // Snapshot of current memory state. Requires VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT for real gpu_*/heap_stats budget/usage.
     VmaStatsReport get_vma_stats(VulkanContext& ctx) const;
 
@@ -110,8 +131,21 @@ private:
 
     size_t pixel_bytes_(VkFormat f) const; // returns bytes per pixel
     bool create_image_(VulkanContext& ctx, NodeResource& r,
-                       uint32_t w, uint32_t h, const std::string& dbg);
+                       uint32_t w, uint32_t h, const std::string& dbg,
+                       VmaPool pool = nullptr, bool can_alias = false);
     void destroy_image_(VulkanContext& ctx, NodeResource& r);
+
+    struct AliasGroup {
+        uint32_t   color       = 0;       // color class id from PassPlan::color_classes
+        VkFormat   format      = VK_FORMAT_UNDEFINED;
+        VkExtent3D extent      = {0, 0, 1};
+        // Primary = the NodeResource whose VmaAllocation backs every image in
+        // this group. Stored so destruction walks siblings-then-primary in the
+        // right order (vmaDestroyImage on the primary frees the shared alloc).
+        ResourceUUID primary{};
+        uint64_t   current_gen = 1;       // incremented each time any member is written
+    };
+    std::vector<AliasGroup> alias_pools_;
 
     std::unordered_map<ResourceUUID, NodeResource, ResourceUUIDHash> live_;
     std::vector<Retired> retired_;

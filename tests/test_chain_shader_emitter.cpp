@@ -225,7 +225,7 @@ TEST(ChainEmitter, SourceOnlyChainHasZeroExternalInputs) {
     g.output_node = 1;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     EXPECT_EQ(result.external_inputs, 0u);
     // No texelFetch in main() when the first node is a source.
@@ -241,7 +241,7 @@ TEST(ChainEmitter, NonSourceChainHasOneExternalInput) {
     g.output_node = 1;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     EXPECT_EQ(result.external_inputs, 1u);
     EXPECT_THAT(result.source, HasSubstr("pc.in_sampled_slots[0]"));
@@ -263,7 +263,7 @@ TEST(ChainEmitter, RepeatedNodeTypeEmittedExactlyOnce) {
     g.output_node = 6;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     // Count occurrences of "vec4 node_step(" (function definition form).
     int count = 0;
@@ -286,7 +286,7 @@ TEST(ChainEmitter, FinalNodeWritesToImageStore) {
     g.output_node = 3;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     // The chain output is local_<N-1>, written to u_storage at the slot
     // in pc.out_storage_slots[0].
@@ -305,7 +305,7 @@ TEST(ChainEmitter, EachNodeIsCalledExactlyOnce) {
     g.output_node = 3;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     // Each node's call appears as `node_<id>(...);` once. The function
     // DEFINITION (with the `vec4` return type prefix) appears once.
@@ -330,7 +330,7 @@ TEST(ChainEmitter, ParamOffsetsAreEmbeddedAsLiterals) {
     g.output_node = 3;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     // Look for the SSBO read expressions: pc.param_base_slot + <off> + <param_idx>
     EXPECT_THAT(result.source, HasSubstr("pc.param_base_slot + 0 + 0"));  // param node, param 0
@@ -373,7 +373,7 @@ TEST(ChainEmitter, NonLinearChainRejected) {
     // because the chain finder walks source 1 forward to blend.
     for (const auto& ch : f.compiled.pass_plan.chains) {
         if (std::find(ch.nodes.begin(), ch.nodes.end(), (NodeId)3) == ch.nodes.end()) continue;
-        auto r = chain_shader::emit_linear(ch, f.ir, lib);
+        auto r = te::emit_linear(ch, f.ir, lib);
         ASSERT_TRUE(r.ok())
             << "Multi-input chain should now emit, got error: " << r.error;
         // 1 external: blend.socket[1] is fed by source 2 (outside
@@ -394,7 +394,7 @@ TEST(ChainEmitter, SourceOnlyChainWritesConstant) {
     g.output_node = 1;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     EXPECT_THAT(result.source, HasSubstr("imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _local_0)"));
 }
@@ -414,7 +414,7 @@ TEST(ChainEmitter, LinearChain_ThreeNodes_OneSource) {
     g.output_node = 3;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     EXPECT_EQ(result.external_inputs, 1u);
     EXPECT_THAT(result.source, HasSubstr("vec4 _local_0"));
@@ -455,7 +455,7 @@ TEST(ChainEmitter, MultiInputMidChain_OneExternal) {
     g.output_node = 2;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     EXPECT_EQ(result.external_inputs, 1u);
     // blend's call must have _local_0 as first arg and texelFetch as second
@@ -477,7 +477,7 @@ TEST(ChainEmitter, MultiInputHead_TwoExternals) {
     g.output_node = 1;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     EXPECT_EQ(result.external_inputs, 2u);
     // blend's call must have two texelFetch args (no Local)
@@ -498,7 +498,7 @@ TEST(ChainEmitter, MultiInputMaxInputs_EightExternals) {
     g.output_node = 1;
     auto f = compile_fixture(g, lib);
     auto ch = get_chain_for_node(f.compiled, 1);
-    auto result = chain_shader::emit_linear(ch, f.ir, lib);
+    auto result = te::emit_linear(ch, f.ir, lib);
     ASSERT_TRUE(result.ok());
     EXPECT_EQ(result.external_inputs, 8u);
     // Verify all 8 slot indices appear in the GLSL.

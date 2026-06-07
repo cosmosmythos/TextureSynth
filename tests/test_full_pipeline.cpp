@@ -3,6 +3,7 @@
 #include "engine/PushConstants.hpp"
 #include "test_assets.hpp"
 #include <chrono>
+#include <fstream>
 #include <thread>
 #include <unordered_map>
 
@@ -535,6 +536,87 @@ TEST(Engine, BakeReturnsOneImagePerTarget) {
 
     EXPECT_EQ(engine.current_graph().output_node, 1u)
         << "bake must restore the original active node";
+
+    engine.shutdown();
+}
+
+// ===========================================================================
+// Stage 4.3: Pixel-equality regression net for pass fusion.
+//
+// Renders [perlin -> invert -> grayscale] and writes the readback buffer
+// to a .bin artifact. The test is built TWICE — once normally (fused chain
+// dispatch) and once with TE_FORCE_NO_FUSION=1 (legacy per-node dispatch).
+// The two artifacts are compared byte-for-byte by
+// tests/compare_fusion_outputs.bat.
+//
+// This test is NOT a correctness test; it's a regression net. The fused path
+// MUST produce the exact same pixels as the per-node path. If it doesn't,
+// the bug is in the new chain code, not the old.
+// ===========================================================================
+
+static void write_pixels_to_artifact(const std::vector<float>& pixels,
+                                      uint32_t w, uint32_t h,
+                                      const char* mode) {
+    std::string filename = std::string("fusion_") + mode + ".bin";
+    std::ofstream f(filename, std::ios::binary | std::ios::trunc);
+    if (!f) {
+        ADD_FAILURE() << "cannot write artifact: " << filename;
+        return;
+    }
+    // Write header: width, height, pixel_count (for sanity check).
+    uint32_t header[3] = {w, h, (uint32_t)(pixels.size())};
+    f.write(reinterpret_cast<const char*>(header), sizeof(header));
+    f.write(reinterpret_cast<const char*>(pixels.data()),
+            (std::streamsize)(pixels.size() * sizeof(float)));
+    f.close();
+}
+
+TEST(Engine, FusedChainMatchesPerNodeOutput) {
+    te::Engine engine;
+    bool ok = engine.init(VK_NULL_HANDLE, nullptr, 0,
+                          /*validation*/ true,
+                          "test_fusion_pixel_eq",
+                          find_test_nodes_dir().c_str(),
+                          find_test_glsl_dir().c_str());
+    if (!ok) {
+        GTEST_SKIP() << "Engine init failed: " << engine.last_error();
+    }
+
+    te::Graph g;
+    g.nodes.push_back({10, "perlin"});
+    g.nodes.push_back({20, "invert"});
+    g.nodes.push_back({30, "grayscale"});
+    g.connections.push_back({10, 0, 20, 0});
+    g.connections.push_back({20, 0, 30, 0});
+    g.output_node = 30;
+
+    uint64_t gen = engine.set_graph(g);
+    if (gen == 0) {
+        engine.shutdown();
+        GTEST_SKIP() << "set_graph failed";
+    }
+
+    for (int i = 0; i < 200 && !engine.has_pipeline(); ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(engine.has_pipeline()) << "compile timed out";
+
+    te::PushConstants pc{};
+    pc.resolution_x = 64; pc.resolution_y = 64;
+    pc.seed = 42; pc.time = 0.0f;
+
+    // Use readback_sync() — blocks until pixels are ready.
+    te::Engine::BakedImage img = engine.readback_sync();
+    ASSERT_FALSE(img.pixels.empty()) << "readback failed";
+
+    const char* mode =
+#ifdef TE_FORCE_NO_FUSION
+        "per_node";
+#else
+        "fused";
+#endif
+    write_pixels_to_artifact(img.pixels, img.width, img.height, mode);
 
     engine.shutdown();
 }

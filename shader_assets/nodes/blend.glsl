@@ -31,8 +31,8 @@ vec4 node_blend(vec2 uv, vec4 a, vec4 b, float factor, float mode) {
     else if (m == 26) r = ts_b_saturation(a.rgb, b.rgb);
     else if (m == 27) r = ts_b_color     (a.rgb, b.rgb);
     else if (m == 28) r = ts_b_luminosity(a.rgb, b.rgb);
-    else              r = mix(a.rgb, b.rgb, ts_saturate(factor));
+    else              r = mix(a.rgb, b.rgb, clamp(factor, 0.0, 1.0));
 
-    if (m != 0) r = mix(a.rgb, r, ts_saturate(factor));
-    return vec4(ts_saturate(r), mix(a.a, b.a, ts_saturate(factor)));
+    if (m != 0) r = mix(a.rgb, r, clamp(factor, 0.0, 1.0));
+    return vec4(clamp(r, 0.0, 1.0), mix(a.a, b.a, clamp(factor, 0.0, 1.0)));
 }

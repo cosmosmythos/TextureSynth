@@ -1,7 +1,7 @@
 {
     "id": "blend",
     "display_name": "Blend",
-    "includes": ["math_common", "color_common", "blend_common"],
+    "includes": ["color_common", "blend_common"],
     "inputs": [
         { "name": "a", "type": "vec4" },
         { "name": "b", "type": "vec4" }

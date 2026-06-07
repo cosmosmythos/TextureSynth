@@ -2,7 +2,7 @@
     "id": "gabor",
     "display_name": "Gabor Noise",
     "description": "Anisotropic frequency-controlled noise. Ideal for wood, brushed metal, fabric.",
-    "includes": ["math_common", "noise_common"],
+    "includes": ["remap", "noise_common"],
     "inputs": [],
     "outputs": [
         { "name": "color", "type": "vec4" }

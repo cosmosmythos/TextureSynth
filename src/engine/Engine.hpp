@@ -59,6 +59,11 @@ struct ChainExec {
     uint32_t                         head_pass_index = 0;
     uint32_t                         tail_pass_index = 0;   // for out_storage_slots[0]
     bool                             bypassed        = false;
+
+    // External input slots in chain shader indexing order (matches
+    // ChainShaderEmitter::build_emit_plan). Fixes the mid-chain external
+    // input bug where only head.in_sampled_slots was propagated.
+    uint32_t chain_in_sampled_slots[MAX_PASS_INPUTS] = {};
 };
 
 class Engine {
@@ -238,6 +243,11 @@ private:
     // Bindless slot assignment for a pass (sampled inputs + storage output)
     void assign_bindless_slots_(PassExec& pe);
 
+    // Stage 6: check aliased resources for memory staleness. If any clean
+    // aliased resource has alias_gen < group.current_gen, mark its producer
+    // dirty so the per-pass loop re-writes it. Returns true if any was stale.
+    bool resolve_aliased_staleness_();
+
     // Build a ComputePipeline from SPIR-V blob + variant key. Shared by cache-hit and async-compile paths. On failure sets engine error.
     bool create_pass_pipeline_(PassExec& pe,
                                NodeId node_id,
@@ -326,6 +336,7 @@ private:
         // copy it onto the PassExec once the future resolves.
         bool                       bypassed = false;
     };
+
     std::vector<PendingPass> pending_passes_;
     bool                     pending_active_ = false;
     ResourceUUID             pending_final_output_ = {};
@@ -354,7 +365,7 @@ private:
 
     DirtySet          dirty_set_;
 
-    AsyncReadback async_;
+    AsyncReadback     async_;
 };
 
 } // namespace te

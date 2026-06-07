@@ -601,8 +601,9 @@ def _check_active_node_change(tree, engine):
     _last_active_node_id = new_id
     if gen:
         _submitted_generation = gen
-    # invalidate param hash on every active change
+    # invalidate param hash and fingerprint on every active change
     _last_pushed_param_hash = None
+    _last_active_fingerprint = _active_subgraph_fingerprint(tree)
     return True
 
 
@@ -643,7 +644,6 @@ def sync_node_errors(tree):
     fid = engine.failed_node()
     last_err = engine.last_error()
 
-    from ..nodes.base import TS_CATEGORY_COLORS
     name_to_id, id_to_name = _build_id_maps(tree)
     failed_node_name = id_to_name.get(fid) if fid != 0 else None
 
@@ -659,9 +659,6 @@ def sync_node_errors(tree):
                 node.ts_compile_error = last_err
         else:
             cat = getattr(node, 'ts_category', 'FILTER')
-            color = TS_CATEGORY_COLORS.get(cat, (0.45, 0.25, 0.45))
-            node.color = color
-            node.use_custom_color = True
             if hasattr(node, 'ts_compile_error') and node.ts_compile_error:
                 node.ts_compile_error = ""
 

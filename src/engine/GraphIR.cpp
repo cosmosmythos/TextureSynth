@@ -6,7 +6,6 @@
 
 namespace te {
 
-// Internal helpers
 
 static bool has_node(const Graph& g, NodeId id) {
     for (auto& n : g.nodes)
@@ -14,22 +13,21 @@ static bool has_node(const Graph& g, NodeId id) {
     return false;
 }
 
+
 static bool is_muted(const std::vector<NodeInstance>& nodes, NodeId id) {
     for (auto& n : nodes)
         if (n.id == id) return n.muted;
     return false;
 }
 
+
 // Sentinel used to mark connections severed by muted-node rewire.
 // UINT64_MAX is never a valid NodeId (which starts from 0).
 constexpr NodeId SEVERED = ~NodeId{0};
 
-// Resolve the effective source of a muted node M's input[0]. If M has no input, returns {SEVERED,0} (severed). If source is non-muted, returns that connection. If source is also muted, recurse. Bounded by node count.
-static std::pair<NodeId, uint32_t> resolve_muted_source(
-    NodeId M,
-    const std::vector<NodeInstance>& nodes,
-    const std::vector<Connection>& conns)
-{
+
+// Resolve the effective source of a muted node M's input[0].
+static std::pair<NodeId, uint32_t> resolve_muted_source(NodeId M, const std::vector<NodeInstance>& nodes, const std::vector<Connection>& conns) {
     NodeId cur = M;
     for (size_t step = 0; step < nodes.size() + 1; ++step) {
         bool found = false;
@@ -47,6 +45,7 @@ static std::pair<NodeId, uint32_t> resolve_muted_source(
     }
     return {SEVERED, 0};  // chain too deep — treat as severed
 }
+
 
 // Topological sort via Kahn's algorithm. Returns node IDs in evaluation order. On cycle returns false.
 static bool topo_sort_ir(
@@ -82,7 +81,6 @@ static bool topo_sort_ir(
     return order.size() == nodes.size();
 }
 
-// validate_graph
 
 GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     GraphIRResult result;
@@ -244,7 +242,19 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
                                   c.dst_node, c.dst_socket});
     }
 
-    ir.output_node = graph.output_node;
+    // If the user's output_node is muted, follow the rewire to its effective
+    // source (the non-muted node feeding its input[0]). Otherwise the
+    // engine would try to read back an image for a node that was excluded
+    // from ir.nodes, yielding white/garbage.
+    {
+        NodeId on = graph.output_node;
+        while (is_muted(graph.nodes, on)) {
+            auto eff = resolve_muted_source(on, graph.nodes, graph.connections);
+            if (eff.first == SEVERED) break;  // severed -- keep original
+            on = eff.first;
+        }
+        ir.output_node = on;
+    }
 
     // ── 8. Topological sort (cycle detection) ─────────────────────
     if (!topo_sort_ir(ir.nodes, ir.connections, ir.eval_order)) {
@@ -257,5 +267,6 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     result.success = true;
     return result;
 }
+
 
 } // namespace te

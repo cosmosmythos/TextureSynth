@@ -469,7 +469,8 @@ uint64_t Engine::set_graph(const Graph& graph) {
 
     std::string rerr;
     if (!resources_.allocate_for_graph(ctx_, current_ir_, node_lib_, output_w_, output_h_,
-                                       texture_format_, &rerr)) {
+                                        texture_format_, &rerr,
+                                        &compile_result.pass_plan.color_classes)) {
         set_error_(EngineErrorCode::GraphCompile, rerr, EnginePhase::GraphSubmit);
         return 0;
     }
@@ -696,6 +697,28 @@ void Engine::rebuild_downstream_adj_() {
 }
 
 
+// Stage 6: check aliased resources for memory staleness. If a resource is
+// clean (producer not dirty this frame) but its alias_gen < group.current_gen
+// (another group member wrote to the shared memory since), mark the producer
+// dirty so the per-pass loop re-writes it. Safe to call during recording
+// because dirty_set_ is consumed before any dispatch happens.
+bool Engine::resolve_aliased_staleness_() {
+    bool found_stale = false;
+    for (auto& kv : resources_.live_resources()) {
+        const auto& r = kv.second;
+        if (r.alias_group_id == 0) continue;
+        const auto& pools = resources_.alias_pools();
+        if (r.alias_group_id > pools.size()) continue;
+        uint64_t gen = pools[r.alias_group_id - 1].current_gen;
+        if (r.alias_gen < gen && !dirty_set_.is_dirty(r.node_id)) {
+            mark_node_dirty(r.node_id);
+            found_stale = true;
+        }
+    }
+    return found_stale;
+}
+
+
 void Engine::poll_pending_compiles() {
     TE_GUARD_READY(;);
 
@@ -821,18 +844,18 @@ void Engine::retire_all_passes_() {
 }
 
 
-// Stage 6: build chain_id_of_pass_, ChainExec array, and membership table from PassPlan. Called by both cache-hit and async-compile paths after passes_ is populated.
+// Stage 6: build ChainExec array, chain_id_of_pass_, and membership table from PassPlan. Uses precomputed chain_index_of_pass from GraphCompiler. Computes chain_in_sampled_slots to fix the mid-chain external input bug.
 void Engine::populate_chains_(const PassPlan& plan) {
     chain_execs_.clear();
     chain_execs_.reserve(plan.chains.size());
-    chain_id_of_pass_.assign(passes_.size(), UINT32_MAX);
+    chain_id_of_pass_ = plan.chain_index_of_pass;
+    chain_id_of_pass_.resize(passes_.size(), UINT32_MAX);
 
     // node_id -> pass index (for head/tail lookup)
     std::unordered_map<NodeId, uint32_t> pass_idx_by_node;
     pass_idx_by_node.reserve(plan.passes.size());
-    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
+    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i)
         pass_idx_by_node[plan.passes[i].node_id] = i;
-    }
 
     std::unordered_map<ChainId, std::vector<NodeId>> membership;
     membership.reserve(plan.chains.size());
@@ -842,21 +865,52 @@ void Engine::populate_chains_(const PassPlan& plan) {
         ChainExec ce;
         ce.bypassed = ch.bypassed;
 
+        std::vector<uint32_t> member_pis;
         for (NodeId n : ch.nodes) {
             auto it = pass_idx_by_node.find(n);
-            if (it == pass_idx_by_node.end()) continue;
-            uint32_t pi = it->second;
-            ce.member_pass_indices.push_back(pi);
-            if (pi < chain_id_of_pass_.size())
-                chain_id_of_pass_[pi] = (uint32_t)ci;
+            if (it != pass_idx_by_node.end()) member_pis.push_back(it->second);
         }
-        if (!ce.member_pass_indices.empty()) {
-            ce.head_pass_index = ce.member_pass_indices.front();
-            ce.tail_pass_index = ce.member_pass_indices.back();
+        ce.member_pass_indices = member_pis;
+        if (!member_pis.empty()) {
+            ce.head_pass_index = member_pis.front();
+            ce.tail_pass_index = member_pis.back();
         }
-        // Inherit bypass from the chain struct; mirror ComputePass.
+
+        // Compute chain_in_sampled_slots: walk member passes in order,
+        // matching ChainShaderEmitter::build_emit_plan external input layout.
+        uint32_t ext_idx = 0;
+        for (size_t mi = 0; mi < member_pis.size() && ext_idx < MAX_PASS_INPUTS; ++mi) {
+            const auto& pe = passes_[member_pis[mi]];
+            // Need type info to know declared input count.
+            const auto* vn = current_ir_.find(ch.nodes[mi]);
+            const auto* type = vn ? node_lib_.find(vn->type_id) : nullptr;
+            if (!type) continue;
+            const uint32_t inputs_n = (uint32_t)type->inputs.size();
+            for (uint32_t s = 0; s < inputs_n; ++s) {
+                if (type->inputs[s].type != SocketType::Vec4) continue;
+                bool is_external = true;
+                if (mi > 0 && s == 0) {
+                    // Socket 0 of mid-chain: check if fed by predecessor.
+                    // Use the GraphIR connection to determine.
+                    ResourceUUID pred_rid{ch.nodes[mi - 1], 0};
+                    const auto& pass = plan.passes[member_pis[mi]];
+                    for (uint32_t ri = 0; ri < (uint32_t)pass.input_resources.size(); ++ri) {
+                        if (pass.input_resources[ri] == pred_rid) {
+                            is_external = false; // Local — not in in_sampled_slots
+                            break;
+                        }
+                    }
+                }
+                if (is_external) {
+                    ce.chain_in_sampled_slots[ext_idx++] = pe.in_sampled_slots[s];
+                }
+            }
+        }
+        while (ext_idx < MAX_PASS_INPUTS)
+            ce.chain_in_sampled_slots[ext_idx++] = dummy_sampled_slot_;
+
+        // Pipeline creation (unchanged).
         if (!ch.glsl.empty() && !ch.bypassed) {
-            // Try cache, fall back to sync compile.
             std::optional<std::vector<uint32_t>> blob;
             if (cache_) blob = cache_->load(ch.variant_key);
             if (!blob) {
@@ -978,7 +1032,7 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
             b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
             b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
                             | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-            b.oldLayout     = r->layout;
+            b.oldLayout     = r->alias_group_id > 0 ? VK_IMAGE_LAYOUT_UNDEFINED : r->layout;
             b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
             b.image         = r->image;
             b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -987,6 +1041,8 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
             dep.pImageMemoryBarriers    = &b;
             vkCmdPipelineBarrier2(cmd, &dep);
             r->layout = VK_IMAGE_LAYOUT_GENERAL;
+            if (r->alias_group_id > 0)
+                resources_.record_alias_write(r->alias_group_id, *r);
         }
     }
 
@@ -1002,7 +1058,7 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
     ppc.param_base_slot  = (uint32_t)head.param_base_slot;
     ppc.input_count      = head.input_count;
     for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
-        ppc.in_sampled_slots[k] = head.in_sampled_slots[k];
+        ppc.in_sampled_slots[k] = ce.chain_in_sampled_slots[k];
     // Spec fix: out_storage_slots[0] comes from the TAIL (who writes the
     // final imageStore), not the head.
     for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
@@ -1041,6 +1097,11 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
     // Defensive: skip if nothing is dirty (submit() should have caught this)
     if (!dirty_set_.any()) return;
 
+    // Stage 6: resolve aliased memory staleness before any barriers.
+    // If a clean aliased resource has stale memory from another group member,
+    // mark its producer dirty so the per-pass loop re-writes it.
+    resolve_aliased_staleness_();
+
     auto transition = [&](VkImage img,
                           VkImageLayout from, VkImageLayout to,
                           VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
@@ -1069,13 +1130,16 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
             if (!r) continue;
             if (r->layout != VK_IMAGE_LAYOUT_GENERAL) {
                 transition(r->image,
-                            r->layout, VK_IMAGE_LAYOUT_GENERAL,
+                            r->alias_group_id > 0 ? VK_IMAGE_LAYOUT_UNDEFINED : r->layout,
+                            VK_IMAGE_LAYOUT_GENERAL,
                             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
                             VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
                 r->layout = VK_IMAGE_LAYOUT_GENERAL;
             }
+            if (r->alias_group_id > 0)
+                resources_.record_alias_write(r->alias_group_id, *r);
         }
         pe.output_layout_is_general = true;
     }
@@ -1191,7 +1255,12 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         for (uint32_t o = 0; o < pe.output_count; ++o) {
             const ResourceUUID& rid = pe.output_resources[o];
             auto* out_res = resources_.get(rid);
-            if (out_res) { out_res->is_dirty = false; out_res->layout = VK_IMAGE_LAYOUT_GENERAL; }
+            if (out_res) {
+                out_res->is_dirty = false;
+                out_res->layout = VK_IMAGE_LAYOUT_GENERAL;
+                if (out_res->alias_group_id > 0)
+                    resources_.record_alias_write(out_res->alias_group_id, *out_res);
+            }
         }
 
         // Phase 1c: bypassed pass -- clear each output to zero via vkCmdClearColorImage. Image stays in GENERAL. No pipeline, no dispatch.

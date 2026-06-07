@@ -45,6 +45,7 @@ def _channel_format_to_override(cf):
 class _JSONParam:
     __slots__ = ('name', 'display_name', 'description',
                  'default_value', 'min_value', 'max_value',
+                 'soft_min_value', 'soft_max_value',
                  'step', 'is_integer', 'as_socket')
     def __init__(self, d):
         self.name        = d['name']
@@ -53,6 +54,8 @@ class _JSONParam:
         self.default_value = float(d.get('default', 0.0))
         self.min_value   = float(d.get('min', 0.0))
         self.max_value   = float(d.get('max', 1.0))
+        self.soft_min_value = float(d.get('soft_min', self.min_value))
+        self.soft_max_value = float(d.get('soft_max', self.max_value))
         self.step        = float(d.get('step', 0.0))
         self.is_integer  = bool(d.get('integer', False))
         self.as_socket   = bool(d.get('as_socket', False))
@@ -181,6 +184,8 @@ def generate_node_classes(core_module):
                     default=int(round(param.default_value)),
                     min=int(round(param.min_value)),
                     max=int(round(param.max_value)),
+                    soft_min=int(round(param.soft_min_value)),
+                    soft_max=int(round(param.soft_max_value)),
                     update=_update_param,
                 )
             else:
@@ -188,6 +193,8 @@ def generate_node_classes(core_module):
                     name=label, description=desc,
                     default=param.default_value,
                     min=param.min_value, max=param.max_value,
+                    soft_min=param.soft_min_value,
+                    soft_max=param.soft_max_value,
                     step=max(int(step * 100), 1) if step > 0 else 10,
                     precision=3,
                     update=_update_param,

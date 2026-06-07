@@ -123,6 +123,8 @@ if(BUILD_PYTHON_BINDINGS)
     target_link_libraries(texturesynth_core PRIVATE engine)
 endif()
 
+option(TE_FORCE_NO_FUSION "Disable pass fusion; use per-node dispatch (regression net)" OFF)
+
 # ---- Unit Tests ----
 option(BUILD_TESTS "Build engine unit tests" OFF)
 if(BUILD_TESTS)

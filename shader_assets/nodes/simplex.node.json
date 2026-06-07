@@ -2,7 +2,7 @@
     "id": "simplex",
     "display_name": "Simplex Noise",
     "description": "Tileable 2-D simplex FBM with analytical gradient derivatives. Based on psrdnoise2 (Gustavson & McEwan, JCGT 2022). Output: R=noise [0,1], G=dN/dx, B=dN/dy. Connect G+B to domain-warp or normal-map nodes for artifact-free effects.",
-    "includes": ["math_common", "noise_common"],
+    "includes": ["remap", "noise_common"],
     "inputs": [],
     "outputs": [
         { "name": "color", "type": "vec4", "description": "R=noise [0,1], G=∂n/∂x [0,1 remapped], B=∂n/∂y [0,1 remapped], A=1" }

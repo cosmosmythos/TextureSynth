@@ -4,7 +4,7 @@
 #include "engine/PassPlan.hpp"
 #include <string>
 
-namespace te::chain_shader {
+namespace te {
 
 // Stage 4: emit GLSL for a LINEAR chain. A chain is a sequence of PurePixel nodes where head has 0..N external inputs, every other node has socket 0 fed by previous output (Local) and rest fed by external images. Every input must be Vec4. Total external inputs <= MAX_PASS_INPUTS. Returns Result with ok()=false on failure (caller falls back to per-node path).
 struct Result {
@@ -19,4 +19,4 @@ struct Result {
 Result emit_linear(const Chain& chain, const GraphIR& ir,
                    const NodeLibrary& lib);
 
-} // namespace te::chain_shader
+} // namespace te

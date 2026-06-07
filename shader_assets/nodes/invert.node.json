@@ -1,7 +1,7 @@
 {
     "id": "invert",
     "display_name": "Invert",
-    "includes": ["math_common"],
+    "includes": [],
     "inputs": [
         { "name": "color", "type": "vec4" }
     ],

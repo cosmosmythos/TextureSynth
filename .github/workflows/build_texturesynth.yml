@@ -238,24 +238,18 @@ jobs:
           tag_name: v${{ env.VERSION }}-build-${{ github.run_number }}
           name: "TextureSynth v${{ env.VERSION }}"
           body: |
-            **TextureSynth v${{ env.VERSION }} - Node-based Vulkan Procedural Texture Generator**
+            **TextureSynth v${{ env.VERSION }} - Node-based Procedural Texture Generator**
             
-            ### Features
-            - Blazing fast Vulkan GPU compute backend
-            - Procedural Perlin noise, Blending, and filtering nodes
-            - Sverchok-style decoupled async evaluation UI
-            - Blender 4.2+ native extension packaging
-
             ### Python Support
-            | Wheel | Python | Blender |
-            |-------|--------|---------|
-            | `cp311-cp311` | 3.11.9 | 4.2 - 4.4 |
-            | `cp313-cp313` | 3.13.9 | 4.5+ |
+            | Wheel         | Python | Blender   |
+            |---------------|--------|-----------|
+            | `cp311-cp311` | 3.11.9 | 4.3 - 5.0 |
+            | `cp313-cp313` | 3.13.9 | 5.1+      |
 
             ### Installation
             1. Download the `.zip` for your OS.
             2. In Blender: `Edit -> Preferences -> Extensions -> Install from Disk`
-            3. Enable `TextureSynth`.
+            3. Enable `TextureSynth`/ Restart Blender if needed.
           files: |
             texturesynth-${{ env.VERSION }}-windows-x64.zip
           draft: false

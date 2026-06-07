@@ -6,6 +6,7 @@
 #include "engine/BindlessTable.hpp"
 #include "engine/Logging.hpp"
 #include <sstream>
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -21,8 +22,7 @@ namespace te {
 // Why format_override is here: nodes with different output formats emit different
 // GLSL (e.g. Perlin-mono returns vec4(n,n,n,1), Perlin-UV returns vec4(grad*0.5+0.5,0,1)).
 // Keying on format means each variant gets its own .spv in ShaderCache, and the
-// driver can specialize the math (no uniform branching). Per CH_FORMAT_ENUMS.md
-// design (TODO in that doc — we are implementing it now).
+// driver can specialize the math (no uniform branching).
 static ShaderVariantKey build_variant_key(const NodeType& type,
                                            uint32_t input_count,
                                            uint32_t param_socket_count,
@@ -336,6 +336,73 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     // per-node code is untouched -- this is a pure addition.
     plan.chains = find_chains(ir, lib);
 
+    // Stage 6 aliasing: compute chain_index_of_pass, lifetimes, color classes.
+    {
+        std::unordered_map<NodeId, uint32_t> pass_idx_by_node;
+        pass_idx_by_node.reserve(plan.passes.size());
+        for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i)
+            pass_idx_by_node[plan.passes[i].node_id] = i;
+
+        plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
+        for (size_t ci = 0; ci < plan.chains.size(); ++ci)
+            for (NodeId n : plan.chains[ci].nodes) {
+                auto it = pass_idx_by_node.find(n);
+                if (it != pass_idx_by_node.end())
+                    plan.chain_index_of_pass[it->second] = (uint32_t)ci;
+            }
+
+        for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
+            const auto& pass = plan.passes[i];
+            for (const auto& rid : pass.output_resources) {
+                auto& lt = plan.lifetimes[rid];
+                if (lt.first_pass == UINT32_MAX) lt.first_pass = i;
+                lt.last_pass = i;
+            }
+            for (const auto& rid : pass.input_resources) {
+                if (rid.node_id == 0) continue;
+                auto& lt = plan.lifetimes[rid];
+                lt.last_pass = i;
+                if (lt.first_pass == UINT32_MAX) lt.first_pass = 0;
+            }
+        }
+        auto& fo_lt = plan.lifetimes[plan.final_output_resource];
+        fo_lt.first_pass = 0;
+        fo_lt.last_pass = UINT32_MAX;
+
+        struct Colored { ResourceUUID rid; uint32_t first, last; };
+        std::vector<Colored> items;
+        for (auto& kv : plan.lifetimes) {
+            if (kv.first == plan.final_output_resource) continue;
+            if (kv.second.first_pass == kv.second.last_pass) continue;
+            if (kv.second.last_pass == UINT32_MAX) continue;
+            items.push_back({kv.first, kv.second.first_pass, kv.second.last_pass});
+        }
+        std::sort(items.begin(), items.end(),
+            [](const Colored& a, const Colored& b) {
+                if (a.first != b.first) return a.first < b.first;
+                return a.last < b.last;
+            });
+
+        std::vector<uint32_t> color_end;
+        uint32_t next_color = 1;
+        for (auto& item : items) {
+            bool found = false;
+            for (uint32_t c = 0; c < (uint32_t)color_end.size(); ++c) {
+                if (color_end[c] < item.first) {
+                    plan.color_classes[item.rid] = c + 1;
+                    color_end[c] = item.last;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                plan.color_classes[item.rid] = next_color;
+                color_end.push_back(item.last);
+                ++next_color;
+            }
+        }
+    }
+
     // Stage 4.1: emit a fused GLSL shader for each chain. The result
     // is stored in Chain::glsl and consumed by Stages 5 (cache key) and
     // 6 (engine dispatch). Chains that are not "linear" per the Stage
@@ -343,7 +410,7 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     // left with empty glsl; the engine falls back to the per-pass path
     // for those until Stage 4.2 lifts the constraint.
     for (auto& ch : plan.chains) {
-        auto glsl = chain_shader::emit_linear(ch, ir, lib);
+        auto glsl = emit_linear(ch, ir, lib);
         if (glsl.ok()) {
             ch.glsl = std::move(glsl.source);
             ch.external_inputs = glsl.external_inputs;

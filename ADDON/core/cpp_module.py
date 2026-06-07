@@ -17,7 +17,7 @@ def _cpp_log_sink(level, message):
         return
     if lvl == "ERROR" and not _tslog.is_enabled_for("ERROR"):
         return
-    print(f"[TextureSynth C++] {level.strip()} {message}")
+    print(f"[TextureSynth] {level.strip()} {message}")
 
 
 def load():
@@ -61,11 +61,8 @@ def load():
 
     # Initialize headless Vulkan context and shader directories.
     try:
-        cache_dir = os.path.join(
-            bpy.utils.user_resource('DATAFILES', path="texturesynth"),
-            "shader_cache",
-        )
         addon_root = os.path.dirname(os.path.dirname(__file__))
+        cache_dir = os.path.join(addon_root, "shader_assets", "shader_cache")        
         nodes_dir  = os.path.join(addon_root, "shader_assets", "nodes")
         glsl_dir   = os.path.join(addon_root, "shader_assets", "glsl")
 

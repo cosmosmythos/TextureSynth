@@ -1,15 +1,16 @@
 // =============================================================================
-// node_perlin — Tileable Classic Perlin FBM
+// node_perlin — Tileable Classic Perlin FBM (Multi-Seed RGB)
 // =============================================================================
-// Output: vec4(noise, ∂n/∂x, ∂n/∂y, 1)  — all channels remapped to [0,1].
-// Connect .r for height/luminance, .gb for downstream domain-warp or normal map.
+// Output: vec4(noise_R, noise_G, noise_B, 1)  — Houdini convention.
+// Each channel is an independent perlin noise with a different seed offset.
+// Connect .r for height/luminance, .gb for secondary variation fields.
 // =============================================================================
 
 vec4 node_perlin(vec2 uv,
-                 float period,       // positive integer; lattice tile size
-                 float octaves,      // 1..8
-                 float lacunarity,   // 2.0 standard (integer for exact tiling)
-                 float gain,         // 0..1
+                 float period,
+                 float octaves,
+                 float lacunarity,
+                 float gain,
                  float offsetX,
                  float offsetY,
                  float speed,
@@ -23,8 +24,9 @@ vec4 node_perlin(vec2 uv,
            + vec2(offsetX, offsetY)
            + vec2(pc.time * speed);
 
-    vec2 grad;
-    float n = ts_fbm_perlin(p, iper, ioct, lacunarity, gain, iseed, grad);
+    float r = ts_fbm_perlin(p, iper, ioct, lacunarity, gain, iseed);
+    float g = ts_fbm_perlin(p, iper, ioct, lacunarity, gain, iseed + 379u);
+    float b = ts_fbm_perlin(p, iper, ioct, lacunarity, gain, iseed + 757u);
 
-    return vec4(ts_to_unit(n), ts_to_unit(grad.x), ts_to_unit(grad.y), 1.0);
+    return vec4(ts_to_unit(r), ts_to_unit(g), ts_to_unit(b), 1.0);
 }
