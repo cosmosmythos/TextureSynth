@@ -107,12 +107,14 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                 np.name          = p.at("name").get<std::string>();
                 np.display_name  = p.value("display_name", np.name);
                 np.description   = p.value("description", "");
-                np.default_value = p.value("default", 0.0f);
-                np.min_value     = p.value("min", 0.0f);
-                np.max_value     = p.value("max", 1.0f);
-                np.step          = p.value("step", 0.0f);
-                np.is_integer    = p.value("integer", false);
-                np.as_socket     = p.value("as_socket", false);
+                np.default_value  = p.value("default", 0.0f);
+                np.min_value      = p.value("min", 0.0f);
+                np.max_value      = p.value("max", 1.0f);
+                np.soft_min_value = p.value("soft_min", p.value("min", 0.0f));
+                np.soft_max_value = p.value("soft_max", p.value("max", 1.0f));
+                np.step           = p.value("step", 0.0f);
+                np.is_integer     = p.value("integer", false);
+                np.as_socket      = p.value("as_socket", false);
                 n.params.push_back(std::move(np));
             }           
             for (auto& s : m.value("inputs", json::array())) {

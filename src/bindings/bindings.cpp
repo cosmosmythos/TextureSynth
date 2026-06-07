@@ -239,16 +239,17 @@ NB_MODULE(texturesynth_core, m) {
         .def_rw("format", &Socket::format);
 
     nb::class_<NodeParam>(m, "NodeParam")
-        .def(nb::init<>())
-        .def_rw("name",          &NodeParam::name)
-        .def_rw("display_name",  &NodeParam::display_name)
-        .def_rw("description",   &NodeParam::description)
-        .def_rw("default_value", &NodeParam::default_value)
-        .def_rw("min_value",     &NodeParam::min_value)
-        .def_rw("max_value",     &NodeParam::max_value)
-        .def_rw("step",          &NodeParam::step)
-        .def_rw("is_integer",    &NodeParam::is_integer)
-        .def_rw("as_socket",     &NodeParam::as_socket);
+        .def_rw("name",           &NodeParam::name)
+        .def_rw("display_name",   &NodeParam::display_name)
+        .def_rw("description",    &NodeParam::description)
+        .def_rw("default_value",  &NodeParam::default_value)
+        .def_rw("min_value",      &NodeParam::min_value)
+        .def_rw("max_value",      &NodeParam::max_value)
+        .def_rw("soft_min_value", &NodeParam::soft_min_value)
+        .def_rw("soft_max_value", &NodeParam::soft_max_value)
+        .def_rw("step",           &NodeParam::step)
+        .def_rw("is_integer",     &NodeParam::is_integer)
+        .def_rw("as_socket",      &NodeParam::as_socket);
 
     nb::class_<NodeType>(m, "NodeType")
         .def(nb::init<>())

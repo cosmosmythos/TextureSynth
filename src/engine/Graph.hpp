@@ -88,12 +88,14 @@ struct NodeParam {
     std::string name;
     std::string display_name;
     std::string description;
-    float default_value = 0.0f;
-    float min_value     = 0.0f;
-    float max_value     = 1.0f;
-    float step          = 0.0f;
-    bool  is_integer    = false;
-    bool  as_socket     = false;
+    float default_value  = 0.0f;
+    float min_value      = 0.0f;
+    float max_value      = 1.0f;
+    float soft_min_value = 0.0f;
+    float soft_max_value = 1.0f;
+    float step           = 0.0f;
+    bool  is_integer     = false;
+    bool  as_socket      = false;
 };
 
 
