@@ -1004,6 +1004,17 @@ void Engine::populate_chains_(const PassPlan& plan) {
         while (ext_idx < MAX_PASS_INPUTS)
             ce.chain_in_sampled_slots[ext_idx++] = dummy_sampled_slot_;
 
+        // Compute max pass index of all external input sources, so the
+        // dispatch loop can defer chain dispatch until producers have run.
+        ce.max_external_source_pass = 0;
+        for (uint32_t ei = 0; ei < MAX_PASS_INPUTS; ++ei) {
+            NodeId src_id = ce.chain_external_resources[ei].node_id;
+            if (src_id == 0) continue;
+            auto pit = pass_idx_by_node.find(src_id);
+            if (pit != pass_idx_by_node.end() && pit->second > ce.max_external_source_pass)
+                ce.max_external_source_pass = pit->second;
+        }
+
         // Pipeline creation (unchanged).
         if (!ch.glsl.empty() && !ch.bypassed) {
             std::optional<std::vector<uint32_t>> blob;
@@ -1470,7 +1481,8 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
                                 chain_id_of_pass_[i] != UINT32_MAX);
         if (is_chain_member) {
             ChainId cid = (ChainId)chain_id_of_pass_[i];
-            if (!chain_dispatched[cid]) {
+            if (!chain_dispatched[cid]
+                && i >= chain_execs_[cid].max_external_source_pass) {
                 chain_dispatched[cid] = 1;
                 if (dirty_set_.is_chain_dirty(cid)) {
                     const size_t tail_i = chain_execs_[cid].tail_pass_index;

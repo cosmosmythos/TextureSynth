@@ -33,6 +33,7 @@ def _find_ts_trees():
 
 def _on_node_select_change():
     """Callback fired on node selection change. Detects active node changes and requests re-render."""
+    global _compiling, _force_render
     engine = cpp_module.get_engine()
     if engine is None or not engine.has_pipeline():
         return
@@ -52,6 +53,12 @@ def _on_node_select_change():
         # Try to set active node in engine. If the graph doesn't have it yet
         # (e.g. newly added node), request a full rebuild from the node tree.
         if engine_bridge._check_active_node_change(tree, engine):
+            gen = engine_bridge._submitted_generation
+            if gen and not engine.is_generation_ready(gen):
+                _compiling = True
+                _force_render = True
+            else:
+                _force_render = True
             try:
                 engine_bridge.update_params_only(force_submit=True)
             except Exception as e:
@@ -104,8 +111,23 @@ def _evaluation_timer():
 
     # Poll for active-node change (msgbus on Nodes.active is unreliable in 4.2+).
     try:
-        if tree is not None and engine_bridge._check_active_node_change(tree, engine):
-            engine_bridge.update_params_only(force_submit=True)
+        if tree is not None:
+            if engine_bridge._check_active_node_change(tree, engine):
+                gen = engine_bridge._submitted_generation
+                if gen and not engine.is_generation_ready(gen):
+                    _compiling = True
+                    _force_render = True
+                else:
+                    _force_render = True
+                engine_bridge.update_params_only(force_submit=True)
+            else:
+                # set_active_node failed (node not in engine's subgraph).
+                # Only request rebuild if the active node actually changed.
+                active = tree.nodes.active
+                if (active is not None
+                        and hasattr(active, "stable_id")
+                        and int(active.stable_id()) != engine_bridge._last_active_node_id):
+                    request_topology_update()
     except Exception as e:
         _tslog.error(f"active-node poll exception: {e}")
 

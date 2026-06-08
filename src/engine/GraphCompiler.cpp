@@ -336,6 +336,19 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     // per-node code is untouched -- this is a pure addition.
     plan.chains = find_chains(ir, lib);
 
+    // Fill each chain member's global param_base_slot from the per-node
+    // assignment (needed because chain-local offsets differ from global slots
+    // when non-chain nodes interleave in eval_order).
+    for (auto& ch : plan.chains) {
+        ch.param_global_slots.reserve(ch.nodes.size());
+        for (NodeId nid : ch.nodes) {
+            auto it = param_base_slot.find(nid);
+            ch.param_global_slots.push_back(
+                it != param_base_slot.end()
+                    ? static_cast<uint32_t>(it->second) : 0u);
+        }
+    }
+
     // Stage 6 aliasing: compute chain_index_of_pass, lifetimes, color classes.
     {
         std::unordered_map<NodeId, uint32_t> pass_idx_by_node;

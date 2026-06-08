@@ -45,6 +45,7 @@ struct ComputePass {
 struct Chain {
     std::vector<NodeId>   nodes;            // in topological order; first = head, last = tail
     std::vector<uint32_t> param_offsets;    // SSBO offset of each node's params; size == nodes.size()
+    std::vector<uint32_t> param_global_slots; // each node's global param_base_slot (from GraphCompiler); filled after find_chains
     int                   param_base_slot = 0;  // SSBO slot of nodes[0]
     uint32_t              total_inputs   = 0;   // sum across nodes (descriptor layout)
     uint32_t              total_outputs  = 1;   // 1 in Phase 1; multi-output nodes are barriers (singleton chains)

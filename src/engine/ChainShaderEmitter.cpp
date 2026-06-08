@@ -27,7 +27,7 @@ struct NodeEmit {
     NodeId                node_id = 0;
     std::vector<InputSrc> inputs;     // one entry per declared input socket
     uint32_t              param_count = 0;
-    uint32_t              param_offset_in_chain = 0;  // == chain.param_offsets[i]
+    uint32_t              param_offset_in_chain = 0;  // delta from head's global slot (= chain.param_global_slots[i] - chain.param_global_slots[0])
 };
 
 // Stage 4.1 emit plan: per-node input sources + totals.
@@ -79,8 +79,14 @@ using ConnByDst = std::unordered_map<
         NodeEmit ne;
         ne.node_id = id;
         ne.param_count = static_cast<uint32_t>(type->params.size());
-        ne.param_offset_in_chain = (i < chain.param_offsets.size())
-                                  ? chain.param_offsets[i] : 0u;
+        if (i < chain.param_global_slots.size()) {
+            // delta from head's global slot: head_slot + (node_slot - head_slot) = node_slot
+            ne.param_offset_in_chain =
+                chain.param_global_slots[i] - chain.param_global_slots[0];
+        } else {
+            ne.param_offset_in_chain = (i < chain.param_offsets.size())
+                                      ? chain.param_offsets[i] : 0u;
+        }
 
         // Non-first node with 0 inputs is a malformed chain (sources are
         // always chain heads, never mid-chain).

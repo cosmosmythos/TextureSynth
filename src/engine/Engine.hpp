@@ -83,6 +83,10 @@ struct ChainExec {
     // Parallel array: ResourceUUID for each external input (used for layout
     // transitions in record_chain_dispatch_). Zero-initialized = unused.
     ResourceUUID chain_external_resources[MAX_PASS_INPUTS] = {};
+
+    // Max pass index of any external input source node. Chain dispatch must
+    // wait until i >= this value in the dispatch loop so producers have run.
+    uint32_t max_external_source_pass = 0;
 };
 
 class Engine {

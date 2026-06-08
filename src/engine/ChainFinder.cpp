@@ -74,8 +74,8 @@ bool is_barrier(NodeId id, const GraphIR& ir, const NodeLibrary& lib,
     if (!type || type->outputs.size() != 1) return true;         // multi-output
     auto od_it = idx.out_degree.find(id);
     if (od_it != idx.out_degree.end() && od_it->second > 1) return true;  // fan-out
-    auto id_it2 = idx.total_in_degree.find(id);
-    if (id_it2 != idx.total_in_degree.end() && id_it2->second > 1) return true;  // fan-in (any socket)
+    auto id_it2 = idx.in_degree.find(id);
+    if (id_it2 != idx.in_degree.end() && id_it2->second > 1) return true;  // fan-in (socket 0 only — socket N+ is mux-routed)
     return false;
 }
 
