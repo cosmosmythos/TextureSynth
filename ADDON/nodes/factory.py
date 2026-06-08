@@ -259,8 +259,8 @@ def generate_node_classes(core_module):
                 self.draw_error_ui(layout)
                 self.draw_format_override_ui(layout)
                 for p_name, is_sock in zip(p_names, p_as_socket):
-                    if is_sock:
-                        continue
+                    if is_sock and p_name in self.inputs and self.inputs[p_name].is_linked:
+                        continue  # hide slider when socket overrides
                     layout.prop(self, p_name)
             return draw_buttons_func
         p_as_socket = [getattr(p, 'as_socket', False) for p in node_type.params]

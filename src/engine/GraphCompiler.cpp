@@ -205,8 +205,12 @@ static std::string emit_node_shader(const ValidatedNode& vn,
     for (size_t i = 0; i < type.params.size(); ++i) {
         s << ", ";
         if (type.params[i].as_socket) {
-            s << "texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
-              << param_socket_local << "])], coord, 0).r";
+            // Hybrid: slider (SSBO) when unconnected (bindless slot < 6 = Mono dummy),
+            // texture (.r) when connected (bindless slot >= 6 = real image).
+            s << "(pc.in_sampled_slots[" << param_socket_local << "] < 6u"
+              << " ? node_params[pc.param_ring_idx].v[pc.param_base_slot + " << i << "]"
+              << " : texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
+              << param_socket_local << "])], coord, 0).r)";
             ++param_socket_local;
         } else {
             s << "node_params[pc.param_ring_idx].v[pc.param_base_slot + " << i << "]";

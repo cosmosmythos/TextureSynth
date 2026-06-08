@@ -43,11 +43,16 @@ class TS_Blend_Node(TextureSynthNode):
         name="Factor", min=0.0, max=1.0, default=1.0,
         precision=3, update=update_param,
     )
+    mask: bpy.props.FloatProperty(
+        name="Mask", min=0.0, max=1.0, default=1.0,
+        precision=3, update=update_param,
+    )
 
     def init(self, context):
         super().init(context)
         self.inputs.new('TS_DefaultSocketType', "A")
         self.inputs.new('TS_DefaultSocketType', "B")
+        self.inputs.new('TS_DefaultSocketType', "Mask")
         self.outputs.new('TS_DefaultSocketType', "")
 
     def draw_buttons(self, context, layout):
@@ -55,15 +60,19 @@ class TS_Blend_Node(TextureSynthNode):
         self.draw_format_override_ui(layout)
         layout.prop(self, "mode", text="")
         layout.prop(self, "factor", slider=True)
+        if "Mask" in self.inputs and not self.inputs["Mask"].is_linked:
+            layout.prop(self, "mask", slider=True)
 
-    # JSON order: [factor, mode]
+    # JSON order: [factor, mode, mask]
     def get_parameters(self):
-        return [float(self.factor), float(_MODE_INDEX[self.mode])]
+        return [float(self.factor), float(_MODE_INDEX[self.mode]),
+                float(self.mask)]
 
     def get_named_parameters(self):
         # Must match JSON manifest param order/names exactly.
         return {"factor": float(self.factor),
-                "mode":   float(_MODE_INDEX[self.mode])}
+                "mode":   float(_MODE_INDEX[self.mode]),
+                "mask":   float(self.mask)}
 
 
 NODE_CLASS = TS_Blend_Node

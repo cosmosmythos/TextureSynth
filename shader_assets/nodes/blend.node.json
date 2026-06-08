@@ -13,7 +13,9 @@
         { "name": "factor", "default": 1.0, "min": 0.0, "max": 1.0 },
         { "name": "mode", "display_name": "Blend Mode",
           "description": "See blend.py for the enum mapping.",
-          "default": 0.0, "min": 0.0, "max": 28.0, "step": 1.0, "integer": true }
+          "default": 0.0, "min": 0.0, "max": 28.0, "step": 1.0, "integer": true },
+        { "name": "mask", "display_name": "Mask",
+          "default": 1.0, "min": 0.0, "max": 1.0, "as_socket": true }
     ],
     "shader": "blend.glsl",
     "entry": "node_blend",
