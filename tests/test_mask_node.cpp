@@ -82,10 +82,10 @@ struct EngineFixture {
         return engine.has_pipeline();
     }
 
-    bool render(NodeId active_id) {
+    bool render(NodeId active_id, int max_retries = 800) {
         uint64_t g = engine.set_active_node(active_id);
         if (g == 0) return false;
-        for (int i = 0; i < 200 && !engine.has_pipeline(); ++i) {
+        for (int i = 0; i < max_retries && !engine.has_pipeline(); ++i) {
             engine.poll_pending_compiles();
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -349,6 +349,58 @@ TEST(Mask, Blend_Mask0and1_Different) {
     double diff = msd(img_m0, img_m1);
     std::printf("    msd(blend mask=0, blend mask=1) = %.6f\n", diff);
     EXPECT_GT(diff, 0.001) << "blend mask=0 and mask=1 must produce different results";
+}
+
+// =====================================================================
+// Mask texture path: color_const connected to mask input
+// =====================================================================
+
+TEST(Mask, Blend_MaskConnectedViaColorConst_RespondsToValue) {
+    EngineFixture fx;
+    SKIP_IF_NO_ENGINE();
+
+    // color_const -> mask, simplex -> A, white -> B
+    Graph g;
+    g.nodes.push_back({1, "simplex"});
+    g.nodes.push_back({2, "white"});
+    g.nodes.push_back({3, "color_const"});  // mask source
+    g.nodes.push_back({4, "blend"});
+    g.connections.push_back({1, 0, 4, 0});  // simplex -> A
+    g.connections.push_back({2, 0, 4, 1});  // white   -> B
+    g.connections.push_back({3, 0, 4, 2});  // color   -> mask (as_socket slot 2)
+    g.output_node = 4;
+    ASSERT_TRUE(fx.build_graph(g));
+
+    // mode=0 (mix), color_const params = [mode=0, r=0, g=0, b=0, a=1] → vec4(0,0,0,1) → mask=0
+    fx.engine.update_node_params_by_id(3, {0.0f, 0.0f, 0.0f, 0.0f, 1.0f});
+    fx.engine.update_node_params_by_id(4, {0.0f, 0.0f});  // mode=mix, mask ignored (texture path)
+    ASSERT_TRUE(fx.render(4));
+    auto img_m0 = fx.engine.readback_sync();
+    ASSERT_FALSE(img_m0.pixels.empty());
+
+    // color_const params = [mode=0, r=1, g=1, b=1, a=1] → vec4(1,1,1,1) → mask=1
+    fx.engine.update_node_params_by_id(3, {0.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+    ASSERT_TRUE(fx.render(4));
+    auto img_m1 = fx.engine.readback_sync();
+    ASSERT_FALSE(img_m1.pixels.empty());
+
+    // Also get a standalone white_noise reference for comparison
+    Graph g_white;
+    g_white.nodes.push_back({10, "white"});
+    g_white.output_node = 10;
+    ASSERT_TRUE(fx.build_graph(g_white));
+    ASSERT_TRUE(fx.render(10));
+    auto white_img = fx.engine.readback_sync();
+
+    // mask=1 should be pure B (= white noise)
+    double diff_m1_white = msd(img_m1, white_img);
+    std::printf("    msd(blend(mask=1 via color_const), white) = %.6f\n", diff_m1_white);
+    EXPECT_LT(diff_m1_white, 0.01) << "blend with mask=1 from texture should give B (white_noise)";
+
+    // mask=0 and mask=1 must produce different results
+    double diff_0_1 = msd(img_m0, img_m1);
+    std::printf("    msd(blend(mask=0), blend(mask=1)) via texture = %.6f\n", diff_0_1);
+    EXPECT_GT(diff_0_1, 0.001) << "blend mask=0 and mask=1 via texture must differ";
 }
 
 } // namespace

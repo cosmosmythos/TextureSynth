@@ -82,8 +82,11 @@ bool BindlessTable::init(VulkanContext& ctx,
         log_error("BindlessTable: pipeline layout create failed"); return false;
     }
 
-    // Reserve slot 0 as permanent sentinel -- never returned by alloc. Guarantees slot 0 always safe (reads zero pixel).
-    sampled_next_ = 1;
+    // Reserve slots 0-5 for per-format dummy images -- never returned by alloc.
+    // See Engine::ensure_dummy_images_() which writes them at indices 0-5.
+    // The shader uses `slot < 6` to distinguish dummies (SSBO fallback) from
+    // real connected textures (sampled read). Allocations must start at 6.
+    sampled_next_ = 6;
     storage_next_ = 1;
 
     log_info("BindlessTable: ready (sampled cap=" + std::to_string(MAX_SAMPLED)
@@ -99,7 +102,7 @@ void BindlessTable::shutdown(VulkanContext& ctx) {
     set_ = VK_NULL_HANDLE;
     sampled_free_.clear();
     storage_free_.clear();
-    sampled_next_ = 1;   // keep slot 0 reserved
+    sampled_next_ = 6;   // keep slots 0-5 reserved for per-format dummies
     storage_next_ = 1;
 }
 

@@ -278,9 +278,23 @@ def _build_graph_and_params(tree):
             continue
         try:
             src_idx = list(src.outputs).index(link.from_socket)
-            dst_idx = list(dst.inputs).index(link.to_socket)
         except ValueError:
             continue
+        # Compute dst_idx: as_socket params occupy slots [inputs_n, inputs_n+count)
+        # matching C++ GraphCompiler ordering. Blender's socket order may differ.
+        as_names = getattr(dst, '_as_socket_names', frozenset())
+        dst_idx = 0
+        for sock in dst.inputs:
+            if sock == link.to_socket:
+                break
+            if sock.name not in as_names:
+                dst_idx += 1  # regular input → sequential slot
+        # as_socket slots go AFTER all regular inputs
+        if link.to_socket.name in as_names:
+            reg_count = sum(1 for s in dst.inputs if s.name not in as_names)
+            as_before = sum(1 for s in dst.inputs if s.name in as_names and
+                            list(dst.inputs).index(s) < list(dst.inputs).index(link.to_socket))
+            dst_idx = reg_count + as_before
         graph.add_connection(s_id, src_idx, d_id, dst_idx)
 
     return graph, pc, node_params
@@ -599,7 +613,9 @@ def update_params_only(force_submit: bool = False):
 
 def _check_active_node_change(tree, engine):
     """Update preview target in engine if selected node changed. Returns True on update."""
-    global _last_active_node_id, _last_pushed_param_hash
+    global _last_active_node_id, _last_pushed_param_hash, _submitted_generation
+    if not _submitted_generation:
+        return False
     active = getattr(tree.nodes, "active", None)
     if active is None:
         return False

@@ -212,6 +212,14 @@ def generate_node_classes(core_module):
                     getattr(p, 'as_socket', False) for p in node_type_ref.params)
                 allow_format_override = getattr(type(self), 'supports_format_override', False)
 
+                as_set = set()
+                for p in node_type_ref.params:
+                    if getattr(p, 'as_socket', False):
+                        s = self.inputs.new('TS_DefaultSocketType',
+                                            getattr(p, 'display_name', None) or p.name)
+                        s.name = p.name
+                        as_set.add(p.name)
+                self._as_socket_names = frozenset(as_set)
                 for sock in node_type_ref.inputs:
                     label = "" if single_in else sock.name.capitalize()
                     fmt = getattr(sock, 'format', 'vec4')
@@ -221,11 +229,6 @@ def generate_node_classes(core_module):
                         override = _format_name_to_override(fmt)
                     in_type = socket_type_for_format(override)
                     self.inputs.new(in_type, label)
-                for p in node_type_ref.params:
-                    if getattr(p, 'as_socket', False):
-                        s = self.inputs.new('TS_DefaultSocketType',
-                                            getattr(p, 'display_name', None) or p.name)
-                        s.name = p.name
 
                 if node_type_ref.outputs:
                     fmt = getattr(node_type_ref.outputs[0], 'format', 'vec4')

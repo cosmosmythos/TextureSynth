@@ -985,12 +985,36 @@ void Engine::populate_chains_(const PassPlan& plan) {
             ce.tail_pass_index = member_pis.back();
         }
 
+        // Check whether any member has connected as_socket params. The chain
+        // shader emitter always reads params from SSBO, so connected as_socket
+        // textures would be silently ignored. Such nodes must use per-pass dispatch.
+        bool has_connected_as_socket = false;
+        for (size_t mi = 0; mi < member_pis.size(); ++mi) {
+            const auto& pe = passes_[member_pis[mi]];
+            const auto* vn = current_ir_.find(ch.nodes[mi]);
+            const auto* type = vn ? node_lib_.find(vn->type_id) : nullptr;
+            if (!type) continue;
+            const uint32_t inputs_n = (uint32_t)type->inputs.size();
+            uint32_t as_socket_idx = 0;
+            for (uint32_t p = 0; p < (uint32_t)type->params.size(); ++p) {
+                if (!type->params[p].as_socket) continue;
+                uint32_t socket_idx = inputs_n + as_socket_idx;
+                if (socket_idx < pe.input_resources.size() && pe.input_resources[socket_idx].node_id != 0)
+                    has_connected_as_socket = true;
+                ++as_socket_idx;
+            }
+        }
+        if (has_connected_as_socket) {
+            for (uint32_t pi : member_pis) chain_id_of_pass_[pi] = UINT32_MAX;
+            chain_execs_.push_back(std::move(ce));
+            continue;
+        }
+
         // Compute chain_in_sampled_slots: walk member passes in order,
         // matching ChainShaderEmitter::build_emit_plan external input layout.
         uint32_t ext_idx = 0;
         for (size_t mi = 0; mi < member_pis.size() && ext_idx < MAX_PASS_INPUTS; ++mi) {
             const auto& pe = passes_[member_pis[mi]];
-            // Need type info to know declared input count.
             const auto* vn = current_ir_.find(ch.nodes[mi]);
             const auto* type = vn ? node_lib_.find(vn->type_id) : nullptr;
             if (!type) continue;
@@ -999,13 +1023,11 @@ void Engine::populate_chains_(const PassPlan& plan) {
                 if (type->inputs[s].type != SocketType::Vec4) continue;
                 bool is_external = true;
                 if (mi > 0 && s == 0) {
-                    // Socket 0 of mid-chain: check if fed by predecessor.
-                    // Use the GraphIR connection to determine.
                     ResourceUUID pred_rid{ch.nodes[mi - 1], 0};
                     const auto& pass = plan.passes[member_pis[mi]];
                     for (uint32_t ri = 0; ri < (uint32_t)pass.input_resources.size(); ++ri) {
                         if (pass.input_resources[ri] == pred_rid) {
-                            is_external = false; // Local — not in in_sampled_slots
+                            is_external = false;
                             break;
                         }
                     }

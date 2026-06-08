@@ -20,9 +20,10 @@ struct EdgeIndex {
     std::unordered_map<NodeId, uint32_t> in_degree;       // socket-0 connections (chain input)
     std::unordered_map<NodeId, uint32_t> total_in_degree;  // all connections (fan-in barrier)
     std::unordered_map<NodeId, uint32_t> out_degree;
+    std::unordered_set<NodeId> has_connected_as_socket;   // nodes with as_socket param connected
 };
 
-EdgeIndex build_edge_index(const GraphIR& ir) {
+EdgeIndex build_edge_index(const GraphIR& ir, const NodeLibrary& lib) {
     EdgeIndex idx;
     // Defensive: only count edges whose endpoints are in the active
     // subgraph (eval_order). The validator's BFS already prunes these,
@@ -47,6 +48,17 @@ EdgeIndex build_edge_index(const GraphIR& ir) {
         ++idx.total_in_degree[c.dst_node];              // count all connections
         idx.succs[c.src_node].push_back(c.dst_node);
         ++idx.out_degree[c.src_node];
+        // Detect connections targeting as_socket param slots.
+        const auto* dst_inst = ir.find(c.dst_node);
+        if (dst_inst) {
+            const auto* dst_type = lib.find(dst_inst->type_id);
+            if (dst_type && c.dst_socket >= dst_type->inputs.size()) {
+                uint32_t p_idx = c.dst_socket - (uint32_t)dst_type->inputs.size();
+                if (p_idx < dst_type->params.size() && dst_type->params[p_idx].as_socket) {
+                    idx.has_connected_as_socket.insert(c.dst_node);
+                }
+            }
+        }
     }
     return idx;
 }
@@ -56,6 +68,8 @@ EdgeIndex build_edge_index(const GraphIR& ir) {
 //   - it has more than one output (multi-output: separate_rgba)
 //   - it has more than one successor (fan-out: one producer, multiple consumers)
 //   - it has more than one predecessor (fan-in: one consumer, multiple producers)
+//   - it has a connected as_socket param (chain emitter reads all params from SSBO,
+//     so a connected as_socket texture would be silently ignored)
 //
 // Note: a node with out_degree=0 (which is typically the output_node)
 // is NOT a barrier -- it is a valid chain endpoint. walk_forward
@@ -76,6 +90,7 @@ bool is_barrier(NodeId id, const GraphIR& ir, const NodeLibrary& lib,
     if (od_it != idx.out_degree.end() && od_it->second > 1) return true;  // fan-out
     auto id_it2 = idx.in_degree.find(id);
     if (id_it2 != idx.in_degree.end() && id_it2->second > 1) return true;  // fan-in (socket 0 only — socket N+ is mux-routed)
+    if (idx.has_connected_as_socket.count(id)) return true;                // chain emitter can't handle as_socket texture reads
     return false;
 }
 
@@ -213,7 +228,7 @@ std::vector<Chain> find_chains(const GraphIR& ir,
     std::vector<Chain> result;
     if (ir.eval_order.empty()) return result;             // empty graph -> 0 chains
 
-    EdgeIndex idx = build_edge_index(ir);
+    EdgeIndex idx = build_edge_index(ir, lib);
     const uint32_t max_length = opts.max_chain_length == 0
         ? 1u : opts.max_chain_length;
     std::vector<NodeId> heads = find_chain_heads(ir, lib, idx);
