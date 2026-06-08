@@ -48,7 +48,8 @@ class TS_Blend_Node(TextureSynthNode):
         super().init(context)
         self.inputs.new('TS_DefaultSocketType', "A")
         self.inputs.new('TS_DefaultSocketType', "B")
-        self.inputs.new('TS_DefaultSocketType', "Mask")
+        s = self.inputs.new('TS_DefaultSocketType', "Mask")
+        s.name = "mask"
         self.outputs.new('TS_DefaultSocketType', "")
 
     def draw_buttons(self, context, layout):
