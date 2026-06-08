@@ -11,6 +11,10 @@ test_shader_cache/
 *.lib
 *.dll
 *.egg-info/
+shader_assets/*.c
+shader_assets/*.bat
+opencode.json
+*.lock
 
 # Local-only development artifacts (NOT shipped with the addon).
 DEV_LOG/
