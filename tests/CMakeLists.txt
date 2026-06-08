@@ -21,6 +21,7 @@ add_executable(engine_tests
     test_chain_shader_emitter.cpp
     test_aliasing.cpp
     test_blend_node.cpp
+    test_split_combine_node.cpp
     test_timestamps.cpp
     inspect_perlin_invert.cpp
 )
@@ -62,6 +63,7 @@ if(NOT TE_FORCE_NO_FUSION)
         test_chain_shader_emitter.cpp
         test_aliasing.cpp
         test_blend_node.cpp
+        test_split_combine_node.cpp
         test_timestamps.cpp
         inspect_perlin_invert.cpp
     )
@@ -85,6 +87,7 @@ add_executable(engine_tests_pernode
     test_chain_shader_emitter.cpp
     test_aliasing.cpp
     test_blend_node.cpp
+    test_split_combine_node.cpp
     test_timestamps.cpp
     inspect_perlin_invert.cpp
 )

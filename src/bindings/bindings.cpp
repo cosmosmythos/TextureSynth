@@ -220,10 +220,11 @@ NB_MODULE(texturesynth_core, m) {
                  g.output_node = id;
              })
         .def("add_output_target",
-             [](Graph& g, uint64_t source_node, const std::string& name) {
-                 g.output_targets.push_back({source_node, name});
+             [](Graph& g, uint64_t source_node, const std::string& name,
+                uint32_t source_socket) {
+                 g.output_targets.push_back({source_node, source_socket, name});
              },
-             "source_node"_a, "name"_a)
+             "source_node"_a, "name"_a, "source_socket"_a = 0)
         .def("clear_output_targets",
              [](Graph& g) { g.output_targets.clear(); });
 

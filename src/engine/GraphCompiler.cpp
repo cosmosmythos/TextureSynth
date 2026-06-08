@@ -328,7 +328,7 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
         pass.input_socket_count = total_slots;
         plan.passes.push_back(std::move(pass));
     }
-    plan.final_output_resource = {ir.output_node, 0};
+    plan.final_output_resource = {ir.output_node, ir.output_socket};
 
     // Stage 3: find chains (one Chain per fused dispatch). The
     // per-node PassPlan is still populated above; chains are an

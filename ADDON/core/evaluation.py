@@ -49,12 +49,17 @@ def _on_node_select_change():
         if new_id == engine_bridge._last_active_node_id:
             continue
         
-        # Force a param update and render dispatch if selection changed.
+        # Try to set active node in engine. If the graph doesn't have it yet
+        # (e.g. newly added node), request a full rebuild from the node tree.
         if engine_bridge._check_active_node_change(tree, engine):
             try:
                 engine_bridge.update_params_only(force_submit=True)
             except Exception as e:
                 _tslog.error(f"active-node dispatch exception: {e}")
+        else:
+            # set_active_node failed — the engine's cached graph doesn't have this
+            # node yet. Request a full rebuild from the Blender node tree.
+            request_topology_update()
 
 
 def _subscribe_msgbus():
@@ -118,9 +123,11 @@ def _evaluation_timer():
     submitted = engine_bridge.submitted_generation()
     ready = bool(submitted and engine.is_generation_ready(submitted))
 
-    # Check if compiling is finished.
+    # Check if compiling is finished — force a render dispatch so the new graph
+    # produces its first frame (e.g. after set_active_node triggered async compile).
     if _compiling and ready:
         _compiling = False
+        _force_render = True
 
     # Render if graph is ready and params or topology changed.
     needs_dispatch = ready and (_force_render or _params_dirty)

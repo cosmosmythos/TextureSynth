@@ -253,7 +253,10 @@ def _build_graph_and_params(tree):
         src = sock.links[0].from_node
         if src is None or not hasattr(src, "stable_id"):
             continue
-        graph.add_output_target(int(src.stable_id()), sock.name or "Unnamed")
+        from_sock = sock.links[0].from_socket
+        src_idx = list(src.outputs).index(from_sock) if from_sock else 0
+        graph.add_output_target(int(src.stable_id()), sock.name or "Unnamed",
+                                src_idx)
 
     # Add connections between nodes.
     for link in tree.links:

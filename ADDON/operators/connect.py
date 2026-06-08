@@ -69,17 +69,40 @@ class TS_OT_connect_blend(bpy.types.Operator):
 
     def _insert_blend(self, a, b):
         t = self._tree
-        oa, ob = _first_output(a), _first_output(b)
-        if oa is None or ob is None:
-            self.report({'WARNING'}, "Source nodes need outputs.")
+        oa = _first_output(a)
+        if oa is None:
+            self.report({'WARNING'}, "Source node has no output.")
             return
         blend = t.nodes.new('TS_Blend_Node')
         blend.location = (a.location + b.location) * 0.5 + Vector((180, 0))
-        t.links.new(oa, blend.inputs[0])
-        t.links.new(ob, blend.inputs[1])
-        out = next((n for n in t.nodes if n.bl_idname == 'TS_Output_Node'), None)
-        if out and not out.inputs[0].is_linked:
-            t.links.new(blend.outputs[0], out.inputs[0])
+
+        # Check if a is already wired to b (INSERT mode).
+        existing_link = None
+        to_socket = None
+        for link in list(t.links):
+            if link.from_node == a and link.to_node == b:
+                existing_link = link
+                to_socket = link.to_socket
+                break
+
+        if existing_link and to_socket:
+            # INSERT: a → blend → b (break the original link)
+            t.links.remove(existing_link)
+            t.links.new(oa, blend.inputs[0])
+            t.links.new(blend.outputs[0], to_socket)
+        else:
+            # MERGE: a + b → blend → Output
+            t.links.new(oa, blend.inputs[0])
+            ob = _first_output(b)
+            if ob:
+                t.links.new(ob, blend.inputs[1])
+            out = next((n for n in t.nodes if n.bl_idname == 'TS_Output_Node'), None)
+            if out:
+                isock = out.inputs[0]
+                if isock.is_linked:
+                    for l in list(isock.links):
+                        t.links.remove(l)
+                t.links.new(blend.outputs[0], isock)
 
 
 # -- Output Connector
@@ -126,12 +149,12 @@ def _register_keymaps():
 
     kmi = km.keymap_items.new(
         TS_OT_connect_blend.bl_idname, 'RIGHTMOUSE', 'PRESS',
-        ctrl=True, shift=True)
+        ctrl=True, alt=True)
     _KEYMAPS.append((km, kmi))
 
     kmi = km.keymap_items.new(
         TS_OT_connect_to_output.bl_idname, 'LEFTMOUSE', 'RELEASE',
-        ctrl=True, shift=True)
+        ctrl=True, alt=True)
     _KEYMAPS.append((km, kmi))
 
 

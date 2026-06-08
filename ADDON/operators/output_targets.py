@@ -6,9 +6,7 @@ from ..core.evaluation import request_topology_update
 
 # Target names rotation to select the first unused default PBR target name.
 _PBR_DEFAULTS = (
-    "Base Color", "Normal", "Roughness", "Metallic", "Height",
-    "Ambient Occlusion", "Emissive", "Opacity", "Displacement",
-    "Specular", "Glossiness", "Subsurface",
+    "Base Color", "Normal", "Roughness", "Metallic", "Ambient Occlusion", "Height",
 )
 
 

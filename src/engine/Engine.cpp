@@ -510,8 +510,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
 
     auto ir_result = validate_graph(graph, node_lib_);
     if (!ir_result.success) {
-        set_error_(EngineErrorCode::GraphValidation, ir_result.error,
-                   EnginePhase::GraphSubmit);
+        log_warn("Graph validation: " + ir_result.error);
         return 0;
     }
 
@@ -676,6 +675,14 @@ uint64_t Engine::set_active_node(NodeId node_id) {
     if (node_id == current_graph_.output_node) {
         return installed_generation_ ? installed_generation_ : pending_generation_;
     }
+    // Check the node exists before building a graph that would fail validation.
+    bool node_exists = false;
+    for (const auto& n : current_graph_.nodes) {
+        if (n.id == node_id) { node_exists = true; break; }
+    }
+    if (!node_exists) {
+        return 0;
+    }
     Graph g = current_graph_;
     g.output_node = node_id;
     return set_graph(g);
@@ -732,29 +739,37 @@ std::vector<Engine::BakedImage> Engine::bake() {
         return out;
     }
 
-    struct T { NodeId node; std::string name; };
+    struct T { NodeId node; uint32_t socket; std::string name; };
     std::vector<T> targets;
     if (current_graph_.output_targets.empty()) {
-        targets.push_back({current_graph_.output_node, "output"});
+        targets.push_back({current_graph_.output_node, current_graph_.output_socket, "output"});
     } else {
         for (const auto& t : current_graph_.output_targets) {
-            targets.push_back({t.source_node, t.name});
+            targets.push_back({t.source_node, t.source_socket, t.name});
         }
     }
 
     const NodeId original_active = current_graph_.output_node;
+    const uint32_t original_socket = current_graph_.output_socket;
     for (const auto& t : targets) {
-        if (t.node != current_graph_.output_node) {
-            uint64_t g = set_active_node(t.node);
-            if (g == 0) return out;
+        if (t.node != current_graph_.output_node || t.socket != current_graph_.output_socket) {
+            Graph g = current_graph_;
+            g.output_node = t.node;
+            g.output_socket = t.socket;
+            uint64_t gen = set_graph(g);
+            if (gen == 0) return out;
         }
         BakedImage img = readback_sync();
         if (img.pixels.empty()) return out;
         img.name = t.name;
         out.push_back(std::move(img));
     }
-    if (current_graph_.output_node != original_active) {
-        set_active_node(original_active);
+    if (current_graph_.output_node != original_active ||
+        current_graph_.output_socket != original_socket) {
+        Graph g = current_graph_;
+        g.output_node = original_active;
+        g.output_socket = original_socket;
+        set_graph(g);
     }
     return out;
 }
@@ -1440,31 +1455,38 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
     }
 
-    // 4. Stage 6: chains first (one dispatch per chain), then non-chain passes. Chain members skipped in per-pass loop via chain_id_of_pass_.
+    // 4. Stage 6: dispatch passes (and chains) in topological order.
+    //    passes_ is already topologically sorted. Chains are dispatched when
+    //    their head pass is encountered, ensuring producers run before consumers.
     bool final_pass_was_dirty = false;
 #ifndef TE_FORCE_NO_FUSION
-    for (size_t ci = 0; ci < chain_execs_.size(); ++ci) {
-        if (!dirty_set_.is_chain_dirty((ChainId)ci)) continue;
-        const size_t tail_i = chain_execs_[ci].tail_pass_index;
-        if (tail_i < passes_.size()) {
-            const auto& tail_pe = passes_[tail_i];
-            if (std::find(tail_pe.output_resources.begin(),
-                          tail_pe.output_resources.end(),
-                          final_output_resource_) != tail_pe.output_resources.end()) {
-                final_pass_was_dirty = true;
-            }
-        }
-        record_chain_dispatch_(cmd, pc, gx, gy, ci);
-    }
+    std::vector<uint8_t> chain_dispatched(chain_execs_.size(), 0);
 #endif
 
-    // Incremental dispatch -- only dirty passes
     for (size_t i = 0; i < passes_.size(); ++i) {
         auto& pe = passes_[i];
 #ifndef TE_FORCE_NO_FUSION
-        // Chain members are dispatched by the chain walk above.
-        if (i < chain_id_of_pass_.size() &&
-            chain_id_of_pass_[i] != UINT32_MAX) continue;
+        bool is_chain_member = (i < chain_id_of_pass_.size() &&
+                                chain_id_of_pass_[i] != UINT32_MAX);
+        if (is_chain_member) {
+            ChainId cid = (ChainId)chain_id_of_pass_[i];
+            if (!chain_dispatched[cid]) {
+                chain_dispatched[cid] = 1;
+                if (dirty_set_.is_chain_dirty(cid)) {
+                    const size_t tail_i = chain_execs_[cid].tail_pass_index;
+                    if (tail_i < passes_.size()) {
+                        const auto& tail_pe = passes_[tail_i];
+                        if (std::find(tail_pe.output_resources.begin(),
+                                      tail_pe.output_resources.end(),
+                                      final_output_resource_) != tail_pe.output_resources.end()) {
+                            final_pass_was_dirty = true;
+                        }
+                    }
+                    record_chain_dispatch_(cmd, pc, gx, gy, cid);
+                }
+            }
+            continue;
+        }
 #endif
         if (!dirty_set_.is_dirty(pe.node_id)) continue;
 

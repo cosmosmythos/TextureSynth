@@ -254,6 +254,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
             on = eff.first;
         }
         ir.output_node = on;
+        ir.output_socket = graph.output_socket;
     }
 
     // ── 8. Topological sort (cycle detection) ─────────────────────

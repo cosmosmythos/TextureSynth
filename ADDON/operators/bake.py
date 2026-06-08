@@ -46,22 +46,22 @@ def _create_black_image(name, w, h):
 class TEXTURESYNTH_OT_bake(Operator):
     bl_idname = "texturesynth.bake"
     bl_label  = "Bake TextureSynth"
-    bl_description = "Render all Output node targets to Blender images"
+    bl_description = "Render all targets to Blender image data-blocks"
 
     def execute(self, context):
         engine = cpp_module.get_engine()
         if not cpp_module.is_loaded():
-            self.report({"ERROR"}, "TextureSynth engine not loaded")
+            self.report({"ERROR"}, "TextureSynth not loaded")
             return {"CANCELLED"}
 
         output_node = _active_output_node(context)
         if output_node is None:
-            self.report({"ERROR"}, "No TextureSynth Output node found in the active tree")
+            self.report({"ERROR"}, "Output node not found in the active tree")
             return {"CANCELLED"}
         if not output_node.inputs:
             self.report({"WARNING"},
-                        "Output node has no input sockets. Click + in "
-                        "the node header to add bake targets first.")
+                        "Output node: No input sockets. Click + "
+                        "to add bake targets first.")
             return {"CANCELLED"}
 
         targets = []
@@ -123,8 +123,8 @@ class TEXTURESYNTH_OT_bake(Operator):
                 _create_black_image(name, w, h)
                 empty += 1
         self.report({"INFO"},
-                    f"Baked {written} target(s), "
-                    f"{empty} empty target(s) created as black images.")
+                    f"Baked {written} target(s), + "
+                    f"{empty} empty target(s) (unlinked sockets)")
         return {"FINISHED"}
 
 

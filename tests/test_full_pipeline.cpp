@@ -508,8 +508,8 @@ TEST(Engine, BakeReturnsOneImagePerTarget) {
     g.nodes.push_back(inv);
     g.connections.push_back({1, 0, 2, 0});
     g.output_node = 1;
-    g.output_targets.push_back({1, "Base Color"});
-    g.output_targets.push_back({2, "Inverted"});
+    g.output_targets.push_back({1, 0, "Base Color"});
+    g.output_targets.push_back({2, 0, "Inverted"});
 
     uint64_t gen = engine.set_graph(g);
     if (gen == 0) { engine.shutdown(); GTEST_SKIP() << "set_graph: " << engine.last_error(); }

@@ -36,6 +36,7 @@ struct GraphIR {
     std::vector<ValidatedNode>       nodes;
     std::vector<ValidatedConnection> connections;
     NodeId                           output_node = 0;
+    uint32_t                         output_socket = 0;
 
     // Topological evaluation order (same IDs as nodes[], but just the IDs).
     std::vector<NodeId>              eval_order;

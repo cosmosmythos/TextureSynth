@@ -21,7 +21,7 @@ class TS_BakeTargetSocket(TS_TextureSocket):
 
 
 class TS_Output_Node(TextureSynthNode):
-    """The bake sink node. Dynamic input sockets; one socket = one bake target."""
+    """Output Node."""
     bl_idname = 'TS_Output_Node'
     bl_label  = 'Output'
     sv_type   = None
@@ -29,19 +29,16 @@ class TS_Output_Node(TextureSynthNode):
 
     def init(self, context):
         super().init(context)
-        # Only seed default sockets when creating a new node instance.
         if self.inputs:
             return
-        # Seed with conventional PBR triad: Base Color, Normal, Roughness.
-        for default_name in ("Base Color", "Normal", "Roughness"):
-            self.inputs.new('TS_BakeTargetSocketType', default_name)
+        self.inputs.new('TS_BakeTargetSocketType', "Base Color")
 
     def draw_buttons(self, context, layout):
         row = layout.row(align=True)
         row.operator("texturesynth.output_target_add", text="", icon="ADD")
         row.operator("texturesynth.output_target_remove", text="", icon="REMOVE")
         layout.separator()
-        layout.operator("texturesynth.bake", icon='RENDER_STILL', text="Bake / Export")
+        layout.operator("texturesynth.bake", icon='RENDER_STILL', text="Bake")
 
 
 NODE_CLASS = TS_Output_Node
