@@ -22,6 +22,7 @@ add_executable(engine_tests
     test_aliasing.cpp
     test_blend_node.cpp
     test_split_combine_node.cpp
+    test_mask_node.cpp
     test_timestamps.cpp
     inspect_perlin_invert.cpp
 )
@@ -62,10 +63,11 @@ if(NOT TE_FORCE_NO_FUSION)
         test_chain_finding.cpp
         test_chain_shader_emitter.cpp
         test_aliasing.cpp
-        test_blend_node.cpp
-        test_split_combine_node.cpp
-        test_timestamps.cpp
-        inspect_perlin_invert.cpp
+    test_blend_node.cpp
+    test_split_combine_node.cpp
+    test_mask_node.cpp
+    test_timestamps.cpp
+    inspect_perlin_invert.cpp
     )
     target_link_libraries(engine_tests_fused PRIVATE engine GTest::gtest GTest::gmock)
     target_include_directories(engine_tests_fused PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -88,6 +90,7 @@ add_executable(engine_tests_pernode
     test_aliasing.cpp
     test_blend_node.cpp
     test_split_combine_node.cpp
+    test_mask_node.cpp
     test_timestamps.cpp
     inspect_perlin_invert.cpp
 )
