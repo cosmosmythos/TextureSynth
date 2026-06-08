@@ -33,6 +33,7 @@ struct PassExec {
     std::unique_ptr<ComputePipeline> pipeline;
     NodeId                           node_id = 0;
     std::vector<ResourceUUID>        input_resources;
+    std::vector<ChannelFormat>       input_formats;    // format per input socket
     std::vector<ResourceUUID>        output_resources;
     int                              param_base_slot = 0;
 
@@ -250,7 +251,7 @@ public:
 private:
     // bool build_passes_from_plan_(const PassPlan& plan);
     void retire_all_passes_();
-    bool ensure_dummy_image_();
+    bool ensure_dummy_images_();
     bool create_global_samplers_();
     void destroy_global_samplers_();
     void mark_downstream_dirty_(NodeId root);
@@ -312,8 +313,12 @@ private:
     std::vector<PendingUpload> pending_uploads_;
     std::unordered_map<uint64_t, bool> images_needing_acquire_;
 
-    Image           dummy_;
-    uint32_t        dummy_sampled_slot_ = BindlessTable::INVALID_SLOT;
+    std::array<Image, 6>    dummy_images_;
+    std::array<uint32_t, 6> dummy_sampled_slots_{
+        BindlessTable::INVALID_SLOT, BindlessTable::INVALID_SLOT,
+        BindlessTable::INVALID_SLOT, BindlessTable::INVALID_SLOT,
+        BindlessTable::INVALID_SLOT, BindlessTable::INVALID_SLOT
+    };
 
     ResourceManager resources_;
 
@@ -365,6 +370,7 @@ private:
         uint32_t                   input_count = 0;
         std::vector<ResourceUUID>  output_resources;
         std::vector<ResourceUUID>  input_resources;
+        std::vector<ChannelFormat> input_formats;
         NodeId                     node_id = 0;
         PassKind                   kind = PassKind::Dispatch;
         ShaderVariantKey           variant_key;

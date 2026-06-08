@@ -13,13 +13,20 @@ FORMAT_OVERRIDE_ITEMS = [
 
 
 def _on_format_override_change(self, context):
-    """Rebuild output sockets when format_override changes."""
-    self.rebuild_output_sockets()
+    """Rebuild output sockets when format_override changes.
+    Deferred to avoid crashing Blender during UI draw (replace_socket
+    modifies the socket layout while Blender may be iterating it)."""
     try:
         from ..core.evaluation import request_topology_update
         request_topology_update()
     except Exception:
         pass
+    if not getattr(self, '_deferred_fmt_rebuild', False):
+        self._deferred_fmt_rebuild = True
+        bpy.app.timers.register(
+            lambda self=self: (self.rebuild_output_sockets(),
+                               setattr(self, '_deferred_fmt_rebuild', False)) or None,
+            first_interval=0.0)
 
 
 class TextureSynthNode(bpy.types.Node):

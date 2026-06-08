@@ -316,6 +316,9 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
             if (c.dst_socket < total_slots)
                 pass.input_resources[c.dst_socket] = {c.src_node, c.src_socket};
         }
+        pass.input_formats.clear();
+        for (const auto& inp : type->inputs)
+            pass.input_formats.push_back(inp.format);
     
         if (pass.kind == PassKind::Dispatch) {
             // Build variant key BEFORE emitting GLSL — cache lookup uses this.

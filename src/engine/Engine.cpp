@@ -117,9 +117,9 @@ bool Engine::init(VkSurfaceKHR surface,
                    EnginePhase::Init);
         goto rollback;
     }
-    if (!ensure_dummy_image_()) {
+    if (!ensure_dummy_images_()) {
         set_error_(EngineErrorCode::InitFailed,
-                   "dummy image creation failed",
+                   "dummy images creation failed",
                    EnginePhase::Init);
         goto rollback;
     }
@@ -170,9 +170,12 @@ bool Engine::init(VkSurfaceKHR surface,
         goto rollback;
     }
 
-    // Reserved slot 0 in BindlessTable is the dummy. Write the dummy view there.
-    dummy_sampled_slot_ = 0;
-    bindless_.write_sampled(ctx_, dummy_sampled_slot_, dummy_.view(), VK_IMAGE_LAYOUT_GENERAL);
+    // Write all 6 per-format dummy views to bindless slots 0-5.
+    for (int i = 0; i < 6; ++i) {
+        dummy_sampled_slots_[i] = static_cast<uint32_t>(i);
+        bindless_.write_sampled(ctx_, dummy_sampled_slots_[i],
+                                dummy_images_[i].view(), VK_IMAGE_LAYOUT_GENERAL);
+    }
 
     // Stage 8: per-pass GPU timestamp pools.
     if (!create_timestamp_pools_()) {
@@ -201,73 +204,79 @@ rollback:
 }
 
 
-bool Engine::ensure_dummy_image_() {
-    if (!dummy_.create(ctx_, 1, 1)) return false;
+bool Engine::ensure_dummy_images_() {
+    const VkClearColorValue clears[6] = {
+        {1.0f, 0, 0, 1},       // Mono (index 0) — white so unconnected alpha=1
+        {0.5f, 0.5f, 0, 1},    // UV (index 1) — center
+        {0, 0, 0, 1},          // RGB (index 2) — black
+        {0, 0, 0, 1},          // RGBA (index 3) — black
+        {0, 0, 0, 0},          // ID (index 4) — zero
+        {0, 0, 0, 0},          // Metadata (index 5) — zero
+    };
 
-    // Clear dummy to (0,0,0,1) so unconnected inputs read as
-    // opaque black instead of undefined/virtual-memory garbage.
+    for (int i = 0; i < 6; ++i) {
+        if (!dummy_images_[i].create(ctx_, 1, 1)) {
+            log_error("dummy image " + std::to_string(i) + " create failed");
+            return true; // non-fatal; image will contain garbage
+        }
+    }
+
+    VkCommandPool tmp_pool = VK_NULL_HANDLE;
+    VkCommandBuffer tmp_cmd = VK_NULL_HANDLE;
     VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpci.queueFamilyIndex = ctx_.graphics_family();
     cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    VkCommandPool tmp_pool = VK_NULL_HANDLE;
     if (vkCreateCommandPool(ctx_.device(), &cpci, nullptr, &tmp_pool) != VK_SUCCESS)
-        return true;  // non-fatal; image will contain garbage but won't crash
+        return true;
     VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cbai.commandPool        = tmp_pool;
     cbai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
-    VkCommandBuffer tmp_cmd = VK_NULL_HANDLE;
-    if (vkAllocateCommandBuffers(ctx_.device(), &cbai, &tmp_cmd) != VK_SUCCESS) {
-        vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
-        return true;
-    }
+    if (vkAllocateCommandBuffers(ctx_.device(), &cbai, &tmp_cmd) != VK_SUCCESS)
+        { vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr); return true; }
     VkCommandBufferBeginInfo cbbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(tmp_cmd, &cbbi) != VK_SUCCESS) {
-        vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
-        vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
-        return true;
-    }
-    // Transition to GENERAL so we can clear.
-    VkImageMemoryBarrier2 ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    ib.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-    ib.srcAccessMask = 0;
-    ib.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    ib.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    ib.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    ib.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-    ib.image         = dummy_.image();
-    ib.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers    = &ib;
-    vkCmdPipelineBarrier2(tmp_cmd, &di);
+    if (vkBeginCommandBuffer(tmp_cmd, &cbbi) != VK_SUCCESS)
+        { vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
+          vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr); return true; }
 
-    VkClearColorValue cc{};
-    cc.float32[0] = 0.0f; cc.float32[1] = 0.0f;
-    cc.float32[2] = 0.0f; cc.float32[3] = 1.0f;
     VkImageSubresourceRange sr{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(tmp_cmd, dummy_.image(), VK_IMAGE_LAYOUT_GENERAL, &cc, 1, &sr);
+    for (int i = 0; i < 6; ++i) {
+        VkImageMemoryBarrier2 ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        ib.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        ib.srcAccessMask = 0;
+        ib.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        ib.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        ib.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+        ib.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+        ib.image         = dummy_images_[i].image();
+        ib.subresourceRange = sr;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        di.imageMemoryBarrierCount = 1;
+        di.pImageMemoryBarriers    = &ib;
+        vkCmdPipelineBarrier2(tmp_cmd, &di);
 
-    if (vkEndCommandBuffer(tmp_cmd) != VK_SUCCESS) {
-        vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
-        vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
-        return true;
+        vkCmdClearColorImage(tmp_cmd, dummy_images_[i].image(),
+                             VK_IMAGE_LAYOUT_GENERAL, &clears[i], 1, &sr);
     }
+
+    if (vkEndCommandBuffer(tmp_cmd) != VK_SUCCESS)
+        { vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
+          vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr); return true; }
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
     si.pCommandBuffers    = &tmp_cmd;
     {
         std::lock_guard<std::mutex> lk(ctx_.graphics_queue_mutex());
-        if (vkQueueSubmit(ctx_.graphics_queue(), 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
-            vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
-            vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
-            return true;
-        }
+        if (vkQueueSubmit(ctx_.graphics_queue(), 1, &si, VK_NULL_HANDLE) != VK_SUCCESS)
+            { vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
+              vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr); return true; }
     }
     vkQueueWaitIdle(ctx_.graphics_queue());
     vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
     vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
+
+    log_info("6 per-format dummy images created (1x1)");
     return true;
 }
 
@@ -318,9 +327,7 @@ void Engine::shutdown_internal_() {
     chain_execs_.clear();
     chain_id_of_pass_.clear();
 
-    if (dummy_sampled_slot_ != BindlessTable::INVALID_SLOT) {
-        dummy_sampled_slot_ = BindlessTable::INVALID_SLOT;
-    }
+    for (auto& s : dummy_sampled_slots_) s = BindlessTable::INVALID_SLOT;
     // Release external image slots.
     for (auto& kv : ext_sampled_slot_) bindless_.free_sampled_slot(kv.second);
     ext_sampled_slot_.clear();
@@ -344,7 +351,7 @@ void Engine::shutdown_internal_() {
     for (auto& kv : image_registry_) if (kv.second) kv.second->destroy(ctx_);
     image_registry_.clear();
 
-    dummy_.destroy(ctx_);
+    for (auto& di : dummy_images_) di.destroy(ctx_);
     uploader_.shutdown(ctx_);
     async_.shutdown(ctx_);
     for (auto& r : retired_images_) if (r.img) r.img->destroy(ctx_);
@@ -441,25 +448,31 @@ void Engine::assign_bindless_slots_(PassExec& pe) {
         const ResourceUUID rid = pe.input_resources[i];
         uint32_t slot = BindlessTable::INVALID_SLOT;
 
+        // Select per-format dummy based on this input socket's expected format.
+        ChannelFormat fmt = ChannelFormat::RGBA;
+        if (i < pe.input_formats.size())
+            fmt = pe.input_formats[i];
+        uint32_t dummy_slot = dummy_sampled_slots_[static_cast<size_t>(fmt)];
+
         if (rid.node_id == 0) {
             auto eit = image_registry_.find(pe.node_id);
             if (eit != image_registry_.end() && eit->second) {
                 auto sit = ext_sampled_slot_.find(pe.node_id);
                 if (sit == ext_sampled_slot_.end()) {
                     slot = bindless_.alloc_sampled_slot();
-                    if (slot == BindlessTable::INVALID_SLOT) slot = dummy_sampled_slot_;
+                    if (slot == BindlessTable::INVALID_SLOT) slot = dummy_slot;
                     else {
                         ext_sampled_slot_[pe.node_id] = slot;
                         bindless_.write_sampled(ctx_, slot, eit->second->view(),
                                                 VK_IMAGE_LAYOUT_GENERAL);
                     }
                 } else slot = sit->second;
-            } else slot = dummy_sampled_slot_;
+            } else slot = dummy_slot;
         } else {
             auto sit = res_sampled_slot_.find(rid);
             if (sit == res_sampled_slot_.end()) {
                 slot = bindless_.alloc_sampled_slot();
-                if (slot == BindlessTable::INVALID_SLOT) slot = dummy_sampled_slot_;
+                if (slot == BindlessTable::INVALID_SLOT) slot = dummy_slot;
                 else {
                     res_sampled_slot_[rid] = slot;
                     if (auto* r = resources_.get(rid))
@@ -470,7 +483,7 @@ void Engine::assign_bindless_slots_(PassExec& pe) {
         pe.in_sampled_slots[i] = slot;
     }
     for (uint32_t i = pe.input_count; i < MAX_PASS_INPUTS; ++i)
-        pe.in_sampled_slots[i] = dummy_sampled_slot_;
+        pe.in_sampled_slots[i] = dummy_sampled_slots_[static_cast<size_t>(ChannelFormat::RGBA)];
 }
 
 
@@ -609,6 +622,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
             pe.node_id          = pass.node_id;
             pe.output_resources = pass.output_resources;
             pe.input_resources  = pass.input_resources;
+            pe.input_formats    = pass.input_formats;
             pe.param_base_slot  = pass.param_base_slot;
             pe.output_layout_is_general = false;
             pe.bypassed         = pass.bypassed;
@@ -644,6 +658,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
         pp.input_count      = pass.input_socket_count;
         pp.output_resources = pass.output_resources;
         pp.input_resources  = pass.input_resources;
+        pp.input_formats    = pass.input_formats;
         pp.node_id          = pass.node_id;
         pp.kind             = pass.kind;
         pp.variant_key      = pass.variant_key;
@@ -876,6 +891,7 @@ void Engine::poll_pending_compiles() {
         pe.node_id          = pp.node_id;
         pe.output_resources = pp.output_resources;
         pe.input_resources  = std::move(pp.input_resources);
+        pe.input_formats    = std::move(pp.input_formats);
         pe.output_layout_is_general = false;
         pe.bypassed         = pp.bypassed;
         pe.param_base_slot  = pp.param_base_slot;
@@ -1002,7 +1018,7 @@ void Engine::populate_chains_(const PassPlan& plan) {
             }
         }
         while (ext_idx < MAX_PASS_INPUTS)
-            ce.chain_in_sampled_slots[ext_idx++] = dummy_sampled_slot_;
+            ce.chain_in_sampled_slots[ext_idx++] = dummy_sampled_slots_[static_cast<size_t>(ChannelFormat::RGBA)];
 
         // Compute max pass index of all external input sources, so the
         // dispatch loop can defer chain dispatch until producers have run.
@@ -1416,13 +1432,15 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
         pe.output_layout_is_general = true;
     }
 
-    // 2. Dummy image — only transition once across its lifetime.
+    // 2. Dummy images — only transition once across their lifetime.
     if (dummy_layout_ != VK_IMAGE_LAYOUT_GENERAL) {
-        transition(dummy_.image(),
-                   dummy_layout_, VK_IMAGE_LAYOUT_GENERAL,
-                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        for (int i = 0; i < 6; ++i) {
+            transition(dummy_images_[i].image(),
+                       dummy_layout_, VK_IMAGE_LAYOUT_GENERAL,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        }
         dummy_layout_ = VK_IMAGE_LAYOUT_GENERAL;
     }
 
@@ -1856,12 +1874,17 @@ bool Engine::release_image(uint64_t node_id) {
         bindless_.free_sampled_slot(sit->second);
         ext_sampled_slot_.erase(sit);
     }
-    // Patch passes that referenced this external image → fall back to dummy.
+    // Patch passes that referenced this external image → fall back to per-format dummy.
     for (auto& pe : passes_) {
         if (pe.node_id != node_id) continue;
-        for (uint32_t i = 0; i < pe.input_count && i < MAX_PASS_INPUTS; ++i)
-            if (pe.input_resources[i].node_id == 0)
-                pe.in_sampled_slots[i] = dummy_sampled_slot_;
+        for (uint32_t i = 0; i < pe.input_count && i < MAX_PASS_INPUTS; ++i) {
+            if (pe.input_resources[i].node_id == 0) {
+                ChannelFormat fmt = ChannelFormat::RGBA;
+                if (i < pe.input_formats.size())
+                    fmt = pe.input_formats[i];
+                pe.in_sampled_slots[i] = dummy_sampled_slots_[static_cast<size_t>(fmt)];
+            }
+        }
     }
     return true;
 }

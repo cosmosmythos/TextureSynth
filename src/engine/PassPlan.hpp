@@ -20,6 +20,7 @@ struct ComputePass {
     NodeId       node_id            = 0;
     std::string  type_id;                       // shader signature key
     std::vector<ResourceUUID> input_resources;
+    std::vector<ChannelFormat> input_formats;    // format per input socket
 	std::vector<ResourceUUID> output_resources;  // multi-output nodes
     int          param_base_slot    = 0;
     uint32_t     input_socket_count = 0;
