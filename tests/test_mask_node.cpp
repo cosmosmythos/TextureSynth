@@ -98,8 +98,8 @@ struct EngineFixture {
 
 // =====================================================================
 // Invert mask tests
-// JSON params order: [amount, mask]
-//   amount = index 0, mask = index 1
+// JSON params order: [mask]
+//   mask = index 0
 // =====================================================================
 
 TEST(Mask, Invert_Mask1_FullyInverts) {
@@ -113,8 +113,8 @@ TEST(Mask, Invert_Mask1_FullyInverts) {
     g.output_node = 2;
     ASSERT_TRUE(fx.build_graph(g));
 
-    // amount=1.0, mask=1.0 (default slider value via SSBO)
-    fx.engine.update_node_params_by_id(2, {1.0f, 1.0f});
+    // mask=1.0 (default slider value via SSBO)
+    fx.engine.update_node_params_by_id(2, {1.0f});
     ASSERT_TRUE(fx.render(2));
     auto img = fx.engine.readback_sync();
     ASSERT_FALSE(img.pixels.empty());
@@ -146,8 +146,8 @@ TEST(Mask, Invert_Mask0_PassthroughInput) {
     g.output_node = 2;
     ASSERT_TRUE(fx.build_graph(g));
 
-    // amount=1.0, mask=0.0 -> output should be input (passthrough)
-    fx.engine.update_node_params_by_id(2, {1.0f, 0.0f});
+    // mask=0.0 -> output should be input (passthrough)
+    fx.engine.update_node_params_by_id(2, {0.0f});
     ASSERT_TRUE(fx.render(2));
     auto img = fx.engine.readback_sync();
     ASSERT_FALSE(img.pixels.empty());
@@ -169,12 +169,12 @@ TEST(Mask, Invert_Mask0and1_Different) {
     ASSERT_TRUE(fx.build_graph(g));
 
     // mask=0
-    fx.engine.update_node_params_by_id(2, {1.0f, 0.0f});
+    fx.engine.update_node_params_by_id(2, {0.0f});
     ASSERT_TRUE(fx.render(2));
     auto img_m0 = fx.engine.readback_sync();
 
     // mask=1
-    fx.engine.update_node_params_by_id(2, {1.0f, 1.0f});
+    fx.engine.update_node_params_by_id(2, {1.0f});
     ASSERT_TRUE(fx.render(2));
     auto img_m1 = fx.engine.readback_sync();
 
@@ -253,8 +253,8 @@ TEST(Mask, Grayscale_Mask0_PassthroughInput) {
 
 // =====================================================================
 // Blend mask tests
-// JSON params order: [factor, mode, mask]
-//   factor = index 0, mode = index 1, mask = index 2
+// JSON params order: [mode, mask]
+//   mode = index 0, mask = index 1
 // =====================================================================
 
 TEST(Mask, Blend_Mask0_PassthroughA) {
@@ -269,7 +269,7 @@ TEST(Mask, Blend_Mask0_PassthroughA) {
     ASSERT_TRUE(fx.render(1));
     auto ref_img = fx.engine.readback_sync();
 
-    // simplex -> A, white -> B, factor=1 (should give B=white), mask=0 -> gives A=simplex
+    // simplex -> A, white -> B, mask=0 (mix mode=0) -> output = A = simplex
     Graph g;
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "white"});
@@ -279,14 +279,14 @@ TEST(Mask, Blend_Mask0_PassthroughA) {
     g.output_node = 3;
     ASSERT_TRUE(fx.build_graph(g));
 
-    // factor=1.0, mode=0 (mix), mask=0.0 -> output should be A (= simplex)
-    fx.engine.update_node_params_by_id(3, {1.0f, 0.0f, 0.0f});
+    // mode=0 (mix), mask=0.0 -> output should be A (= simplex)
+    fx.engine.update_node_params_by_id(3, {0.0f, 0.0f});
     ASSERT_TRUE(fx.render(3));
     auto img = fx.engine.readback_sync();
     ASSERT_FALSE(img.pixels.empty());
 
     double diff = msd(ref_img, img);
-    std::printf("    msd(simplex, blend(simplex,white) factor=1 mask=0) = %.6f\n", diff);
+    std::printf("    msd(simplex, blend(simplex,white) mask=0 mix) = %.6f\n", diff);
     EXPECT_LT(diff, 0.001) << "blend with mask=0 should give A (unblended)";
 }
 
@@ -302,7 +302,7 @@ TEST(Mask, Blend_Mask1_FullBlend) {
     ASSERT_TRUE(fx.render(1));
     auto ref_img = fx.engine.readback_sync();
 
-    // simplex -> A, white -> B, factor=1 (should give B=white), mask=1 -> full effect
+    // simplex -> A, white -> B, mask=1 (mix mode=0) -> output = B = white_noise
     Graph g;
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "white"});
@@ -312,16 +312,15 @@ TEST(Mask, Blend_Mask1_FullBlend) {
     g.output_node = 3;
     ASSERT_TRUE(fx.build_graph(g));
 
-    fx.engine.update_node_params_by_id(3, {1.0f, 0.0f, 1.0f});
+    // mode=0 (mix), mask=1.0 -> output should be B (= white_noise)
+    fx.engine.update_node_params_by_id(3, {0.0f, 1.0f});
     ASSERT_TRUE(fx.render(3));
     auto img = fx.engine.readback_sync();
     ASSERT_FALSE(img.pixels.empty());
 
     double diff = msd(ref_img, img);
-    std::printf("    msd(white, blend(simplex,white) factor=1 mask=1) = %.6f\n", diff);
-    // factor=1 mix -> output is B=white_noise, should match standalone white_noise
-    // Tolerance slightly higher due to different dispatch order in per-node vs standalone.
-    EXPECT_LT(diff, 0.01) << "blend with mask=1 factor=1 should give B (white_noise)";
+    std::printf("    msd(white, blend(simplex,white) mask=1 mix) = %.6f\n", diff);
+    EXPECT_LT(diff, 0.01) << "blend with mask=1 mix should give B (white_noise)";
 }
 
 TEST(Mask, Blend_Mask0and1_Different) {
@@ -338,12 +337,12 @@ TEST(Mask, Blend_Mask0and1_Different) {
     ASSERT_TRUE(fx.build_graph(g));
 
     // mask=0
-    fx.engine.update_node_params_by_id(3, {1.0f, 0.0f, 0.0f});
+    fx.engine.update_node_params_by_id(3, {0.0f, 0.0f});
     ASSERT_TRUE(fx.render(3));
     auto img_m0 = fx.engine.readback_sync();
 
     // mask=1
-    fx.engine.update_node_params_by_id(3, {1.0f, 0.0f, 1.0f});
+    fx.engine.update_node_params_by_id(3, {0.0f, 1.0f});
     ASSERT_TRUE(fx.render(3));
     auto img_m1 = fx.engine.readback_sync();
 

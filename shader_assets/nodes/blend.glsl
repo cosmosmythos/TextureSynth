@@ -1,7 +1,8 @@
 // modes must match Enum order in blend.py
 
-vec4 node_blend(vec2 uv, vec4 a, vec4 b, float factor, float mode, float mask) {
+vec4 node_blend(vec2 uv, vec4 a, vec4 b, float mode, float mask) {
     int  m = int(mode + 0.5);
+    float f = clamp(mask, 0.0, 1.0);
     vec3 r;
     if      (m ==  1) r = TS_BLEND_VEC3(ts_b_add);
     else if (m ==  2) r = TS_BLEND_VEC3(ts_b_mul);
@@ -31,9 +32,8 @@ vec4 node_blend(vec2 uv, vec4 a, vec4 b, float factor, float mode, float mask) {
     else if (m == 26) r = ts_b_saturation(a.rgb, b.rgb);
     else if (m == 27) r = ts_b_color     (a.rgb, b.rgb);
     else if (m == 28) r = ts_b_luminosity(a.rgb, b.rgb);
-    else              r = mix(a.rgb, b.rgb, clamp(factor, 0.0, 1.0));
+    else              r = mix(a.rgb, b.rgb, f);
 
-    if (m != 0) r = mix(a.rgb, r, clamp(factor, 0.0, 1.0));
-    vec4 result = vec4(clamp(r, 0.0, 1.0), mix(a.a, b.a, clamp(factor, 0.0, 1.0)));
-    return mix(a, result, clamp(mask, 0.0, 1.0));
+    if (m != 0) r = mix(a.rgb, r, f);
+    return vec4(clamp(r, 0.0, 1.0), mix(a.a, b.a, f));
 }

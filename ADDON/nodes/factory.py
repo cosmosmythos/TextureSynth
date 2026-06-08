@@ -189,6 +189,7 @@ def generate_node_classes(core_module):
                     update=_update_param,
                 )
             else:
+                is_as_socket = getattr(param, 'as_socket', False)
                 prop = bpy.props.FloatProperty(
                     name=label, description=desc,
                     default=param.default_value,
@@ -197,6 +198,7 @@ def generate_node_classes(core_module):
                     soft_max=param.soft_max_value,
                     step=max(int(step * 100), 1) if step > 0 else 10,
                     precision=3,
+                    subtype='FACTOR' if is_as_socket else 'NONE',
                     update=_update_param,
                 )
             class_dict['__annotations__'][param.name] = prop
@@ -259,8 +261,8 @@ def generate_node_classes(core_module):
                 self.draw_error_ui(layout)
                 self.draw_format_override_ui(layout)
                 for p_name, is_sock in zip(p_names, p_as_socket):
-                    if is_sock and p_name in self.inputs and self.inputs[p_name].is_linked:
-                        continue  # hide slider when socket overrides
+                    if is_sock:
+                        continue  # socket draw() handles inline slider
                     layout.prop(self, p_name)
             return draw_buttons_func
         p_as_socket = [getattr(p, 'as_socket', False) for p in node_type.params]
