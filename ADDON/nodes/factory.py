@@ -108,7 +108,7 @@ _CATEGORY_BY_SVTYPE = {
     'color_const':'INPUT','image':'INPUT',
     'blend':'BLEND',
     'invert':'FILTER','grayscale':'FILTER',
-    'combine_rgba':'COLOR','split_rgba':'COLOR',
+    'combine_rgba':'COLOR','separate_rgba':'COLOR',
 }
 
 _FORMAT_OVERRIDE_SV_TYPES = {

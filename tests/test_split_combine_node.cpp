@@ -183,7 +183,7 @@ TEST(SplitCombine, SplitRGBA_AllFourOutputsAreValid) {
     for (uint32_t sock = 0; sock < 4; ++sock) {
         Graph g;
         g.nodes.push_back({1, "simplex"});
-        g.nodes.push_back({2, "split_rgba"});
+        g.nodes.push_back({2, "separate_rgba"});
         g.connections.push_back({1, 0, 2, 0});
         g.output_node = 2;
         g.output_socket = sock;
@@ -191,17 +191,17 @@ TEST(SplitCombine, SplitRGBA_AllFourOutputsAreValid) {
         imgs[sock] = fx.engine.readback_sync();
         ASSERT_FALSE(imgs[sock].pixels.empty());
         auto s = stats_of(imgs[sock]);
-        std::printf("    split_rgba output_socket=%u: ", sock);
+        std::printf("    separate_rgba output_socket=%u: ", sock);
         dump_stats("stats", s);
-        EXPECT_FALSE(s.all_zero) << "split_rgba output socket " << sock << " must not be all-zero";
+        EXPECT_FALSE(s.all_zero) << "separate_rgba output socket " << sock << " must not be all-zero";
         if (sock < 3) {
-            EXPECT_TRUE(s.has_variation) << "split_rgba output socket " << sock << " must have variation (RGB from simplex vary)";
+            EXPECT_TRUE(s.has_variation) << "separate_rgba output socket " << sock << " must have variation (RGB from simplex vary)";
         } else {
             // Socket 3 = alpha channel. Simplex outputs alpha=1.0 everywhere,
             // so the separated A channel is constant 1.0 — no variation expected.
-            EXPECT_FALSE(s.all_zero) << "split_rgba output socket 3 (A) must have alpha=1.0, not zero";
+            EXPECT_FALSE(s.all_zero) << "separate_rgba output socket 3 (A) must have alpha=1.0, not zero";
         }
-        EXPECT_GT(s.max_a, 0.5f) << "split_rgba output socket " << sock << " alpha must be > 0.5";
+        EXPECT_GT(s.max_a, 0.5f) << "separate_rgba output socket " << sock << " alpha must be > 0.5";
     }
 }
 
@@ -218,7 +218,7 @@ TEST(SplitCombine, SplitRGBA_FourOutputsDiffer) {
     for (uint32_t sock = 0; sock < 4; ++sock) {
         Graph g;
         g.nodes.push_back({1, "simplex"});
-        g.nodes.push_back({2, "split_rgba"});
+        g.nodes.push_back({2, "separate_rgba"});
         g.connections.push_back({1, 0, 2, 0});
         g.output_node = 2;
         g.output_socket = sock;
@@ -228,13 +228,13 @@ TEST(SplitCombine, SplitRGBA_FourOutputsDiffer) {
     }
 
     // Each channel is independent per simplex.glsl (different seed offsets).
-    // So split_rgba outputs R, G, B, A should all look different.
+    // So separate_rgba outputs R, G, B, A should all look different.
     for (int a = 0; a < 4; ++a) {
         for (int b = a + 1; b < 4; ++b) {
             double d = msd(imgs[a], imgs[b]);
             std::printf("    msd(socket_%d, socket_%d) = %.6f\n", a, b, d);
             EXPECT_GT(d, 0.001)
-                << "split_rgba outputs " << a << " and " << b << " must differ";
+                << "separate_rgba outputs " << a << " and " << b << " must differ";
         }
     }
 }
@@ -250,7 +250,7 @@ TEST(SplitCombine, SplitRGBA_AlphaIsOne) {
     for (uint32_t sock = 0; sock < 4; ++sock) {
         Graph g;
         g.nodes.push_back({1, "simplex"});
-        g.nodes.push_back({2, "split_rgba"});
+        g.nodes.push_back({2, "separate_rgba"});
         g.connections.push_back({1, 0, 2, 0});
         g.output_node = 2;
         g.output_socket = sock;
@@ -264,12 +264,12 @@ TEST(SplitCombine, SplitRGBA_AlphaIsOne) {
             if (std::abs(img.pixels[i*4+3] - 1.0f) > 0.01f) ++non_one_a;
         }
         std::printf("    socket=%u: non-1.0 alpha pixels=%d/%zu\n", sock, non_one_a, n);
-        EXPECT_EQ(non_one_a, 0) << "split_rgba socket " << sock << " must have alpha=1.0 everywhere";
+        EXPECT_EQ(non_one_a, 0) << "separate_rgba socket " << sock << " must have alpha=1.0 everywhere";
     }
 }
 
 // =====================================================================
-// Combine RGBA sanity: simplex -> split_rgba -> combine_rgba.
+// Combine RGBA sanity: simplex -> separate_rgba -> combine_rgba.
 // All 4 split outputs feed into the 4 combine inputs. Output must be
 // non-black, varied, and have alpha=1.0.
 // =====================================================================
@@ -278,14 +278,14 @@ TEST(SplitCombine, CombineRGBA_ValidOutput) {
     EngineFixture fx;
     SKIP_IF_NO_ENGINE();
 
-    // simplex -> split_rgba -> combine_rgba
+    // simplex -> separate_rgba -> combine_rgba
     // split.R (socket 0) -> combine.r (socket 0)
     // split.G (socket 1) -> combine.g (socket 1)
     // split.B (socket 2) -> combine.b (socket 2)
     // split.A (socket 3) -> combine.a (socket 3)
     Graph g;
     g.nodes.push_back({1, "simplex"});
-    g.nodes.push_back({2, "split_rgba"});
+    g.nodes.push_back({2, "separate_rgba"});
     g.nodes.push_back({3, "combine_rgba"});
     g.connections.push_back({1, 0, 2, 0});
     g.connections.push_back({2, 0, 3, 0});
@@ -310,7 +310,7 @@ TEST(SplitCombine, CombineRGBA_AlphaIsOne) {
 
     Graph g;
     g.nodes.push_back({1, "simplex"});
-    g.nodes.push_back({2, "split_rgba"});
+    g.nodes.push_back({2, "separate_rgba"});
     g.nodes.push_back({3, "combine_rgba"});
     g.connections.push_back({1, 0, 2, 0});
     g.connections.push_back({2, 0, 3, 0});
@@ -358,7 +358,7 @@ TEST(SplitCombine, RoundTrip_SplitThenCombine) {
     // Round-trip: simplex -> split -> combine.
     Graph g_rt;
     g_rt.nodes.push_back({1, "simplex"});
-    g_rt.nodes.push_back({2, "split_rgba"});
+    g_rt.nodes.push_back({2, "separate_rgba"});
     g_rt.nodes.push_back({3, "combine_rgba"});
     g_rt.connections.push_back({1, 0, 2, 0});
     g_rt.connections.push_back({2, 0, 3, 0});
@@ -392,7 +392,7 @@ TEST(SplitCombine, SplitRGBA_WithWhiteNoise_AllValid) {
     for (uint32_t sock = 0; sock < 4; ++sock) {
         Graph g;
         g.nodes.push_back({1, "white"});
-        g.nodes.push_back({2, "split_rgba"});
+        g.nodes.push_back({2, "separate_rgba"});
         g.connections.push_back({1, 0, 2, 0});
         g.output_node = 2;
         g.output_socket = sock;
@@ -422,7 +422,7 @@ TEST(SplitCombine, CombineRGBA_OnlyRConnected_ValidOutput) {
     // read from unconnected dummies.
     Graph g;
     g.nodes.push_back({1, "simplex"});
-    g.nodes.push_back({2, "split_rgba"});
+    g.nodes.push_back({2, "separate_rgba"});
     g.nodes.push_back({3, "combine_rgba"});
     g.connections.push_back({1, 0, 2, 0});
     g.connections.push_back({2, 0, 3, 0}); // only R connected

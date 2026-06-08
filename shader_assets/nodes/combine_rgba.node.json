@@ -4,10 +4,10 @@
     "description": "Combine grayscale inputs into a single RGBA color output",
     "includes": [],
     "inputs": [
-        { "name": "r", "type": "vec4" },
-        { "name": "g", "type": "vec4" },
-        { "name": "b", "type": "vec4" },
-        { "name": "a", "type": "vec4" }
+        { "name": "r", "type": "vec4", "format": "mono" },
+        { "name": "g", "type": "vec4", "format": "mono" },
+        { "name": "b", "type": "vec4", "format": "mono" },
+        { "name": "a", "type": "vec4", "format": "mono" }
     ],
     "outputs": [
         { "name": "color", "type": "vec4" }

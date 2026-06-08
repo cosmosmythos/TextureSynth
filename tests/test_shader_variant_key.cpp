@@ -434,11 +434,11 @@ TEST(EmitNodeShader, NonFormatSensitiveNodeOmitsPostProcess) {
 // ===========================================================================
 
 TEST(EmitNodeShader, FormatSensitiveMultiOutputNodeOmitsPostProcess) {
-    // Multi-output nodes (e.g. split_rgba) emit N imageStore calls in
+    // Multi-output nodes (e.g. separate_rgba) emit N imageStore calls in
     // the per-node path. The format post-process assumes a single `result`
     // variable; for multi-output we have `out0..outN-1`, so the post-process
     // block must be skipped. The graph compiler gates this on
-    // `!multi_output`. If the gate breaks, all split_rgba-style nodes
+    // `!multi_output`. If the gate breaks, all separate_rgba-style nodes
     // would reference an undefined `result` and fail to compile.
     NodeLibrary lib;
     NodeType t;

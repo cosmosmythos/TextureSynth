@@ -20,7 +20,7 @@ for the chain-fusion rationale.
 
 A missing or unknown `pass_kind` is treated as `pure_pixel` (the safe
 fuseable option) with a logged warning. Combiners and generators are
-all `pure_pixel`; only `split_rgba` is `boundary` today (multi-output
+all `pure_pixel`; only `separate_rgba` is `boundary` today (multi-output
 is a chain break because the chain shader emits one `imageStore`).
 
 ## File map (13 manifests, current)
@@ -39,7 +39,7 @@ is a chain break because the chain shader emits one `imageStore`).
 | `combine_rgba.node.json` | `pure_pixel` | 4-in packer |
 | `color_const.node.json`  | `pure_pixel` | constant source |
 | `image.node.json`        | `pure_pixel` | sampler-bound; per-texel, no halo |
-| `split_rgba.node.json`   | `boundary`   | **multi-output** -> chain break |
+| `separate_rgba.node.json`   | `boundary`   | **multi-output** -> chain break |
 
 ## GLSL function signature contract (mandatory for chain fusion)
 
@@ -70,7 +70,7 @@ vec4 node_<name>(vec2 uv, vec4 a, vec4 b, /* params */);
 // PurePixel node: 4-in packer (e.g. combine_rgba)
 vec4 node_<name>(vec2 uv, vec4 r, vec4 g, vec4 b, vec4 a);
 
-// Boundary node: 1 in, 4 out (e.g. split_rgba)
+// Boundary node: 1 in, 4 out (e.g. separate_rgba)
 void node_<name>(vec2 uv, vec4 color,
                  out vec4 r_out, out vec4 g_out,
                  out vec4 b_out, out vec4 a_out);
@@ -90,5 +90,5 @@ Always: `(vec2 uv, vec4 color_in, /* vec4 color_in2, ... */, <sliders>, <uniform
 
 ### Enforcement
 
-- The 13 existing manifests already follow this contract (see `perlin.glsl`, `invert.glsl`, `grayscale.glsl`, `split_rgba.glsl`).
+- The 13 existing manifests already follow this contract (see `perlin.glsl`, `invert.glsl`, `grayscale.glsl`, `separate_rgba.glsl`).
 - Stage 3's chain emitter (`emit_chain_shader`, planned for Stage 4) will read each node's signature via the manifest's `glsl_signature` field (to be added) and refuse to emit a chain if a node uses `sampler2D` mid-chain.

@@ -729,7 +729,7 @@ TEST(GraphValidation, AllThirteenManifestsLoadWithCorrectPassKind) {
         {"combine_rgba",   PassKind::PurePixel},
         {"color_const",    PassKind::PurePixel},
         {"image",          PassKind::PurePixel},
-        {"split_rgba",     PassKind::Boundary},
+        {"separate_rgba",     PassKind::Boundary},
     };
 
     for (auto& e : expected) {

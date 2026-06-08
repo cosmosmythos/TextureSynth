@@ -53,7 +53,7 @@ EdgeIndex build_edge_index(const GraphIR& ir) {
 
 // A node is a chain barrier if ANY of:
 //   - its PassKind is not PurePixel (Boundary, Reduction, Feedback, etc.)
-//   - it has more than one output (multi-output: split_rgba)
+//   - it has more than one output (multi-output: separate_rgba)
 //   - it has more than one successor (fan-out: one producer, multiple consumers)
 //   - it has more than one predecessor (fan-in: one consumer, multiple producers)
 //
