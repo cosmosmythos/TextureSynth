@@ -1,0 +1,81 @@
+seems ChainShaderEmitter / record_chain_dispatch_ were implemented poorly here are the test result for testing
+ tests/test_blend_node.cpp...investigate further...source of project is src/engine.... You are expert c++, vma, vulkan
+ senior programmer. Read AGENTS.md as well(AI coding instructions)
+
+Artist Mental Model
+You wire Simplex → Blend A, White Noise → Blend B, move the Factor slider — you expect A at 0, B at 1, a mix in between. These tests simulate that in the engine (no Blender).
+
+What you’d do	What tests show
+Preview Simplex or White Noise alone
+Works — noise, variation, alpha = 1
+Both inputs connected, default Factor=1
+Works — not black, 33 colors, alpha = 1
+Move Factor 0 → 1 with both connected
+Broken — output identical at 0, 0.5, and 1
+Swap A↔B with Factor=0
+Broken — same pixels either way
+A=Simplex, B empty, Factor=0
+Works — shows Simplex
+A empty, B=Simplex, Factor=1
+Broken — all black, alpha 0
+Note: blend.glsl had a debug stub (return vec4(factor, mode, …)). I restored the real shader from git so these results reflect actual blend behavior. Re-apply the debug stub if you still need it.
+
+Test Run Summary
+Command: engine_tests.exe --gtest_filter="Blend.*"
+Build: incremental only (cmake -DBUILD_TESTS=ON + --target engine_tests)
+Also checked: engine_tests_pernode (TE_FORCE_NO_FUSION=1) — same failures as fused path for the broken cases.
+
+Results (real blend.glsl): 8 passed / 4 failed
+Test	Result
+Sanity_SimplexAloneIsNotBlack
+PASS
+Sanity_WhiteNoiseAloneIsNotBlack
+PASS
+BothConnected_DefaultFactor_ProducesValidImage
+PASS
+BothConnected_FactorZero_GivesA_FactorOne_GivesB_Different
+FAIL
+BothConnected_SwapAandB_ProducesDifferentResult
+FAIL
+OneUnconnectedInput_Factor0_GivesConnected_Factor1_GivesDummy
+PASS
+OneUnconnectedInput_SwappedAFB
+FAIL
+BothConnected_ModeAdd/Multiply/Screen
+PASS
+BothConnected_AlphaIsOne
+PASS
+BothConnected_TrueSwapAandB_OutputIsDifferent
+FAIL
+Architecture / Data Flow
+The failures point to Blend not reading A vs B correctly when both sockets are connected, not a bad shader formula.
+
+Both connected (3 chains: simplex, white, blend):
+
+Bindless wiring looks correct: in_sampled=[1,2,…] on node 99
+Output has variation and alpha=1, but factor/mode changes have zero effect (msd = 0 for factor 0 vs 1 vs 0.5)
+Same pixel stats for mix, add, mul, screen → B socket (or param SSBO) likely ignored; blend may always see one input
+One unconnected, fused chain (simplex → blend):
+
+A=simplex, B=unconn: factor=0 shows Simplex; factor=1 shows black dummy — PASS
+A=unconn, B=simplex: falls back to per-pass (ChainShaderEmitter warning about non-linear socket 1) — all-zero output including alpha
+Relevant engine paths:
+
+Engine.cpp — record_chain_dispatch_, update_node_params_by_id
+ChainShaderEmitter.cpp — external vs local input resolution for mid-chain sockets
+ChainFinder.cpp — chain splitting when B is fed from outside the chain
+Code / Evidence
+Identical output regardless of factor (both inputs connected):
+
+factor=0 mix: r=[0.000,0.844] ... first_nz=[0.316,0.096,0.334,1.000]
+factor=1 mix: r=[0.000,0.844] ... first_nz=[0.316,0.096,0.334,1.000]  ← same
+factor=0.5:   r=[0.000,0.844] ... first_nz=[0.316,0.096,0.334,1.000]  ← same
+msd(factor0, factor1) = 0.000000
+Swapped-AFB failure (B connected, A empty):
+
+A=unconn,B=simplex, factor=1: r=[0,0] g=[0,0] b=[0,0] a=[0,0]  ← total black
+Side Notes
+Vulkan validation spam: hostQueryReset not enabled, query pool not reset — unrelated to blend logic but noisy in logs
+Shader cache writes fail (shader cache: write failed) — tests still compile fresh SPIR-V each run
+With the debug blend.glsl stub, 9/12 failed (misleading solid colors like RGB 8,5)
+The test suite is doing its job: alpha and “not black with both connected” are fixed, but factor selection and B-socket routing are still broken in the engine dispatch/bindless path

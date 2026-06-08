@@ -17,7 +17,8 @@ namespace {
 struct EdgeIndex {
     std::unordered_map<NodeId, std::vector<NodeId>> preds;
     std::unordered_map<NodeId, std::vector<NodeId>> succs;
-    std::unordered_map<NodeId, uint32_t> in_degree;
+    std::unordered_map<NodeId, uint32_t> in_degree;       // socket-0 connections (chain input)
+    std::unordered_map<NodeId, uint32_t> total_in_degree;  // all connections (fan-in barrier)
     std::unordered_map<NodeId, uint32_t> out_degree;
 };
 
@@ -31,10 +32,11 @@ EdgeIndex build_edge_index(const GraphIR& ir) {
     active.reserve(ir.eval_order.size());
     for (NodeId id : ir.eval_order) {
         active.insert(id);
-        idx.preds[id]    = {};
-        idx.succs[id]    = {};
-        idx.in_degree[id]  = 0;
-        idx.out_degree[id] = 0;
+        idx.preds[id]          = {};
+        idx.succs[id]          = {};
+        idx.in_degree[id]      = 0;
+        idx.total_in_degree[id] = 0;
+        idx.out_degree[id]     = 0;
     }
     for (const auto& c : ir.connections) {
         if (!active.count(c.src_node) || !active.count(c.dst_node)) continue;
@@ -42,6 +44,7 @@ EdgeIndex build_edge_index(const GraphIR& ir) {
             idx.preds[c.dst_node].push_back(c.src_node);
             ++idx.in_degree[c.dst_node];
         }
+        ++idx.total_in_degree[c.dst_node];              // count all connections
         idx.succs[c.src_node].push_back(c.dst_node);
         ++idx.out_degree[c.src_node];
     }
@@ -71,8 +74,8 @@ bool is_barrier(NodeId id, const GraphIR& ir, const NodeLibrary& lib,
     if (!type || type->outputs.size() != 1) return true;         // multi-output
     auto od_it = idx.out_degree.find(id);
     if (od_it != idx.out_degree.end() && od_it->second > 1) return true;  // fan-out
-    auto id_it = idx.in_degree.find(id);
-    if (id_it != idx.in_degree.end() && id_it->second > 1) return true;  // fan-in
+    auto id_it2 = idx.total_in_degree.find(id);
+    if (id_it2 != idx.total_in_degree.end() && id_it2->second > 1) return true;  // fan-in (any socket)
     return false;
 }
 

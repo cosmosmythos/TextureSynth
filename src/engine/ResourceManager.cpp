@@ -73,6 +73,7 @@ bool ResourceManager::create_image_(VulkanContext& ctx, NodeResource& r,
                   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
                   | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (can_alias) ici.flags |= VK_IMAGE_CREATE_ALIAS_BIT;
 
     VmaAllocationCreateInfo aci{};
     aci.usage = VMA_MEMORY_USAGE_AUTO;
@@ -265,6 +266,7 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
                               | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
             ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+            ici.flags        |= VK_IMAGE_CREATE_ALIAS_BIT;
 
             if (vkCreateImage(ctx.device(), &ici, nullptr, &images[k]) != VK_SUCCESS) {
                 log_error("Aliasing: vkCreateImage failed for " + info.debug_name);

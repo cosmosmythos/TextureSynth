@@ -174,6 +174,14 @@ bool Engine::init(VkSurfaceKHR surface,
     dummy_sampled_slot_ = 0;
     bindless_.write_sampled(ctx_, dummy_sampled_slot_, dummy_.view(), VK_IMAGE_LAYOUT_GENERAL);
 
+    // Stage 8: per-pass GPU timestamp pools.
+    if (!create_timestamp_pools_()) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "timestamp pool creation failed",
+                   EnginePhase::Init);
+        goto rollback;
+    }
+
     // ── Param SSBO ring: write all PARAM_RING buffers ONCE. Never rebound. ──
     {
         std::array<VkBuffer, BindlessTable::PARAM_RING_SIZE> ring_bufs{};
@@ -194,7 +202,73 @@ rollback:
 
 
 bool Engine::ensure_dummy_image_() {
-    return dummy_.create(ctx_, 1, 1);
+    if (!dummy_.create(ctx_, 1, 1)) return false;
+
+    // Clear dummy to (0,0,0,1) so unconnected inputs read as
+    // opaque black instead of undefined/virtual-memory garbage.
+    VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cpci.queueFamilyIndex = ctx_.graphics_family();
+    cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    VkCommandPool tmp_pool = VK_NULL_HANDLE;
+    if (vkCreateCommandPool(ctx_.device(), &cpci, nullptr, &tmp_pool) != VK_SUCCESS)
+        return true;  // non-fatal; image will contain garbage but won't crash
+    VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cbai.commandPool        = tmp_pool;
+    cbai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer tmp_cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(ctx_.device(), &cbai, &tmp_cmd) != VK_SUCCESS) {
+        vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
+        return true;
+    }
+    VkCommandBufferBeginInfo cbbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(tmp_cmd, &cbbi) != VK_SUCCESS) {
+        vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
+        vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
+        return true;
+    }
+    // Transition to GENERAL so we can clear.
+    VkImageMemoryBarrier2 ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    ib.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    ib.srcAccessMask = 0;
+    ib.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    ib.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    ib.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    ib.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+    ib.image         = dummy_.image();
+    ib.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers    = &ib;
+    vkCmdPipelineBarrier2(tmp_cmd, &di);
+
+    VkClearColorValue cc{};
+    cc.float32[0] = 0.0f; cc.float32[1] = 0.0f;
+    cc.float32[2] = 0.0f; cc.float32[3] = 1.0f;
+    VkImageSubresourceRange sr{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(tmp_cmd, dummy_.image(), VK_IMAGE_LAYOUT_GENERAL, &cc, 1, &sr);
+
+    if (vkEndCommandBuffer(tmp_cmd) != VK_SUCCESS) {
+        vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
+        vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
+        return true;
+    }
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers    = &tmp_cmd;
+    {
+        std::lock_guard<std::mutex> lk(ctx_.graphics_queue_mutex());
+        if (vkQueueSubmit(ctx_.graphics_queue(), 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+            vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
+            vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
+            return true;
+        }
+    }
+    vkQueueWaitIdle(ctx_.graphics_queue());
+    vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
+    vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
+    return true;
 }
 
 
@@ -275,6 +349,7 @@ void Engine::shutdown_internal_() {
     async_.shutdown(ctx_);
     for (auto& r : retired_images_) if (r.img) r.img->destroy(ctx_);
     retired_images_.clear();
+    destroy_timestamp_pools_();
     if (output_storage_) { output_storage_->destroy(ctx_); output_storage_.reset(); }
     ctx_.shutdown();
 }
@@ -396,7 +471,6 @@ void Engine::assign_bindless_slots_(PassExec& pe) {
     }
     for (uint32_t i = pe.input_count; i < MAX_PASS_INPUTS; ++i)
         pe.in_sampled_slots[i] = dummy_sampled_slot_;
-
 }
 
 
@@ -575,6 +649,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
         pp.kind             = pass.kind;
         pp.variant_key      = pass.variant_key;
         pp.bypassed         = pass.bypassed;
+        pp.param_base_slot  = pass.param_base_slot;
         if (pass.kind == PassKind::Dispatch && !pass.bypassed) {
             // Phase 1c: bypassed passes skip the async shader compile —
             // the executor clears their output to zero.
@@ -754,6 +829,8 @@ void Engine::poll_pending_compiles() {
     tick_retired();
     resources_.tick(ctx_);
 
+    poll_timestamps_();
+
     if (!pending_active_) return;
 
     // Wait until every future is ready (non-blocking peek).
@@ -786,6 +863,7 @@ void Engine::poll_pending_compiles() {
         pe.input_resources  = std::move(pp.input_resources);
         pe.output_layout_is_general = false;
         pe.bypassed         = pp.bypassed;
+        pe.param_base_slot  = pp.param_base_slot;
 
         if (pp.kind == PassKind::Dispatch) {
             if (pp.bypassed) {
@@ -902,7 +980,9 @@ void Engine::populate_chains_(const PassPlan& plan) {
                     }
                 }
                 if (is_external) {
-                    ce.chain_in_sampled_slots[ext_idx++] = pe.in_sampled_slots[s];
+                    ce.chain_in_sampled_slots[ext_idx] = pe.in_sampled_slots[s];
+                    ce.chain_external_resources[ext_idx] = pe.input_resources[s];
+                    ++ext_idx;
                 }
             }
         }
@@ -936,8 +1016,17 @@ void Engine::populate_chains_(const PassPlan& plan) {
                 }
             }
         }
+        bool ce_has_pipeline = !!ce.pipeline;
+        bool ce_bypassed = ce.bypassed;
         chain_execs_.push_back(std::move(ce));
         membership[(ChainId)ci] = ch.nodes;
+        // fallback to per-pass dispatch if pipeline creation failed
+        if (!ce_has_pipeline && !ce_bypassed) {
+            for (uint32_t pi : member_pis) {
+                if (pi < chain_id_of_pass_.size())
+                    chain_id_of_pass_[pi] = UINT32_MAX;
+            }
+        }
     }
 
     dirty_set_.set_chain_membership(std::move(membership));
@@ -971,6 +1060,114 @@ void Engine::tick_retired() {
 }
 
 
+// Stage 8: create timestamp query pools (one per in-flight slot).
+// Uses a one-time command buffer to reset all pools (avoids needing hostQueryReset).
+bool Engine::create_timestamp_pools_() {
+    VkQueryPoolCreateInfo qci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qci.queryCount = 256;  // plenty for any reasonable graph (128 passes × 2)
+    for (auto& tp : ts_pools_) {
+        if (vkCreateQueryPool(ctx_.device(), &qci, nullptr, &tp.pool) != VK_SUCCESS) {
+            log_error("Engine: VkQueryPool creation failed");
+            return false;
+        }
+        tp.capacity = qci.queryCount;
+        tp.cached_raw.assign(qci.queryCount, 0);
+    }
+
+    VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    cpci.queueFamilyIndex = ctx_.graphics_family();
+    VkCommandPool tmp_pool;
+    vkCreateCommandPool(ctx_.device(), &cpci, nullptr, &tmp_pool);
+
+    VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cbai.commandPool = tmp_pool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer tmp_cmd;
+    vkAllocateCommandBuffers(ctx_.device(), &cbai, &tmp_cmd);
+
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(tmp_cmd, &begin);
+
+    for (auto& tp : ts_pools_) {
+        vkCmdResetQueryPool(tmp_cmd, tp.pool, 0, tp.capacity);
+    }
+
+    vkEndCommandBuffer(tmp_cmd);
+
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence;
+    vkCreateFence(ctx_.device(), &fci, nullptr, &fence);
+
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &tmp_cmd;
+    {
+        std::lock_guard<std::mutex> lk(ctx_.graphics_queue_mutex());
+        vkQueueSubmit(ctx_.graphics_queue(), 1, &submit, fence);
+    }
+    vkWaitForFences(ctx_.device(), 1, &fence, VK_TRUE, UINT64_MAX);
+
+    vkDestroyFence(ctx_.device(), fence, nullptr);
+    vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
+
+    return true;
+}
+
+void Engine::destroy_timestamp_pools_() {
+    for (auto& tp : ts_pools_) {
+        if (tp.pool) {
+            vkDestroyQueryPool(ctx_.device(), tp.pool, nullptr);
+            tp.pool = VK_NULL_HANDLE;
+        }
+        tp.capacity = 0;
+        tp.cached_raw.clear();
+        tp.cached_timings.clear();
+    }
+}
+
+void Engine::poll_timestamps_() {
+    // Read the most recently submitted pool (previous write index).
+    const uint32_t pool_idx = ts_pool_write_idx_;
+    auto& tp = ts_pools_[pool_idx];
+    if (tp.pool == VK_NULL_HANDLE || tp.capacity == 0) return;
+
+    const uint32_t query_count = tp.capacity;
+    std::vector<uint64_t> raw(query_count * 2, 0);  // +availability per slot
+    const VkResult r = vkGetQueryPoolResults(
+        ctx_.device(), tp.pool, 0, query_count,
+        raw.size() * sizeof(uint64_t), raw.data(),
+        sizeof(uint64_t) * 2,
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (r != VK_SUCCESS && r != VK_NOT_READY) return;
+
+    // Decode into cached timings.
+    const double period = ctx_.timestamp_period();
+    tp.cached_timings.clear();
+    // Query 0 = frame start (TOP_OF_PIPE). Dispatch pairs start at query 1:
+    //   start query = 1+2*i, end query = 2+2*i
+    for (uint32_t i = 0; i < query_count / 2; ++i) {
+        const uint32_t sq = 1 + 2 * i;  // start query index
+        const uint32_t eq = 2 + 2 * i;  // end query index
+        if (eq >= query_count) break;
+        const double start_ns = (double)raw[sq * 2] * period;
+        const double end_ns   = (double)raw[eq * 2] * period;
+        if (!raw[sq * 2 + 1] || !raw[eq * 2 + 1]) continue;
+        if (end_ns <= start_ns) continue;
+        PassTiming pt;
+        pt.pass_index  = i;
+        pt.duration_us = (end_ns - start_ns) / 1000.0;
+        pt.available   = true;
+        tp.cached_timings.push_back(std::move(pt));
+    }
+    // Store a flat snapshot (merged across all pools, latest-read wins).
+    last_pass_timings_ = tp.cached_timings;
+}
+
+
 // Stage 6: dispatch a single chain. Issues vkCmdDispatch + layout transitions for head external inputs and tail output. Bypassed chains clear to zero.
 void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
                                     uint32_t gx, uint32_t gy, size_t chain_idx) {
@@ -997,12 +1194,12 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
     }
     if (!ce.pipeline) return;   // compile failed; skip silently
 
-    // Transition external inputs to SHADER_READ_ONLY_OPTIMAL.
+    // Barrier external inputs (kept in GENERAL to match bindless descriptor layout).
     for (const auto& inp : head.input_resources) {
         if (inp.node_id == 0) continue;
         auto* src = resources_.get(inp);
         if (!src) continue;
-        if (src->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+        if (src->layout == VK_IMAGE_LAYOUT_GENERAL &&
             !dirty_set_.is_dirty(inp.node_id)) continue;
         VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -1010,15 +1207,46 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
         b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
                         | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-        b.oldLayout = src->layout;
-        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         b.image     = src->image;
         b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers    = &b;
         vkCmdPipelineBarrier2(cmd, &dep);
-        src->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        src->layout = VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    // Mid-chain external inputs: chain_external_resources may reference
+    // images NOT in the head's input list (e.g., Blend's B socket fed by
+    // a node outside the chain). Same GENERAL layout.
+    for (uint32_t ei = 0; ei < MAX_PASS_INPUTS; ++ei) {
+        const ResourceUUID& rid = ce.chain_external_resources[ei];
+        if (rid.node_id == 0) continue;
+        // Skip if already handled by the head loop above.
+        bool already_done = false;
+        for (const auto& inp : head.input_resources) {
+            if (inp == rid) { already_done = true; break; }
+        }
+        if (already_done) continue;
+        auto* src = resources_.get(rid);
+        if (!src) continue;
+        if (src->layout == VK_IMAGE_LAYOUT_GENERAL &&
+            !dirty_set_.is_dirty(rid.node_id)) continue;
+        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                        | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.image     = src->image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers    = &b;
+        vkCmdPipelineBarrier2(cmd, &dep);
+        src->layout = VK_IMAGE_LAYOUT_GENERAL;
     }
 
     // Transition tail's output to GENERAL.
@@ -1068,7 +1296,16 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
     vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(PassPushConstants), &ppc);
-    vkCmdDispatch(cmd, gx, gy, 1);
+    // Stage 8: timestamp pair for this chain dispatch.
+    auto& ts = ts_pools_[ts_pool_write_idx_];
+    const uint32_t qi = ts_query_idx_; ts_query_idx_ += 2;
+    if (ts.pool != VK_NULL_HANDLE && qi + 1 < ts.capacity) {
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi);
+        vkCmdDispatch(cmd, gx, gy, 1);
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi + 1);
+    } else {
+        vkCmdDispatch(cmd, gx, gy, 1);
+    }
     ++last_dispatch_count_;
 }
 
@@ -1096,6 +1333,15 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
 
     // Defensive: skip if nothing is dirty (submit() should have caught this)
     if (!dirty_set_.any()) return;
+
+    // Stage 8: select timestamp pool (ring by param_write_idx_), reset on GPU timeline, write frame-start.
+    ts_pool_write_idx_ = param_write_idx_ % TIMESTAMP_POOL_COUNT;
+    ts_query_idx_ = 1;  // query 0 = frame start; next write gets 1
+    auto& ts_pool = ts_pools_[ts_pool_write_idx_];
+    if (ts_pool.pool != VK_NULL_HANDLE && ts_pool.capacity > 0) {
+        vkCmdResetQueryPool(cmd, ts_pool.pool, 0, ts_pool.capacity);
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, ts_pool.pool, 0);
+    }
 
     // Stage 6: resolve aliased memory staleness before any barriers.
     // If a clean aliased resource has stale memory from another group member,
@@ -1241,7 +1487,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
                 b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
                 b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
                 b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+                b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
                 b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
                 b.image     = src->image;
                 b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -1293,7 +1539,16 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
             vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
                                VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(PassPushConstants), &ppc);
-            vkCmdDispatch(cmd, gx, gy, 1);
+            // Stage 8: timestamp pair for this per-pass dispatch.
+            auto& ts = ts_pools_[ts_pool_write_idx_];
+            const uint32_t qi = ts_query_idx_; ts_query_idx_ += 2;
+            if (ts.pool != VK_NULL_HANDLE && qi + 1 < ts.capacity) {
+                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi);
+                vkCmdDispatch(cmd, gx, gy, 1);
+                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi + 1);
+            } else {
+                vkCmdDispatch(cmd, gx, gy, 1);
+            }
             ++last_dispatch_count_;
         }
 
@@ -1301,6 +1556,19 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
 
         if (std::find(pe.output_resources.begin(), pe.output_resources.end(), final_output_resource_) != pe.output_resources.end()) {
             final_pass_was_dirty = true;
+        }
+    }
+
+    // Stage 8: frame-end timestamp (BOTTOM_OF_PIPE so all dispatches complete before the blit transfer).
+    {
+        auto& ts = ts_pools_[ts_pool_write_idx_];
+        const uint32_t qi = ts_query_idx_;
+        if (ts.pool != VK_NULL_HANDLE && qi < ts.capacity) {
+            // Extend the reset range to include this query.
+            if (qi >= ts.capacity) {}  // skip if full
+            else {
+                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, ts.pool, qi);
+            }
         }
     }
 
@@ -1427,6 +1695,7 @@ void Engine::update_node_params_by_id(NodeId node_id, const std::vector<float>& 
                            (VkDeviceSize)(n    * sizeof(float)));
     }
     param_dirty_ = true;
+    any_pass_dirty_.store(true);
     // Seed dirty_set_ (Layer 2) before mark_downstream_dirty_ (Layer 3). Without this, record_dispatch would early-exit and re-publish stale pixels. See DirtySet.hpp for three-layer state machine.
     dirty_set_.mark_node(node_id);
     mark_downstream_dirty_(node_id);
@@ -1496,6 +1765,7 @@ void Engine::update_node_params_by_name(NodeId node_id,
         vmaFlushAllocation(ctx_.allocator(), param_alloc_[param_write_idx_], off, size);
     }
     param_dirty_ = true;
+    any_pass_dirty_.store(true);
     // See update_node_params_by_id above. Seed Layer 2 (DirtySet) ourselves or next record_dispatch will early-exit.
     dirty_set_.mark_node(node_id);
     mark_downstream_dirty_(node_id);

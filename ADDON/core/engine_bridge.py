@@ -32,26 +32,40 @@ def _find_node_tree():
 
 def _resolve_preview_root(tree):
     """Pick the node whose upstream subgraph is the current preview.
-    Prefers TS_Output_Node; falls back to the active node, then any TS node.
     Returns (root, name_to_id, id_to_name, topo_order, reachable_ids).
     """
     name_to_id, id_to_name = _build_id_maps(tree)
-    root = None
+
+    # Check if Output node has any connected inputs (is it being *used*?)
+    output_node = None
+    output_has_inputs = False
     for n in tree.nodes:
         if n.bl_idname == 'TS_Output_Node':
-            root = n
+            output_node = n
+            for sock in n.inputs:
+                if sock.is_linked:
+                    output_has_inputs = True
+                    break
             break
-    if root is None:
+
+    # When Output exists but has no connections, ignore it and let
+    # the active node (or any TS node) drive the preview.
+    if output_node is None or not output_has_inputs:
         active = getattr(tree.nodes, "active", None)
         if (active is not None
                 and getattr(active, "sv_type", None) is not None
                 and active.name in name_to_id):
             root = active
         else:
-            for n in tree.nodes:
-                if getattr(n, "sv_type", None) is not None and n.name in name_to_id:
-                    root = n
-                    break
+            # If Output has no connections, fall back to active or any TS node.
+            root = output_node if output_node else None
+            if root is None:
+                for n in tree.nodes:
+                    if getattr(n, "sv_type", None) is not None and n.name in name_to_id:
+                        root = n
+                        break
+    else:
+        root = output_node
     if root is None:
         return None, name_to_id, id_to_name, [], set()
     order, reachable = _get_active_subgraph_topo_order(tree, root, name_to_id)
@@ -598,10 +612,10 @@ def _check_active_node_change(tree, engine):
     except Exception as e:
         _tslog.error(f"set_active_node({new_id}) failed: {e}")
         return False
+    if not gen:
+        return False
     _last_active_node_id = new_id
-    if gen:
-        _submitted_generation = gen
-    # invalidate param hash and fingerprint on every active change
+    _submitted_generation = gen
     _last_pushed_param_hash = None
     _last_active_fingerprint = _active_subgraph_fingerprint(tree)
     return True

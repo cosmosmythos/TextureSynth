@@ -28,7 +28,7 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
     f13.synchronization2 = VK_TRUE;
     f13.dynamicRendering = VK_TRUE;
 
-    VkPhysicalDeviceVulkan12Features f12{};
+    VkPhysicalDeviceVulkan12Features f12 {};
     f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     f12.descriptorIndexing                                = VK_TRUE;
     f12.shaderSampledImageArrayNonUniformIndexing         = VK_TRUE;
@@ -79,6 +79,15 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
     ok &= check_storage(VK_FORMAT_R16G16_SFLOAT,           "R16G16_SFLOAT");
     ok &= check_storage(VK_FORMAT_R16G16B16A16_SFLOAT,     "R16G16B16A16_SFLOAT");
     if (!ok) { log_error("Required storage formats not supported"); return false; }
+
+    // GPU timestamp period (nanoseconds per tick).
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physical_device_, &props);
+    timestamp_period_ = props.limits.timestampPeriod;
+    if (!props.limits.timestampComputeAndGraphics) {
+        log_warn("VulkanContext: timestampComputeAndGraphics is false — "
+                 "timestamps may return zero on compute queue");
+    }
 
     // Graphics queue
     auto gq  = vkb_device_.get_queue(vkb::QueueType::graphics);

@@ -16,6 +16,7 @@
 #include "engine/AsyncReadback.hpp"
 #include "engine/DirtySet.hpp"
 #include "engine/EngineError.hpp"
+#include <array>
 #include <atomic>
 #include <future>
 #include <memory>
@@ -52,6 +53,21 @@ struct RetiredPass {
     uint32_t frames_remaining = MAX_FRAMES_IN_FLIGHT + 2;
 };
 
+struct PassTiming {
+    NodeId       node_id      = 0;
+    uint32_t     pass_index   = 0;
+    bool         is_chain     = false;
+    double       duration_us  = 0.0;
+    bool         available    = false;
+};
+
+struct TimestampPool {
+    VkQueryPool           pool         = VK_NULL_HANDLE;
+    uint32_t              capacity     = 0;    // how many queries the pool was created for
+    std::vector<uint64_t> cached_raw;          // last completed readback (ts ticks)
+    std::vector<PassTiming> cached_timings;    // decoded to us with per-pass metadata
+};
+
 // Stage 6: per-chain runtime state. Pipeline built once per cache key; tail pass index gives the out_storage_slot for the chain's final imageStore.
 struct ChainExec {
     std::unique_ptr<ComputePipeline> pipeline;
@@ -64,6 +80,9 @@ struct ChainExec {
     // ChainShaderEmitter::build_emit_plan). Fixes the mid-chain external
     // input bug where only head.in_sampled_slots was propagated.
     uint32_t chain_in_sampled_slots[MAX_PASS_INPUTS] = {};
+    // Parallel array: ResourceUUID for each external input (used for layout
+    // transitions in record_chain_dispatch_). Zero-initialized = unused.
+    ResourceUUID chain_external_resources[MAX_PASS_INPUTS] = {};
 };
 
 class Engine {
@@ -201,6 +220,9 @@ public:
     // Async readback ring. Public because bindings.cpp drives it.
     AsyncReadback& async_readback() { return async_; }
 
+    // Stage 8: per-pass GPU timing results from the most recently completed frame.
+    const std::vector<PassTiming>& last_pass_timings() const { return last_pass_timings_; }
+
     // Dirty tracking: skip GPU submit when nothing changed
     bool any_pass_dirty() const noexcept       { return any_pass_dirty_.load(); }
     void mark_all_clean() { 
@@ -236,6 +258,16 @@ private:
     // Stage 6: dispatch a single chain. Issues vkCmdDispatch + layout transitions for head inputs and tail output. Bypassed chains become clear-to-zero.
     void record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
                                 uint32_t gx, uint32_t gy, size_t chain_idx);
+
+    // Stage 8: per-pass GPU timestamp infrastructure.
+    static constexpr uint32_t TIMESTAMP_POOL_COUNT = 3;  // matches AsyncReadback::SLOT_COUNT
+    bool create_timestamp_pools_();
+    void destroy_timestamp_pools_();
+    void poll_timestamps_();
+    uint32_t ts_pool_write_idx_ = 0;
+    uint32_t ts_query_idx_ = 0;  // increments per query within the current frame
+    std::array<TimestampPool, TIMESTAMP_POOL_COUNT> ts_pools_{};
+    std::vector<PassTiming> last_pass_timings_;
 
     // Reverse-construction-order tear-down. Tolerates not-fully-initialised engine and ignores VK_ERROR_DEVICE_LOST. Used by shutdown and init rollback.
     void shutdown_internal_();
@@ -335,6 +367,7 @@ private:
         // Phase 1c: mirror ComputePass::bypassed so the install path can
         // copy it onto the PassExec once the future resolves.
         bool                       bypassed = false;
+        int                        param_base_slot = 0;
     };
 
     std::vector<PendingPass> pending_passes_;

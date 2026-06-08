@@ -486,5 +486,15 @@ NB_MODULE(texturesynth_core, m) {
              "Async: returns (pixels, generation) tuple if a job finished, else None.")
         .def("async_in_flight", [](Engine& e) {
              return e.async_readback().any_in_flight();
+        })
+        .def_prop_ro("last_pass_timings", [](Engine& e) {
+            return e.last_pass_timings();
         });
+
+    nb::class_<PassTiming>(m, "PassTiming")
+        .def_rw("node_id",     &PassTiming::node_id)
+        .def_rw("pass_index",  &PassTiming::pass_index)
+        .def_rw("is_chain",    &PassTiming::is_chain)
+        .def_rw("duration_us", &PassTiming::duration_us)
+        .def_rw("available",   &PassTiming::available);
 }

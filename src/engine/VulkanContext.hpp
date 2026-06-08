@@ -37,6 +37,9 @@ public:
     // Pipeline cache shared across all ComputePipeline::create() calls.
     VkPipelineCache   pipeline_cache()  const { return pipeline_cache_; }
 
+    // GPU timestamp period (nanoseconds per timestamp tick). Read from VkPhysicalDeviceLimits at init.
+    double            timestamp_period() const { return timestamp_period_; }
+
     // Thread-safe queue submission. Hold for duration of vkQueueSubmit (NOT thread-safe per spec).
     std::mutex& graphics_queue_mutex() { return graphics_queue_mu_; }
     std::mutex& transfer_queue_mutex() {
@@ -72,6 +75,7 @@ private:
     VmaAllocator     allocator_       = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
     VkPipelineCache  pipeline_cache_  = VK_NULL_HANDLE;
+    double           timestamp_period_ = 1.0;
 
     // PFN_vkSetDebugUtilsObjectNameEXT, loaded at init() if available. Cached so per-object naming is one call, not GetDeviceProcAddr per object.
     PFN_vkSetDebugUtilsObjectNameEXT set_debug_name_fn_ = nullptr;
