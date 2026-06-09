@@ -32,6 +32,7 @@ class TS_Blend_Node(TextureSynthNode):
     sv_type   = SV_TYPE
     ts_category = 'BLEND'
     supports_format_override = False
+    _as_socket_names = frozenset({'mask'})
 
     mode: bpy.props.EnumProperty(
         name="Mode",

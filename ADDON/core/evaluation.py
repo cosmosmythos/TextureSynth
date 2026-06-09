@@ -1,5 +1,6 @@
 """Evaluation Loop: manages the event-driven updates (msgbus) and minimal timer polling.
 Drains Vulkan compilation fence signals and GPU readbacks periodically."""
+import time
 import bpy
 from . import cpp_module
 from . import engine_bridge
@@ -11,6 +12,10 @@ _compiling      = False
 _force_render   = False
 _last_active_node_id = None
 
+# Phase 2 (Holster): proxy-scale interactive rendering.
+# Tracks the last interactive event timestamp for mouse-release detection.
+_last_interactive_time = 0.0
+
 _msgbus_owner = object()
 
 
@@ -20,8 +25,9 @@ def request_topology_update():
 
 
 def request_param_update():
-    global _params_dirty
+    global _params_dirty, _last_interactive_time
     _params_dirty = True
+    _last_interactive_time = time.time()
 
 
 def _find_ts_trees():
@@ -131,6 +137,15 @@ def _evaluation_timer():
     except Exception as e:
         _tslog.error(f"active-node poll exception: {e}")
 
+    # Detect topology changes via fingerprint (catches link changes missed by tree.update())
+    try:
+        if tree is not None and engine_bridge._submitted_generation:
+            fp = engine_bridge._active_subgraph_fingerprint(tree)
+            if fp != engine_bridge._last_active_fingerprint:
+                request_topology_update()
+    except Exception as e:
+        _tslog.error(f"topology fingerprint poll exception: {e}")
+
     # Resubmit graph if topology changed.
     if _topology_dirty:
         _topology_dirty = False
@@ -150,6 +165,17 @@ def _evaluation_timer():
     if _compiling and ready:
         _compiling = False
         _force_render = True
+
+    # Phase 2 (Holster): mouse-release detection for proxy→full-res transition.
+    # If no interactive events for >100ms and proxy is active, set full-res.
+    global _last_interactive_time
+    idle_duration = time.time() - _last_interactive_time
+    if idle_duration > 0.1 and _last_interactive_time > 0:
+        current_scale = engine.proxy_scale()
+        if current_scale > 1:
+            engine.set_proxy_scale(1)
+            _force_render = True
+            _last_interactive_time = 0.0
 
     # Render if graph is ready and params or topology changed.
     needs_dispatch = ready and (_force_render or _params_dirty)
@@ -192,9 +218,10 @@ def register():
 
 def unregister():
     global _topology_dirty, _params_dirty, _compiling, _force_render
-    global _last_active_node_id
+    global _last_active_node_id, _last_interactive_time
     _topology_dirty = _params_dirty = _compiling = _force_render = False
     _last_active_node_id = None
+    _last_interactive_time = 0.0
     engine_bridge._last_active_fingerprint = None
     engine_bridge._submitted_generation = 0
     engine_bridge._last_applied_generation = 0

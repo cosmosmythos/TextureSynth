@@ -282,7 +282,7 @@ def _build_graph_and_params(tree):
             continue
         # Compute dst_idx: as_socket params occupy slots [inputs_n, inputs_n+count)
         # matching C++ GraphCompiler ordering. Blender's socket order may differ.
-        as_names = getattr(dst, '_as_socket_names', frozenset())
+        as_names = _get_node_as_socket_names(dst)
         dst_idx = 0
         for sock in dst.inputs:
             if sock == link.to_socket:
@@ -298,6 +298,47 @@ def _build_graph_and_params(tree):
         graph.add_connection(s_id, src_idx, d_id, dst_idx)
 
     return graph, pc, node_params
+
+
+def _get_node_as_socket_names(node):
+    """Resolve as_socket param names for a node. Checks instance attr first,
+    then class attr, then falls back to C++ node library or JSON manifest."""
+    names = getattr(node, '_as_socket_names', None)
+    if names and isinstance(names, frozenset) and names:
+        return names
+    sv = getattr(node, 'sv_type', None)
+    if sv is None:
+        return frozenset()
+    core = cpp_module.get_core()
+    if core is not None:
+        engine = cpp_module.get_engine()
+        if engine is not None:
+            try:
+                lib = engine.node_library()
+                all_types = lib.all()
+                nt = all_types.get(sv)
+                if nt is not None:
+                    return frozenset(
+                        p.name for p in nt.params
+                        if getattr(p, 'as_socket', False)
+                    )
+            except Exception:
+                pass
+    import os, json
+    try:
+        import __main__
+        addon_root = os.path.dirname(os.path.dirname(__file__))
+        manifest_path = os.path.join(addon_root, 'shader_assets', 'nodes', f'{sv}.node.json')
+        if os.path.isfile(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return frozenset(
+                p['name'] for p in data.get('params', [])
+                if p.get('as_socket', False)
+            )
+    except Exception:
+        pass
+    return frozenset()
 
 
 def _build_push_constants(tree):
@@ -341,14 +382,22 @@ def _get_resolution():
         return 1024
 
 
-def _get_render_resolution(res):
+def _get_proxy_scale():
+    """Get proxy scale divisor from scene property. 1 = full resolution."""
     try:
         scale_str = getattr(bpy.context.scene, "texturesynth_proxy_scale", '1.0')
         scale = float(scale_str)
-        scaled = int(res * scale)
-        return max(8, (scaled + 7) // 8 * 8)
+        if scale <= 0:
+            return 1
+        # Convert float scale (e.g. 0.125) to divisor (e.g. 8)
+        divisor = int(round(1.0 / scale))
+        return max(1, divisor)
     except Exception:
-        return res
+        return 1
+
+
+def _get_render_resolution(res):
+    return res  # Phase 2: resolution is always full; proxy scale handled by engine dispatch
 
 
 def _blit_to_image(pixels, width, height):
@@ -499,8 +548,8 @@ def submit_graph():
         return 0
 
     res = _get_resolution()
-    render_res = _get_render_resolution(res)
-    engine.set_resolution(render_res, render_res)
+    engine.set_resolution(res, res)
+    engine.set_proxy_scale(_get_proxy_scale())
 
     precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
     if precision_str == 'R8':
@@ -573,8 +622,8 @@ def update_params_only(force_submit: bool = False):
         return 'invalid'
 
     res = _get_resolution()
-    render_res = _get_render_resolution(res)
-    engine.set_resolution(render_res, render_res)
+    engine.set_resolution(res, res)
+    engine.set_proxy_scale(_get_proxy_scale())
     precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
     engine.set_precision(0 if precision_str == 'R8'
                          else 1 if precision_str == 'R16' else 2)

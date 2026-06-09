@@ -159,12 +159,16 @@ def generate_node_classes(core_module):
             continue
 
         class_name = f"TS_{type_id.capitalize()}_Node"
+        as_socket_set = frozenset(
+            p.name for p in node_type.params if getattr(p, 'as_socket', False)
+        )
         class_dict = {
             'bl_idname': class_name,
             'bl_label':  node_type.display_name,
             'sv_type':   type_id,
             'ts_category': _CATEGORY_BY_SVTYPE.get(type_id, 'FILTER'),
             'supports_format_override': _supports_format_override(type_id, node_type),
+            '_as_socket_names': as_socket_set,
             '__annotations__': {},
         }
 
