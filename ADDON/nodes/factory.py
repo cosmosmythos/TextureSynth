@@ -62,10 +62,11 @@ class _JSONParam:
 
 
 class _JSONSocket:
-    __slots__ = ('name', 'format')
+    __slots__ = ('name', 'format', 'default')
     def __init__(self, d):
         self.name   = d['name']
         self.format = d.get('type', 'vec4')
+        self.default = d.get('default', None)
 
 
 class _JSONNodeType:
@@ -232,7 +233,10 @@ def generate_node_classes(core_module):
                     else:
                         override = _format_name_to_override(fmt)
                     in_type = socket_type_for_format(override)
-                    self.inputs.new(in_type, label)
+                    new_sock = self.inputs.new(in_type, label)
+                    if sock.format == 'float' and sock.default is not None:
+                        new_sock.default_value = float(sock.default)
+                        setattr(self, sock.name, float(sock.default))
 
                 if node_type_ref.outputs:
                     fmt = getattr(node_type_ref.outputs[0], 'format', 'vec4')
@@ -275,12 +279,21 @@ def generate_node_classes(core_module):
         p_as_socket = [getattr(p, 'as_socket', False) for p in node_type.params]
         class_dict['draw_buttons'] = make_draw_buttons(param_names, p_as_socket)
 
+        # Collect float input names+defaults for SSBO layout alignment with fused emitter.
+        float_input_specs = [(inp.name, float(inp.default))
+                             for inp in node_type.inputs
+                             if inp.format == 'float' and inp.default is not None]
+
         # Define get_parameters positional mapping.
-        def make_get_parameters(p_names):
+        # SSBO layout: [manifest_params..., float_input_defaults...]
+        def make_get_parameters(p_names, float_specs):
             def get_parameters_func(self):
-                return [float(getattr(self, p)) for p in p_names]
+                result = [float(getattr(self, p)) for p in p_names]
+                for name, default in float_specs:
+                    result.append(float(getattr(self, name, default)))
+                return result
             return get_parameters_func
-        class_dict['get_parameters'] = make_get_parameters(param_names)
+        class_dict['get_parameters'] = make_get_parameters(param_names, float_input_specs)
 
         # Define get_named_parameters dictionary mapping.
         def make_get_named_parameters(p_names):

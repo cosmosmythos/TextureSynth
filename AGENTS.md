@@ -6,21 +6,20 @@
 ## 1. Technical Explanations & Style
 The user is a **3D texture artist/developer**. Every architecture/design answer MUST include these 3 layers in order:
 
-1. **Artist Mental Model** (4-12 lines)
+1. **Workflow/Pipeline** (4-12 lines)
    - Use TEXTURESYNTH terms: *graph, node, chain, output_node, dispatch, image, preview, slider*
-   - Use Blender terms: *node editor, materials, render, viewport*
-   - **BANNED**: Outside analogies (e.g., "coffee shop", "car wash", "factory assembly line")
-   - Show what the artist *sees* and *does* (clicks, errors). Include a small "What changes for me?" table.
-   - Conceptual questions get ONLY this layer. Always answer "what changes day-to-day?" FIRST and ONLY.
+   - Use Blender terms: *node editor, readback*
+   - Include a small table.
+   - Vulkan, c++ etc. code explanations(simple, like to a person learning programming)
 2. **Architecture / Data Flow**
-   - Which structs/files change. Cite `file:line`. (The artist sees the *result* of this, not the layer itself).
+   - Which structs/files change. Cite `file:line` & it's connections to the rest of texturesynth code and why.
 3. **Code/Pseudo-code Example**
-   - GLSL/C++/JSON snippets. Walk through a concrete example (e.g., perlin → invert → grayscale).
+   - GLSL/C++/JSON snippets. Walk through a concrete example.
 
 **Hard Style Rules:**
 - NO filler ("let me explain", "in this response"). Use tables, bullets, short paragraphs.
 - Always ground abstract terms: e.g., "thread-local register = a local variable in the shader = a slot on the GPU chip that holds 4 floats".
-- If user says "I can't picture this", the artist layer is missing. Reset to it.
+- If user says "I still don't get it", "I can't picture this" etc., use simple flowchart/diagrams.
 - **Plan mode**: Use this style for analysis (do not edit files).
 - **Build mode**: Apply style AND make file changes without surrounding commentary.
 
@@ -50,7 +49,7 @@ The user is a **3D texture artist/developer**. Every architecture/design answer 
 **When to wipe `build/` (WARN USER FIRST):**
 - User explicitly says "nuke build"
 - MSVC compiler upgrade or FetchContent `GIT_TAG` change
-- *If accidentally wiped*: Apologize and stop. (Tip: `FETCHCONTENT_FULLY_DISCONNECTED=OFF` repopulates cache if online).
+- *If accidentally wiped*: Note to user and stop!! (Tip: `FETCHCONTENT_FULLY_DISCONNECTED=OFF` repopulates cache if online).
 
 ---
 
@@ -58,18 +57,10 @@ The user is a **3D texture artist/developer**. Every architecture/design answer 
 A complete Blender 4.2+ extension exists at `ADDON/` in the repo root.
 **🚫 DO NOT create `src/texturesynth_addon/` or `src/blender_addon/`. Always `ls ADDON/` first.**
 
-**Reuse these existing files:**
-- `ADDON/core/cpp_module.py` (singleton engine loader)
-- `ADDON/core/engine_bridge.py` (ONLY file that talks to `texturesynth_core`)
-- `ADDON/utils/dll_loader.py` (Windows DLL path setup)
-- `ADDON/operators/update.py` & `connect.py` (standard ops)
-- `ADDON/nodes/base.py::TextureSynthNode.stable_id()` (uint64 ID derivation)
-- `ADDON/blender_manifest.toml`
-
 ---
 
 ## 4. Installed Extension Folder is STRICTLY OFF LIMITS
-**🚫 DO NOT touch:** `%APPDATA%\Blender Foundation\Blender\{ver}\extensions\user_default\{id}\`
+**🚫 DO NOT touch:** `%APPDATA%\Blender Foundation\Blender\{ver}\extensions\user_default\{id}\` without user's permission.
 This is the user's working install.
 - DO NOT `Copy-Item -Recurse -Force` into it.
 - DO NOT edit its `blender_manifest.toml` or delete files.
@@ -78,20 +69,10 @@ This is the user's working install.
 
 ---
 
-## 5. Engine Architecture Invariants (Do Not Break)
-| Invariant | Why |
-|---|---|
-| **Raw float pixels only, no file I/O** | Industry standard. No `libpng`/`stb_image_write` in engine. |
-| **`bake()` returns `vector<BakedImage>`** | Not file paths. Bindings convert to numpy/`bpy.data.images` (`float_buffer=True`). |
-| **`BakedImage` struct** | `{ name, w, h, std::vector<float> pixels }` (RGBA32F, row-major, no padding). |
-| **Blender `Node.mute` → engine `muted`** | Rewire/pass-through. NOT `bypassed` (which means output=zero). |
-| **`output_node` = active/preview source** | Maps to `bpy.context.active_node` or `Output` node's `Result`. |
-| **`output_targets[]` = bake targets** | PBR Render pattern (Base Color, Normal, etc.). `Graph::OutputTarget { NodeId source_node, std::string name }` |
-| **`ShaderCache` sidecar** | `<hash>.spv` + `<hash>.spv.key.json`. Invalidation needs full FusedVariantKey. |
 
 ---
 
-## 6. Language / API Gotchas
+## 5. Language / API Gotchas
 | Gotcha | Mitigation |
 |---|---|
 | `EnumXxx.None` won't parse in Python | Use `EnumXxx['None']` (Python keyword issue). |
@@ -105,7 +86,7 @@ This is the user's working install.
 
 ---
 
-## 7. Workflow Rules
+## 6. Workflow Rules
 
 **🔍 Before Writing Code:**
 1. `ls` the directory (know what exists).
@@ -122,7 +103,7 @@ Get-ChildItem -Path .\ADDON -Recurse -Directory -Filter __pycache__ -ErrorAction
 
 ---
 
-## 8. Code Style: No Verbose Commentary
+## 7. Code Style: No Verbose Commentary
 - **No huge blocks of comments** in code. Code should be self-documenting via clear naming.
 - **No tutorial-style docstrings** that re-state what a function does. One-line docstrings are fine.
 - **3-layer explanations** (artist/architecture/code) are for *conversations with the user*, not for source files.

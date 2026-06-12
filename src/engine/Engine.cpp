@@ -1,6 +1,8 @@
 #include "engine/Engine.hpp"
+#include "engine/EngineBarriers.hpp"
 #include "engine/Logging.hpp"
 #include "engine/NodeRegistryLoader.hpp"
+#include "engine/graphfusion/FusedGraphCompiler.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -11,35 +13,6 @@
 #include <unordered_set>
 
 namespace te {
-
-// Specialization helper. Builds VkSpecializationInfo from variant key constants. Returns nullptr when specialization_count == 0. Data lives only for create call duration (Vulkan reads synchronously).
-static const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& vk,
-                                                   VkSpecializationMapEntry (&out_entries)[8],
-                                                   VkSpecializationInfo&   out_info) {
-    if (vk.specialization_count == 0) return nullptr;
-    const uint32_t n = vk.specialization_count > 8 ? 8 : vk.specialization_count;
-    for (uint32_t i = 0; i < n; ++i) {
-        out_entries[i].constantID = i;
-        out_entries[i].offset     = i * sizeof(uint32_t);
-        out_entries[i].size       = sizeof(uint32_t);
-    }
-    out_info.mapEntryCount = n;
-    out_info.pMapEntries   = out_entries;
-    out_info.dataSize      = n * sizeof(uint32_t);
-    out_info.pData         = vk.specialization.data();
-    return &out_info;
-}
-
-// Lifecycle guard. Top of every public mutator that requires Ready. Holds entry_mu_ for function body. Concurrent shutdown/init blocks until method returns.
-#define TE_GUARD_READY(call)                                                     \
-    std::lock_guard<std::recursive_mutex> te_lk(entry_mu_);                       \
-    if (state_.load(std::memory_order_acquire) != EngineState::Ready) {          \
-        set_error_(EngineErrorCode::UseAfterShutdown,                            \
-                   std::string("engine not Ready (state=")                       \
-                   + std::to_string((int)state_.load()) + ")",                   \
-                   EnginePhase::Idle);                                           \
-        return call;                                                             \
-    }
 
 // init. Holds entry_mu_ for entire body. Concurrent shutdown blocks until init finishes. State machine: Uninitialized/ShutDown/Error -> Initializing -> Ready (or -> Error on failure).
 bool Engine::init(VkSurfaceKHR surface,
@@ -416,103 +389,6 @@ void Engine::destroy_global_samplers_() {
 }
 
 
-void Engine::assign_bindless_slots_(PassExec& pe) {
-
-    // Outputs
-    pe.output_count = static_cast<uint32_t>(pe.output_resources.size());
-    for (uint32_t t = 0; t < pe.output_count && t < MAX_PASS_OUTPUTS; ++t) {
-        const ResourceUUID& rid = pe.output_resources[t];
-        auto it_o = res_storage_slot_.find(rid);
-        if (it_o == res_storage_slot_.end()) {
-            uint32_t slot = bindless_.alloc_storage_slot();
-            if (slot == BindlessTable::INVALID_SLOT) {
-                log_error("Bindless storage exhausted");
-                slot = 0;
-            }
-            else {
-                res_storage_slot_[rid] = slot;
-                if (auto* r = resources_.get(rid))
-                    bindless_.write_storage(ctx_, slot, r->view);
-            }
-            pe.out_storage_slots[t] = slot;
-        }
-        else {
-            pe.out_storage_slots[t] = it_o->second;
-        }
-    }
-
-
-    // Inputs: sampled slot per input resource.
-    pe.input_count = static_cast<uint32_t>(pe.input_resources.size());
-    for (uint32_t i = 0; i < pe.input_count && i < MAX_PASS_INPUTS; ++i) {
-        const ResourceUUID rid = pe.input_resources[i];
-        uint32_t slot = BindlessTable::INVALID_SLOT;
-
-        // Select per-format dummy based on this input socket's expected format.
-        ChannelFormat fmt = ChannelFormat::RGBA;
-        if (i < pe.input_formats.size())
-            fmt = pe.input_formats[i];
-        uint32_t dummy_slot = dummy_sampled_slots_[static_cast<size_t>(fmt)];
-
-        if (rid.node_id == 0) {
-            auto eit = image_registry_.find(pe.node_id);
-            if (eit != image_registry_.end() && eit->second) {
-                auto sit = ext_sampled_slot_.find(pe.node_id);
-                if (sit == ext_sampled_slot_.end()) {
-                    slot = bindless_.alloc_sampled_slot();
-                    if (slot == BindlessTable::INVALID_SLOT) slot = dummy_slot;
-                    else {
-                        ext_sampled_slot_[pe.node_id] = slot;
-                        bindless_.write_sampled(ctx_, slot, eit->second->view(),
-                                                VK_IMAGE_LAYOUT_GENERAL);
-                    }
-                } else slot = sit->second;
-            } else slot = dummy_slot;
-        } else {
-            auto sit = res_sampled_slot_.find(rid);
-            if (sit == res_sampled_slot_.end()) {
-                slot = bindless_.alloc_sampled_slot();
-                if (slot == BindlessTable::INVALID_SLOT) slot = dummy_slot;
-                else {
-                    res_sampled_slot_[rid] = slot;
-                    if (auto* r = resources_.get(rid))
-                        bindless_.write_sampled(ctx_, slot, r->view, VK_IMAGE_LAYOUT_GENERAL);
-                }
-            } else slot = sit->second;
-        }
-        pe.in_sampled_slots[i] = slot;
-    }
-    for (uint32_t i = pe.input_count; i < MAX_PASS_INPUTS; ++i)
-        pe.in_sampled_slots[i] = dummy_sampled_slots_[static_cast<size_t>(ChannelFormat::RGBA)];
-}
-
-
-bool Engine::create_pass_pipeline_(PassExec& pe,
-                                   NodeId node_id,
-                                   const std::string& type_id,
-                                   const std::string& error_prefix,
-                                   const ShaderVariantKey& variant_key,
-                                   const std::vector<uint32_t>& spirv) {
-    auto pipe = std::make_unique<ComputePipeline>();
-    const std::string pipe_name = "pipe_node_" + std::to_string(node_id) + "_" + type_id;
-    pipe->set_name(pipe_name);
-    // VkSpecializationInfo is non-extensible; value-init only (no sType).
-    VkSpecializationMapEntry entries[8];
-    VkSpecializationInfo     spec{};
-    const VkSpecializationInfo* spec_ptr = build_spec_info(variant_key, entries, spec);
-    if (!pipe->create(ctx_, spirv, bindless_.pipeline_layout(), spec_ptr)) {
-        set_error_(EngineErrorCode::PipelineCreation, error_prefix,
-                   EnginePhase::GraphCompileFinish, node_id);
-        return false;
-    }
-    pe.pipeline = std::move(pipe);
-    ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
-                        (uint64_t)pe.pipeline->pipeline(),
-                        pe.pipeline->name());
-    return true;
-}
-
-
 uint64_t Engine::set_graph(const Graph& graph) {
     TE_GUARD_READY(0);
     clear_error();
@@ -527,7 +403,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
         return 0;
     }
 
-    auto compile_result = GraphCompiler::compile(ir_result.ir, node_lib_);
+    auto compile_result = FusedGraphCompiler::compile(ir_result.ir, node_lib_, graph.output_node);
     if (!compile_result.success) {
         set_error_(EngineErrorCode::GraphCompile, compile_result.error,
                    EnginePhase::GraphSubmit);
@@ -556,7 +432,8 @@ uint64_t Engine::set_graph(const Graph& graph) {
     std::string rerr;
     if (!resources_.allocate_for_graph(ctx_, current_ir_, node_lib_, output_w_, output_h_,
                                         texture_format_, &rerr,
-                                        &compile_result.pass_plan.color_classes)) {
+                                        &compile_result.pass_plan.color_classes,
+                                        &compile_result.pass_plan.active_resources)) {
         set_error_(EngineErrorCode::GraphCompile, rerr, EnginePhase::GraphSubmit);
         return 0;
     }
@@ -602,14 +479,30 @@ uint64_t Engine::set_graph(const Graph& graph) {
     for (auto& pp : pending_passes_) if (pp.fut.valid()) pp.fut.wait();
     pending_passes_.clear();
 
+    const auto& cip = compile_result.pass_plan.chain_index_of_pass;
+
+    // Step 3: Check per-node cache (skip chain-member passes — their shader lives in the chain).
     bool all_cached = true;
-    std::vector<std::vector<uint32_t>> cached_spv(compile_result.pass_plan.passes.size()); // sparse: pre-size, write by index
+    std::vector<std::vector<uint32_t>> cached_spv(compile_result.pass_plan.passes.size());
     for (size_t i = 0; i < compile_result.pass_plan.passes.size(); ++i) {
         const auto& pass = compile_result.pass_plan.passes[i];
-        if (pass.kind != PassKind::Dispatch) continue;
+        if (pass.kind != PassKind::Compute) continue;
+        if (i < cip.size() && cip[i] != UINT32_MAX) continue;  // chain member: skip
         auto blob = cache_->load(pass.variant_key);
         if (!blob) { all_cached = false; break; }
-        cached_spv[i] = std::move(*blob);  // sparse write: index by pass position
+        cached_spv[i] = std::move(*blob);
+    }
+
+    // Also check fused chain cache.
+    std::vector<std::vector<uint32_t>> cached_fused_spv(compile_result.pass_plan.chains.size());
+    if (all_cached) {
+        for (size_t ci = 0; ci < compile_result.pass_plan.chains.size(); ++ci) {
+            const auto& ch = compile_result.pass_plan.chains[ci];
+            if (ch.glsl.empty() || ch.bypassed) continue;
+            auto blob = cache_->load(ch.variant_key);
+            if (!blob) { all_cached = false; break; }
+            cached_fused_spv[ci] = std::move(*blob);
+        }
     }
 
     if (all_cached) {
@@ -624,13 +517,11 @@ uint64_t Engine::set_graph(const Graph& graph) {
             pe.input_resources  = pass.input_resources;
             pe.input_formats    = pass.input_formats;
             pe.param_base_slot  = pass.param_base_slot;
-            pe.output_layout_is_general = false;
             pe.bypassed         = pass.bypassed;
 
-            if (pass.kind == PassKind::Dispatch) {
-                // Bypassed passes: no pipeline; executor clears output to zero.
-                // We still assign bindless slots so downstream passes can resolve.
-                if (!pass.bypassed) {
+            if (pass.kind == PassKind::Compute) {
+                bool is_chain_member = (i < cip.size() && cip[i] != UINT32_MAX);
+                if (!pass.bypassed && !is_chain_member) {
                     if (!create_pass_pipeline_(pe, pass.node_id, pass.type_id,
                             "pipeline creation failed for node " + std::to_string(pass.node_id),
                             pass.variant_key, cached_spv[i])) {
@@ -649,9 +540,11 @@ uint64_t Engine::set_graph(const Graph& graph) {
         return gen;
     }
 
+    // Step 5: Async path — set chain_member flag, skip compile for chain members.
     pending_passes_.clear();
     pending_passes_.reserve(compile_result.pass_plan.passes.size());
-    for (auto& pass : compile_result.pass_plan.passes) {
+    for (size_t i = 0; i < compile_result.pass_plan.passes.size(); ++i) {
+        const auto& pass = compile_result.pass_plan.passes[i];
         PendingPass pp;
         pp.name             = "node_" + std::to_string(pass.node_id);
         pp.type_id          = pass.type_id;
@@ -664,9 +557,9 @@ uint64_t Engine::set_graph(const Graph& graph) {
         pp.variant_key      = pass.variant_key;
         pp.bypassed         = pass.bypassed;
         pp.param_base_slot  = pass.param_base_slot;
-        if (pass.kind == PassKind::Dispatch && !pass.bypassed) {
-            // Phase 1c: bypassed passes skip the async shader compile —
-            // the executor clears their output to zero.
+        bool is_chain_member = (i < cip.size() && cip[i] != UINT32_MAX);
+        pp.chain_member     = is_chain_member;
+        if (pass.kind == PassKind::Compute && !pass.bypassed && !is_chain_member) {
             pp.fut = compiler_.compile_compute_async(pass.shader_glsl, pp.name);
         }
         pending_passes_.push_back(std::move(pp));
@@ -824,306 +717,6 @@ bool Engine::resolve_aliased_staleness_() {
 }
 
 
-void Engine::poll_pending_compiles() {
-    TE_GUARD_READY(;);
-
-    // Pull completed uploads. Rewire descriptors and mark dirty.
-    auto completed = uploader_.poll(ctx_);
-    for (auto& c : completed) {
-        image_registry_[c.node_id] = std::move(c.image);
-        images_needing_acquire_[c.node_id] = (ctx_.has_dedicated_transfer());
-        pending_uploads_.erase(
-            std::remove_if(pending_uploads_.begin(), pending_uploads_.end(),
-                [&](const PendingUpload& p){ return p.ticket == c.ticket; }),
-            pending_uploads_.end());
-
-        // Rewrite the bindless sampled slot for this external image.
-        auto sit = ext_sampled_slot_.find(c.node_id);
-        uint32_t slot = (sit == ext_sampled_slot_.end())
-                      ? bindless_.alloc_sampled_slot()
-                      : sit->second;
-        ext_sampled_slot_[c.node_id] = slot;
-        if (auto* img = image_registry_[c.node_id].get())
-            bindless_.write_sampled(ctx_, slot, img->view(), VK_IMAGE_LAYOUT_GENERAL);
-
-        // Patch any pass on this node to point at the new slot.
-        for (auto& pe : passes_) {
-            if (pe.node_id != c.node_id) continue;
-            for (uint32_t i = 0; i < pe.input_count && i < MAX_PASS_INPUTS; ++i)
-                if (pe.input_resources[i].node_id == 0)
-                    pe.in_sampled_slots[i] = slot;
-        }
-        mark_downstream_dirty_(c.node_id);
-    }
-
-    tick_retired();
-    resources_.tick(ctx_);
-
-    poll_timestamps_();
-
-    if (!pending_active_) return;
-
-    // Wait until every future is ready (non-blocking peek).
-    for (auto& pp : pending_passes_) {
-        if (pp.kind != PassKind::Dispatch) continue;
-        if (pp.bypassed) continue;             // Phase 1c: no shader compile
-        if (!pp.fut.valid()) continue;
-        if (pp.fut.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-            return; // still compiling — try next tick
-    }
-
-    // Stale build? A newer set_graph() superseded us.
-    if (pending_generation_ != compile_generation_) {
-        for (auto& pp : pending_passes_) if (pp.fut.valid()) pp.fut.get();
-        pending_passes_.clear();
-        pending_active_     = false;
-        pending_generation_ = 0;
-        log_info("discarded stale PassPlan compile result");
-        return;
-    }
-
-    // Collect results, build new pipelines.
-    std::vector<PassExec> new_passes;
-    new_passes.reserve(pending_passes_.size());
-
-    for (auto& pp : pending_passes_) {
-        PassExec pe;
-        pe.node_id          = pp.node_id;
-        pe.output_resources = pp.output_resources;
-        pe.input_resources  = std::move(pp.input_resources);
-        pe.input_formats    = std::move(pp.input_formats);
-        pe.output_layout_is_general = false;
-        pe.bypassed         = pp.bypassed;
-        pe.param_base_slot  = pp.param_base_slot;
-
-        if (pp.kind == PassKind::Dispatch) {
-            if (pp.bypassed) {
-                // Bypassed: no shader, no pipeline; executor clears to zero.
-            } else {
-                CompileResult r = pp.fut.get();
-                if (!r.success) {
-                    set_error_(EngineErrorCode::ShaderCompile,
-                               "Node " + pp.name + ": " + r.error_log,
-                               EnginePhase::GraphCompileFinish, pp.node_id);
-                    pending_passes_.clear();
-                    pending_active_     = false;
-                    pending_generation_ = 0;
-                    return;
-                }
-                cache_->store(pp.variant_key, r.spirv);
-                if (!create_pass_pipeline_(pe, pp.node_id, pp.type_id,
-                        "pipeline creation failed for " + pp.name,
-                        pp.variant_key, r.spirv)) {
-                    pending_passes_.clear();
-                    pending_active_     = false;
-                    pending_generation_ = 0;
-                    return;
-                }
-            }
-            assign_bindless_slots_(pe);
-        }
-        new_passes.push_back(std::move(pe));
-    }
-
-    // Hot-swap.
-    retire_all_passes_();
-    passes_                = std::move(new_passes);
-    final_output_resource_ = pending_final_output_;
-    installed_generation_  = pending_generation_;
-    clear_error();
-
-    // Stage 6: build ChainExec from the just-installed plan.
-    populate_chains_(pending_pass_plan_);
-    pending_passes_.clear();
-    pending_active_     = false;
-    pending_generation_ = 0;
-    log_info("PassPlan installed (compiled), passes=" + std::to_string(passes_.size())
-             + " generation=" + std::to_string(installed_generation_));
-}
-
-
-void Engine::retire_all_passes_() {
-    for (auto& pe : passes_) {
-        retired_passes_.push_back({
-            std::move(pe.pipeline),
-            MAX_FRAMES_IN_FLIGHT + 2
-        });
-    }
-    passes_.clear();
-}
-
-
-// Stage 6: build ChainExec array, chain_id_of_pass_, and membership table from PassPlan. Uses precomputed chain_index_of_pass from GraphCompiler. Computes chain_in_sampled_slots to fix the mid-chain external input bug.
-void Engine::populate_chains_(const PassPlan& plan) {
-    chain_execs_.clear();
-    chain_execs_.reserve(plan.chains.size());
-    chain_id_of_pass_ = plan.chain_index_of_pass;
-    chain_id_of_pass_.resize(passes_.size(), UINT32_MAX);
-
-    // node_id -> pass index (for head/tail lookup)
-    std::unordered_map<NodeId, uint32_t> pass_idx_by_node;
-    pass_idx_by_node.reserve(plan.passes.size());
-    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i)
-        pass_idx_by_node[plan.passes[i].node_id] = i;
-
-    std::unordered_map<ChainId, std::vector<NodeId>> membership;
-    membership.reserve(plan.chains.size());
-
-    for (size_t ci = 0; ci < plan.chains.size(); ++ci) {
-        const auto& ch = plan.chains[ci];
-        ChainExec ce;
-        ce.bypassed = ch.bypassed;
-
-        std::vector<uint32_t> member_pis;
-        for (NodeId n : ch.nodes) {
-            auto it = pass_idx_by_node.find(n);
-            if (it != pass_idx_by_node.end()) member_pis.push_back(it->second);
-        }
-        ce.member_pass_indices = member_pis;
-        if (!member_pis.empty()) {
-            ce.head_pass_index = member_pis.front();
-            ce.tail_pass_index = member_pis.back();
-        }
-
-        // Check whether any member has connected as_socket params. The chain
-        // shader emitter always reads params from SSBO, so connected as_socket
-        // textures would be silently ignored. Such nodes must use per-pass dispatch.
-        bool has_connected_as_socket = false;
-        for (size_t mi = 0; mi < member_pis.size(); ++mi) {
-            const auto& pe = passes_[member_pis[mi]];
-            const auto* vn = current_ir_.find(ch.nodes[mi]);
-            const auto* type = vn ? node_lib_.find(vn->type_id) : nullptr;
-            if (!type) continue;
-            const uint32_t inputs_n = (uint32_t)type->inputs.size();
-            uint32_t as_socket_idx = 0;
-            for (uint32_t p = 0; p < (uint32_t)type->params.size(); ++p) {
-                if (!type->params[p].as_socket) continue;
-                uint32_t socket_idx = inputs_n + as_socket_idx;
-                if (socket_idx < pe.input_resources.size() && pe.input_resources[socket_idx].node_id != 0)
-                    has_connected_as_socket = true;
-                ++as_socket_idx;
-            }
-        }
-        if (has_connected_as_socket) {
-            for (uint32_t pi : member_pis) chain_id_of_pass_[pi] = UINT32_MAX;
-            chain_execs_.push_back(std::move(ce));
-            continue;
-        }
-
-        // Compute chain_in_sampled_slots: walk member passes in order,
-        // matching ChainShaderEmitter::build_emit_plan external input layout.
-        uint32_t ext_idx = 0;
-        for (size_t mi = 0; mi < member_pis.size() && ext_idx < MAX_PASS_INPUTS; ++mi) {
-            const auto& pe = passes_[member_pis[mi]];
-            const auto* vn = current_ir_.find(ch.nodes[mi]);
-            const auto* type = vn ? node_lib_.find(vn->type_id) : nullptr;
-            if (!type) continue;
-            const uint32_t inputs_n = (uint32_t)type->inputs.size();
-            for (uint32_t s = 0; s < inputs_n; ++s) {
-                if (type->inputs[s].type != SocketType::Vec4) continue;
-                bool is_external = true;
-                if (mi > 0 && s == 0) {
-                    ResourceUUID pred_rid{ch.nodes[mi - 1], 0};
-                    const auto& pass = plan.passes[member_pis[mi]];
-                    for (uint32_t ri = 0; ri < (uint32_t)pass.input_resources.size(); ++ri) {
-                        if (pass.input_resources[ri] == pred_rid) {
-                            is_external = false;
-                            break;
-                        }
-                    }
-                }
-                if (is_external) {
-                    ce.chain_in_sampled_slots[ext_idx] = pe.in_sampled_slots[s];
-                    ce.chain_external_resources[ext_idx] = pe.input_resources[s];
-                    ++ext_idx;
-                }
-            }
-        }
-        while (ext_idx < MAX_PASS_INPUTS)
-            ce.chain_in_sampled_slots[ext_idx++] = dummy_sampled_slots_[static_cast<size_t>(ChannelFormat::RGBA)];
-
-        // Compute max pass index of all external input sources, so the
-        // dispatch loop can defer chain dispatch until producers have run.
-        ce.max_external_source_pass = 0;
-        for (uint32_t ei = 0; ei < MAX_PASS_INPUTS; ++ei) {
-            NodeId src_id = ce.chain_external_resources[ei].node_id;
-            if (src_id == 0) continue;
-            auto pit = pass_idx_by_node.find(src_id);
-            if (pit != pass_idx_by_node.end() && pit->second > ce.max_external_source_pass)
-                ce.max_external_source_pass = pit->second;
-        }
-
-        // Pipeline creation (unchanged).
-        if (!ch.glsl.empty() && !ch.bypassed) {
-            std::optional<std::vector<uint32_t>> blob;
-            if (cache_) blob = cache_->load(ch.variant_key);
-            if (!blob) {
-                CompileResult r = compiler_.compile_compute_sync(
-                    ch.glsl, "chain_" + std::to_string(ci));
-                if (r.success) {
-                    if (cache_) cache_->store(ch.variant_key, r.spirv);
-                    blob = std::move(r.spirv);
-                } else {
-                    log_warn("chain compile failed: " + r.error_log);
-                }
-            }
-            if (blob) {
-                auto pipe = std::make_unique<ComputePipeline>();
-                const std::string pipe_name = "pipe_chain_" + std::to_string(ci);
-                pipe->set_name(pipe_name);
-                if (pipe->create(ctx_, *blob, bindless_.pipeline_layout(), nullptr)) {
-                    ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
-                                        (uint64_t)pipe->pipeline(), pipe->name());
-                    ce.pipeline = std::move(pipe);
-                } else {
-                    log_warn("chain pipeline creation failed: chain " + std::to_string(ci));
-                }
-            }
-        }
-        bool ce_has_pipeline = !!ce.pipeline;
-        bool ce_bypassed = ce.bypassed;
-        chain_execs_.push_back(std::move(ce));
-        membership[(ChainId)ci] = ch.nodes;
-        // fallback to per-pass dispatch if pipeline creation failed
-        if (!ce_has_pipeline && !ce_bypassed) {
-            for (uint32_t pi : member_pis) {
-                if (pi < chain_id_of_pass_.size())
-                    chain_id_of_pass_[pi] = UINT32_MAX;
-            }
-        }
-    }
-
-    dirty_set_.set_chain_membership(std::move(membership));
-}
-
-
-void Engine::tick_retired() {
-    for (auto& r : retired_images_) if (r.frames_remaining > 0) --r.frames_remaining;
-    retired_images_.erase(
-        std::remove_if(retired_images_.begin(), retired_images_.end(),
-            [&](RetiredImage& r) {
-                if (r.frames_remaining == 0) {
-                    if (r.img) r.img->destroy(ctx_);
-                    return true;
-                }
-                return false;
-            }),
-        retired_images_.end());
-
-	for (auto& r : retired_passes_) if (r.frames_remaining > 0) --r.frames_remaining;
-	retired_passes_.erase(
-		std::remove_if(retired_passes_.begin(), retired_passes_.end(),
-			[&](RetiredPass& r) {
-				if (r.frames_remaining == 0) {
-					if (r.pipeline) r.pipeline->destroy(ctx_);
-					return true;
-				}
- 				return false;
- 			}),
- 		retired_passes_.end());
-}
-
-
 // Stage 8: create timestamp query pools (one per in-flight slot).
 // Uses a one-time command buffer to reset all pools (avoids needing hostQueryReset).
 bool Engine::create_timestamp_pools_() {
@@ -1136,7 +729,6 @@ bool Engine::create_timestamp_pools_() {
             return false;
         }
         tp.capacity = qci.queryCount;
-        tp.cached_raw.assign(qci.queryCount, 0);
     }
 
     VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -1188,7 +780,6 @@ void Engine::destroy_timestamp_pools_() {
             tp.pool = VK_NULL_HANDLE;
         }
         tp.capacity = 0;
-        tp.cached_raw.clear();
         tp.cached_timings.clear();
     }
 }
@@ -1229,471 +820,6 @@ void Engine::poll_timestamps_() {
     }
     // Store a flat snapshot (merged across all pools, latest-read wins).
     last_pass_timings_ = tp.cached_timings;
-}
-
-
-// Stage 6: dispatch a single chain. Issues vkCmdDispatch + layout transitions for head external inputs and tail output. Bypassed chains clear to zero.
-void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
-                                    uint32_t gx, uint32_t gy, size_t chain_idx) {
-    if (chain_idx >= chain_execs_.size()) return;
-    const ChainExec& ce = chain_execs_[chain_idx];
-    if (ce.member_pass_indices.empty()) return;
-    const PassExec& head = passes_[ce.head_pass_index];
-    const PassExec& tail = passes_[ce.tail_pass_index];
-
-    // Bypassed chain: clear every member's output to zero.
-    if (ce.bypassed) {
-        VkClearColorValue zero{};
-        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        for (uint32_t pi : ce.member_pass_indices) {
-            const PassExec& pe = passes_[pi];
-            for (uint32_t o = 0; o < pe.output_count; ++o) {
-                auto* r = resources_.get(pe.output_resources[o]);
-                if (r) vkCmdClearColorImage(cmd, r->image,
-                                            VK_IMAGE_LAYOUT_GENERAL,
-                                            &zero, 1, &range);
-            }
-        }
-        return;
-    }
-    if (!ce.pipeline) return;   // compile failed; skip silently
-
-    // Barrier external inputs (kept in GENERAL to match bindless descriptor layout).
-    for (const auto& inp : head.input_resources) {
-        if (inp.node_id == 0) continue;
-        auto* src = resources_.get(inp);
-        if (!src) continue;
-        if (src->layout == VK_IMAGE_LAYOUT_GENERAL &&
-            !dirty_set_.is_dirty(inp.node_id)) continue;
-        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-        b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-        b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-                        | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        b.image     = src->image;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers    = &b;
-        vkCmdPipelineBarrier2(cmd, &dep);
-        src->layout = VK_IMAGE_LAYOUT_GENERAL;
-    }
-
-    // Mid-chain external inputs: chain_external_resources may reference
-    // images NOT in the head's input list (e.g., Blend's B socket fed by
-    // a node outside the chain). Same GENERAL layout.
-    for (uint32_t ei = 0; ei < MAX_PASS_INPUTS; ++ei) {
-        const ResourceUUID& rid = ce.chain_external_resources[ei];
-        if (rid.node_id == 0) continue;
-        // Skip if already handled by the head loop above.
-        bool already_done = false;
-        for (const auto& inp : head.input_resources) {
-            if (inp == rid) { already_done = true; break; }
-        }
-        if (already_done) continue;
-        auto* src = resources_.get(rid);
-        if (!src) continue;
-        if (src->layout == VK_IMAGE_LAYOUT_GENERAL &&
-            !dirty_set_.is_dirty(rid.node_id)) continue;
-        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-        b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-        b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-                        | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        b.image     = src->image;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers    = &b;
-        vkCmdPipelineBarrier2(cmd, &dep);
-        src->layout = VK_IMAGE_LAYOUT_GENERAL;
-    }
-
-    // Transition tail's output to GENERAL.
-    for (uint32_t o = 0; o < tail.output_count; ++o) {
-        auto* r = resources_.get(tail.output_resources[o]);
-        if (!r) continue;
-        if (r->layout != VK_IMAGE_LAYOUT_GENERAL) {
-            VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-            b.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            b.srcAccessMask = 0;
-            b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-                            | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-            b.oldLayout     = r->alias_group_id > 0 ? VK_IMAGE_LAYOUT_UNDEFINED : r->layout;
-            b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-            b.image         = r->image;
-            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-            dep.imageMemoryBarrierCount = 1;
-            dep.pImageMemoryBarriers    = &b;
-            vkCmdPipelineBarrier2(cmd, &dep);
-            r->layout = VK_IMAGE_LAYOUT_GENERAL;
-            if (r->alias_group_id > 0)
-                resources_.record_alias_write(r->alias_group_id, *r);
-        }
-    }
-
-    // Bind + dispatch.
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ce.pipeline->pipeline());
-    VkDescriptorSet set = bindless_.set();
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            bindless_.pipeline_layout(), 0, 1, &set, 0, nullptr);
-
-    PassPushConstants ppc{};
-    ppc.global           = pc;
-    // Spec: chain's param_base_slot is the head's; param_ring_idx is shared.
-    ppc.param_base_slot  = (uint32_t)head.param_base_slot;
-    ppc.input_count      = head.input_count;
-    for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
-        ppc.in_sampled_slots[k] = ce.chain_in_sampled_slots[k];
-    // Spec fix: out_storage_slots[0] comes from the TAIL (who writes the
-    // final imageStore), not the head.
-    for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
-        ppc.out_storage_slots[t] = tail.out_storage_slots[t];
-    ppc.param_ring_idx = param_write_idx_;
-
-    vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
-                       VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(PassPushConstants), &ppc);
-    // Stage 8: timestamp pair for this chain dispatch.
-    auto& ts = ts_pools_[ts_pool_write_idx_];
-    const uint32_t qi = ts_query_idx_; ts_query_idx_ += 2;
-    if (ts.pool != VK_NULL_HANDLE && qi + 1 < ts.capacity) {
-        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi);
-        vkCmdDispatch(cmd, gx, gy, 1);
-        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi + 1);
-    } else {
-        vkCmdDispatch(cmd, gx, gy, 1);
-    }
-    ++last_dispatch_count_;
-}
-
-
-void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
-
-    last_dispatch_count_ = 0;
-    if (passes_.empty()) return;
-    // Ring rotation: if params were touched since last submit, advance to the
-    // next slot and snapshot. NO descriptor rebind — shader picks up via
-    // pc.param_ring_idx.
-    if (param_dirty_) {
-        const uint32_t next = (param_write_idx_ + 1) % PARAM_RING;
-        std::memcpy(param_mapped_[next], param_mapped_[param_write_idx_], MAX_NODE_PARAMS * sizeof(float));
-        vmaFlushAllocation(ctx_.allocator(), param_alloc_[next], 0, VK_WHOLE_SIZE);
-        param_write_idx_ = next;
-        param_dirty_ = false;
-    }
-
-    const uint32_t gx = (pc.resolution_x + 7) / 8;
-    const uint32_t gy = (pc.resolution_y + 7) / 8;
-
-    // Propagate dirty set through downstream graph before recording.
-    dirty_set_.propagate(downstream_adj_);
-
-    // Defensive: skip if nothing is dirty (submit() should have caught this)
-    if (!dirty_set_.any()) return;
-
-    // Stage 8: select timestamp pool (ring by param_write_idx_), reset on GPU timeline, write frame-start.
-    ts_pool_write_idx_ = param_write_idx_ % TIMESTAMP_POOL_COUNT;
-    ts_query_idx_ = 1;  // query 0 = frame start; next write gets 1
-    auto& ts_pool = ts_pools_[ts_pool_write_idx_];
-    if (ts_pool.pool != VK_NULL_HANDLE && ts_pool.capacity > 0) {
-        vkCmdResetQueryPool(cmd, ts_pool.pool, 0, ts_pool.capacity);
-        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, ts_pool.pool, 0);
-    }
-
-    // Stage 6: resolve aliased memory staleness before any barriers.
-    // If a clean aliased resource has stale memory from another group member,
-    // mark its producer dirty so the per-pass loop re-writes it.
-    resolve_aliased_staleness_();
-
-    auto transition = [&](VkImage img,
-                          VkImageLayout from, VkImageLayout to,
-                          VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                          VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-        b.srcStageMask  = src_stage;
-        b.srcAccessMask = src_access;
-        b.dstStageMask  = dst_stage;
-        b.dstAccessMask = dst_access;
-        b.oldLayout     = from;
-        b.newLayout     = to;
-        b.image         = img;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers    = &b;
-        vkCmdPipelineBarrier2(cmd, &dep);
-    };
-
-    // 1. Transition dirty node images to GENERAL. Clean passes' images stay in current layout.
-    for (auto& pe : passes_) {
-        if (!dirty_set_.is_dirty(pe.node_id)) continue;
-        for (uint32_t i = 0; i < pe.output_count; ++i) {
-            const ResourceUUID& rid = pe.output_resources[i];
-            auto* r = resources_.get(rid);
-            if (!r) continue;
-            if (r->layout != VK_IMAGE_LAYOUT_GENERAL) {
-                transition(r->image,
-                            r->alias_group_id > 0 ? VK_IMAGE_LAYOUT_UNDEFINED : r->layout,
-                            VK_IMAGE_LAYOUT_GENERAL,
-                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                            VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-                r->layout = VK_IMAGE_LAYOUT_GENERAL;
-            }
-            if (r->alias_group_id > 0)
-                resources_.record_alias_write(r->alias_group_id, *r);
-        }
-        pe.output_layout_is_general = true;
-    }
-
-    // 2. Dummy images — only transition once across their lifetime.
-    if (dummy_layout_ != VK_IMAGE_LAYOUT_GENERAL) {
-        for (int i = 0; i < 6; ++i) {
-            transition(dummy_images_[i].image(),
-                       dummy_layout_, VK_IMAGE_LAYOUT_GENERAL,
-                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-        }
-        dummy_layout_ = VK_IMAGE_LAYOUT_GENERAL;
-    }
-
-    // P1: Queue-family ownership acquire for freshly-uploaded images. Symmetric with release barrier on transfer queue. Must use IGNORED srcStageMask (acquire side).
-    if (!images_needing_acquire_.empty()) {
-        std::vector<VkImageMemoryBarrier2> acquires;
-        acquires.reserve(images_needing_acquire_.size());
-        for (auto& kv : images_needing_acquire_) {
-            auto rit = image_registry_.find(kv.first);
-            if (rit == image_registry_.end() || !rit->second) continue;
-            VkImageMemoryBarrier2 acq{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-            acq.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
-            acq.srcAccessMask = 0;
-            acq.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            acq.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-                              | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-            acq.oldLayout     = VK_IMAGE_LAYOUT_GENERAL;  // matches release newLayout
-            acq.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-            acq.srcQueueFamilyIndex = ctx_.transfer_family();
-            acq.dstQueueFamilyIndex = ctx_.graphics_family();
-            acq.image         = rit->second->image();
-            acq.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            acquires.push_back(acq);
-        }
-        if (!acquires.empty()) {
-            VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-            dep.imageMemoryBarrierCount = (uint32_t)acquires.size();
-            dep.pImageMemoryBarriers    = acquires.data();
-            vkCmdPipelineBarrier2(cmd, &dep);
-        }
-        images_needing_acquire_.clear();
-    }
-
-    // 3. output_ → GENERAL only on first use.
-    if (output_layout_ != VK_IMAGE_LAYOUT_GENERAL) {
-        transition(output_storage_->image(),
-                   output_layout_, VK_IMAGE_LAYOUT_GENERAL,
-                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-        output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
-    }
-
-    // 4. Stage 6: dispatch passes (and chains) in topological order.
-    //    passes_ is already topologically sorted. Chains are dispatched when
-    //    their head pass is encountered, ensuring producers run before consumers.
-    bool final_pass_was_dirty = false;
-#ifndef TE_FORCE_NO_FUSION
-    std::vector<uint8_t> chain_dispatched(chain_execs_.size(), 0);
-#endif
-
-    for (size_t i = 0; i < passes_.size(); ++i) {
-        auto& pe = passes_[i];
-#ifndef TE_FORCE_NO_FUSION
-        bool is_chain_member = (i < chain_id_of_pass_.size() &&
-                                chain_id_of_pass_[i] != UINT32_MAX);
-        if (is_chain_member) {
-            ChainId cid = (ChainId)chain_id_of_pass_[i];
-            if (!chain_dispatched[cid]
-                && i >= chain_execs_[cid].max_external_source_pass) {
-                chain_dispatched[cid] = 1;
-                if (dirty_set_.is_chain_dirty(cid)) {
-                    const size_t tail_i = chain_execs_[cid].tail_pass_index;
-                    if (tail_i < passes_.size()) {
-                        const auto& tail_pe = passes_[tail_i];
-                        if (std::find(tail_pe.output_resources.begin(),
-                                      tail_pe.output_resources.end(),
-                                      final_output_resource_) != tail_pe.output_resources.end()) {
-                            final_pass_was_dirty = true;
-                        }
-                    }
-                    record_chain_dispatch_(cmd, pc, gx, gy, cid);
-                }
-            }
-            continue;
-        }
-#endif
-        if (!dirty_set_.is_dirty(pe.node_id)) continue;
-
-        // Phase 1c: bypassed passes don't read inputs — skip input barriers
-        // and skip the pipeline bind. The output state is updated below as
-        // usual; the clear-to-zero is issued in the dispatch branch.
-        if (!pe.bypassed) {
-        // Emit input barriers only for inputs whose source pass is dirty this frame or whose layout isn't already GENERAL.
-            for (const auto& inp : pe.input_resources) {
-                if (inp.node_id == 0) continue;  // unconnected → bound to dummy
-                auto* src = resources_.get(inp);
-                if (!src) continue;
-                // If upstream didn't run this frame and is already in GENERAL,
-                // no barrier needed — it's stable from last frame.
-                if (src->layout == VK_IMAGE_LAYOUT_GENERAL &&
-                    !dirty_set_.is_dirty(inp.node_id)) {
-                    continue;
-                }
-                VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-                b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-                b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-                b.image     = src->image;
-                b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-                dep.imageMemoryBarrierCount = 1;
-                dep.pImageMemoryBarriers    = &b;
-                vkCmdPipelineBarrier2(cmd, &dep);
-            }
-        }
-        // Emit output
-        for (uint32_t o = 0; o < pe.output_count; ++o) {
-            const ResourceUUID& rid = pe.output_resources[o];
-            auto* out_res = resources_.get(rid);
-            if (out_res) {
-                out_res->is_dirty = false;
-                out_res->layout = VK_IMAGE_LAYOUT_GENERAL;
-                if (out_res->alias_group_id > 0)
-                    resources_.record_alias_write(out_res->alias_group_id, *out_res);
-            }
-        }
-
-        // Phase 1c: bypassed pass -- clear each output to zero via vkCmdClearColorImage. Image stays in GENERAL. No pipeline, no dispatch.
-        if (pe.bypassed) {
-            VkClearColorValue zero{};
-            VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            for (uint32_t o = 0; o < pe.output_count; ++o) {
-                auto* out_res = resources_.get(pe.output_resources[o]);
-                if (!out_res) continue;
-                vkCmdClearColorImage(cmd, out_res->image,
-                                     VK_IMAGE_LAYOUT_GENERAL,
-                                     &zero, 1, &range);
-            }
-        } else if (pe.pipeline) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pe.pipeline->pipeline());
-            VkDescriptorSet set = bindless_.set();
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    bindless_.pipeline_layout(), 0, 1, &set, 0, nullptr);
-
-            PassPushConstants ppc{};
-            ppc.global           = pc;
-            ppc.param_base_slot  = (uint32_t)pe.param_base_slot;
-            ppc.input_count      = pe.input_count;
-            for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
-                ppc.in_sampled_slots[k] = pe.in_sampled_slots[k];
-            for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
-                ppc.out_storage_slots[t] = pe.out_storage_slots[t];
-            ppc.param_ring_idx = param_write_idx_;
-
-            vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
-                               VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(PassPushConstants), &ppc);
-            // Stage 8: timestamp pair for this per-pass dispatch.
-            auto& ts = ts_pools_[ts_pool_write_idx_];
-            const uint32_t qi = ts_query_idx_; ts_query_idx_ += 2;
-            if (ts.pool != VK_NULL_HANDLE && qi + 1 < ts.capacity) {
-                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi);
-                vkCmdDispatch(cmd, gx, gy, 1);
-                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi + 1);
-            } else {
-                vkCmdDispatch(cmd, gx, gy, 1);
-            }
-            ++last_dispatch_count_;
-        }
-
-        pe.output_layout_is_general = true;
-
-        if (std::find(pe.output_resources.begin(), pe.output_resources.end(), final_output_resource_) != pe.output_resources.end()) {
-            final_pass_was_dirty = true;
-        }
-    }
-
-    // Stage 8: frame-end timestamp (BOTTOM_OF_PIPE so all dispatches complete before the blit transfer).
-    {
-        auto& ts = ts_pools_[ts_pool_write_idx_];
-        const uint32_t qi = ts_query_idx_;
-        if (ts.pool != VK_NULL_HANDLE && qi < ts.capacity) {
-            // Extend the reset range to include this query.
-            if (qi >= ts.capacity) {}  // skip if full
-            else {
-                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, ts.pool, qi);
-            }
-        }
-    }
-
-    // 5. Blit final pass output -> output_ (only if the output pass ran)
-    auto* final_res = resources_.get(final_output_resource_);
-    if (final_res && final_pass_was_dirty) {
-        transition(final_res->image,
-                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                   VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                   VK_ACCESS_2_TRANSFER_READ_BIT);
-        final_res->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-
-        transition(output_storage_->image(),
-                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
-                   VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
-
-        VkImageBlit blit{};
-        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.srcOffsets[0]  = {0, 0, 0};
-        blit.srcOffsets[1]  = {static_cast<int32_t>(pc.resolution_x), static_cast<int32_t>(pc.resolution_y), 1};
-        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.dstOffsets[0]  = {0, 0, 0};
-        blit.dstOffsets[1]  = {static_cast<int32_t>(output_w_), static_cast<int32_t>(output_h_), 1};
-
-        vkCmdBlitImage(cmd,
-                       final_res->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       output_storage_->image(),  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blit,
-                       VK_FILTER_LINEAR);
-
-        transition(output_storage_->image(),
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                   VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-        output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
-
-        transition(final_res->image,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                   VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                   VK_ACCESS_2_TRANSFER_READ_BIT,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-        final_res->layout = VK_IMAGE_LAYOUT_GENERAL;
-    }
 }
 
 
@@ -1740,109 +866,6 @@ void Engine::mark_downstream_dirty_(NodeId root) {
     for (NodeId nid : dirty) {
         if (auto* r = resources_.get({nid, 0})) r->is_dirty = true;
     }
-}
-
-
-void Engine::update_node_params_by_id(NodeId node_id, const std::vector<float>& params) {
-    TE_GUARD_READY(;);
-
-    if (param_write_idx_ >= PARAM_RING) return;
-    void* mapped = param_mapped_[param_write_idx_];
-    if (!mapped) return;
-    auto it = param_base_slot_.find(node_id);
-    if (it == param_base_slot_.end()) {
-        log_warn("update_node_params_by_id: unknown node id " + std::to_string(node_id));
-        return;
-    }
-    const int base = it->second;
-    if (base < 0) return;
-    const size_t cap = (base >= 0 && (size_t)base < MAX_NODE_PARAMS)
-                         ? (MAX_NODE_PARAMS - (size_t)base) : 0;
-    if (params.size() > cap) {
-        log_warn("update_node_params_by_id: truncating node " + std::to_string(node_id));
-    }
-    const size_t n = std::min(params.size(), cap);
-    if (n > 0) {
-        std::memcpy(static_cast<float*>(mapped) + base, params.data(), n * sizeof(float));
-        vmaFlushAllocation(ctx_.allocator(), param_alloc_[param_write_idx_],
-                           (VkDeviceSize)(base * sizeof(float)),
-                           (VkDeviceSize)(n    * sizeof(float)));
-    }
-    param_dirty_ = true;
-    any_pass_dirty_.store(true);
-    // Seed dirty_set_ (Layer 2) before mark_downstream_dirty_ (Layer 3). Without this, record_dispatch would early-exit and re-publish stale pixels. See DirtySet.hpp for three-layer state machine.
-    dirty_set_.mark_node(node_id);
-    mark_downstream_dirty_(node_id);
-}
-
-
-void Engine::update_node_params_by_name(NodeId node_id,
-                                        const std::unordered_map<std::string, float>& kv) {
-    TE_GUARD_READY(;);
-
-    if (!param_mapped_[param_write_idx_]) return;
-
-    auto it = param_base_slot_.find(node_id);
-    if (it == param_base_slot_.end()) {
-        log_warn("update_node_params_by_name: unknown node id "
-                 + std::to_string(node_id));
-        return;
-    }
-    const int base = it->second;
-
-    const auto* vn = current_ir_.find(node_id);
-    if (!vn) {
-        log_warn("update_node_params_by_name: node " + std::to_string(node_id)
-               + " not in current IR");
-        return;
-    }
-    const auto* type = node_lib_.find(vn->type_id);
-    if (!type) {
-        log_warn("update_node_params_by_name: unknown type '" + vn->type_id
-               + "' for node " + std::to_string(node_id));
-        return;
-    }
-
-    auto* dst = static_cast<float*>(param_mapped_[param_write_idx_]);
-
-    // Phase 6: warn on keys the manifest doesn't know about -- contract violations between Python and JSON.
-    std::unordered_set<std::string> known;
-    known.reserve(type->params.size());
-    for (auto& p : type->params) known.insert(p.name);
-    for (auto& [k, _v] : kv) {
-        if (!known.count(k)) {
-            log_warn("update_node_params_by_name: node " + std::to_string(node_id)
-                   + " (type '" + type->id + "') has no param named '" + k
-                   + "' -- ignoring.");
-        }
-    }
-
-    int min_slot = INT_MAX, max_slot = -1;
-    for (size_t i = 0; i < type->params.size(); ++i) {
-        auto found = kv.find(type->params[i].name);
-        if (found == kv.end()) continue;
-        const int slot = base + static_cast<int>(i);
-        if (slot < 0 || slot >= static_cast<int>(MAX_NODE_PARAMS)) {
-            log_warn("update_node_params_by_name: slot " + std::to_string(slot)
-                   + " out of range for param '" + type->params[i].name
-                   + "' on node " + std::to_string(node_id)
-                   + " -- DROPPED (bug: GraphCompiler should have rejected this graph).");
-            continue;
-        }
-        dst[slot] = found->second;
-        if (slot < min_slot) min_slot = slot;
-        if (slot > max_slot) max_slot = slot;
-    }
-    if (max_slot >= 0) {
-        const VkDeviceSize off  = (VkDeviceSize)(min_slot * sizeof(float));
-        const VkDeviceSize size = (VkDeviceSize)((max_slot - min_slot + 1) * sizeof(float));
-        vmaFlushAllocation(ctx_.allocator(), param_alloc_[param_write_idx_], off, size);
-    }
-    param_dirty_ = true;
-    any_pass_dirty_.store(true);
-    // See update_node_params_by_id above. Seed Layer 2 (DirtySet) ourselves or next record_dispatch will early-exit.
-    dirty_set_.mark_node(node_id);
-    mark_downstream_dirty_(node_id);
 }
 
 

@@ -15,7 +15,7 @@ NodeType make_type(const std::string& id,
                    uint32_t n_outputs,
                    uint32_t n_params = 0,
                    uint32_t n_socket_params = 0,
-                   PassKind pass_kind = PassKind::PurePixel) {
+                   PassKind pass_kind = PassKind::Compute) {
     NodeType t;
     t.id = id;
     t.display_name = id;
@@ -504,10 +504,7 @@ TEST(GraphValidation, BypassedFlagPropagatesToComputePass) {
 //  also cover the executor's legacy-kind derivation rule.
 // ===========================================================================
 
-TEST(GraphValidation, PassKindDefaultsToPurePixel) {
-    // No explicit pass_kind set on the NodeType. ValidatedNode::pass_kind
-    // should fall back to the safe fuseable default (PurePixel) rather
-    // than the C++ zero-init (Upload -- which is *not* fuseable).
+TEST(GraphValidation, PassKindDefaultsToCompute) {
     auto lib = make_library();
     Graph g;
     g.nodes.push_back({1, "source"});
@@ -517,148 +514,61 @@ TEST(GraphValidation, PassKindDefaultsToPurePixel) {
     ASSERT_TRUE(r.success) << r.error;
     const auto* vn = r.ir.find(1);
     ASSERT_NE(vn, nullptr);
-    EXPECT_EQ(vn->pass_kind, PassKind::PurePixel)
-        << "NodeType default for pass_kind must be PurePixel, not Upload";
+    EXPECT_EQ(vn->pass_kind, PassKind::Compute);
 }
 
-TEST(GraphValidation, PassKindPropagatesFromNodeTypeToValidatedNode) {
-    // NodeType with explicit pass_kind=Boundary. ValidatedNode should
-    // pick it up verbatim (sourced via lib.find, not a per-instance field).
+TEST(GraphValidation, PassKindPropagatesUpload) {
     NodeLibrary lib;
-    lib.add_public(make_type("boundary_node", 0, 1, 0, 0, PassKind::Boundary));
+    lib.add_public(make_type("upload_src", 0, 1, 0, 0, PassKind::Upload));
     Graph g;
-    g.nodes.push_back({1, "boundary_node"});
+    g.nodes.push_back({1, "upload_src"});
     g.output_node = 1;
 
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
     const auto* vn = r.ir.find(1);
     ASSERT_NE(vn, nullptr);
-    EXPECT_EQ(vn->pass_kind, PassKind::Boundary);
+    EXPECT_EQ(vn->pass_kind, PassKind::Upload);
 }
 
-TEST(GraphValidation, PassKindPropagatesFromValidatedNodeToComputePass) {
-    // NodeType Boundary -> ValidatedNode Boundary -> ComputePass Boundary.
-    // The compiler must copy pass_kind through; if it dropped it, stages
-    // 3-6 (chain finding) would see Upload (the C++ default) for every
-    // node and fuse everything.
+TEST(GraphValidation, PassKindPropagatesReadback) {
     NodeLibrary lib;
-    lib.add_public(make_type("reduction_node", 0, 1, 0, 0, PassKind::Reduction));
-    Graph g;
-    g.nodes.push_back({1, "reduction_node"});
-    g.output_node = 1;
-
-    auto r = validate_graph(g, lib);
-    ASSERT_TRUE(r.success) << r.error;
-    auto comp = GraphCompiler::compile(r.ir, lib);
-    ASSERT_TRUE(comp.success) << comp.error;
-    ASSERT_EQ(comp.pass_plan.passes.size(), 1u);
-    EXPECT_EQ(comp.pass_plan.passes[0].pass_kind, PassKind::Reduction);
-}
-
-TEST(GraphValidation, UploadAndReadbackDeriveResourceBindLegacyKind) {
-    // The executor reads ComputePass::kind (the legacy binary) to decide
-    // whether to dispatch or just track state. Upload and Readback must
-    // both derive ResourceBind so the executor skips vkCmdDispatch and
-    // only manages the resource binding. Other kinds (PurePixel, Boundary,
-    // Reduction, Feedback, DebugPreview) all derive Dispatch.
-    NodeLibrary lib;
-    lib.add_public(make_type("upload_src",   0, 1, 0, 0, PassKind::Upload));
-    lib.add_public(make_type("dispatcher",   1, 1, 0, 0, PassKind::PurePixel));
-    lib.add_public(make_type("breaker",      1, 1, 0, 0, PassKind::Boundary));
+    lib.add_public(make_type("compute", 0, 1));
     lib.add_public(make_type("readback_end", 1, 1, 0, 0, PassKind::Readback));
     Graph g;
-    g.nodes.push_back({1, "upload_src"});
-    g.nodes.push_back({2, "dispatcher"});
-    g.nodes.push_back({3, "breaker"});
-    g.nodes.push_back({4, "readback_end"});
+    g.nodes.push_back({1, "compute"});
+    g.nodes.push_back({2, "readback_end"});
     g.connections.push_back({1, 0, 2, 0});
-    g.connections.push_back({2, 0, 3, 0});
-    g.connections.push_back({3, 0, 4, 0});
-    g.output_node = 4;
+    g.output_node = 2;
 
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
     auto comp = GraphCompiler::compile(r.ir, lib);
     ASSERT_TRUE(comp.success) << comp.error;
-    ASSERT_EQ(comp.pass_plan.passes.size(), 4u);
+    ASSERT_EQ(comp.pass_plan.passes.size(), 2u);
 
     for (auto& p : comp.pass_plan.passes) {
         if (p.node_id == 1) {
-            EXPECT_EQ(p.pass_kind, PassKind::Upload);
-            EXPECT_EQ(p.kind,      PassKind::ResourceBind);
+            EXPECT_EQ(p.kind, PassKind::Compute);
         } else if (p.node_id == 2) {
-            EXPECT_EQ(p.pass_kind, PassKind::PurePixel);
-            EXPECT_EQ(p.kind,      PassKind::Dispatch);
-        } else if (p.node_id == 3) {
-            EXPECT_EQ(p.pass_kind, PassKind::Boundary);
-            EXPECT_EQ(p.kind,      PassKind::Dispatch);
-        } else if (p.node_id == 4) {
-            EXPECT_EQ(p.pass_kind, PassKind::Readback);
-            EXPECT_EQ(p.kind,      PassKind::ResourceBind);
+            EXPECT_EQ(p.kind, PassKind::Readback);
         }
     }
 }
 
-TEST(GraphValidation, ReductionFeedbackDebugPreviewDeriveDispatch) {
-    // Edge case: the other 3 "chain break" kinds (Reduction, Feedback,
-    // DebugPreview) all derive Dispatch -- they ARE run on the GPU, just
-    // not as part of a chain. The compiler must NOT misclassify them as
-    // ResourceBind (which would skip dispatch entirely and leave the
-    // output image undefined).
-    NodeLibrary lib;
-    lib.add_public(make_type("reducer",     1, 1, 0, 0, PassKind::Reduction));
-    lib.add_public(make_type("feeder",      1, 1, 0, 0, PassKind::Feedback));
-    lib.add_public(make_type("previewer",   1, 1, 0, 0, PassKind::DebugPreview));
-    Graph g;
-    g.nodes.push_back({1, "reducer"});
-    g.nodes.push_back({2, "feeder"});
-    g.nodes.push_back({3, "previewer"});
-    // Use blend (2 inputs) to chain them -- avoids needing 3 separate
-    // node types and proves the kinds are independent of topology.
-    lib.add_public(make_type("merge", 3, 1));
-    g.nodes.push_back({4, "merge"});
-    g.connections.push_back({1, 0, 4, 0});
-    g.connections.push_back({2, 0, 4, 1});
-    g.connections.push_back({3, 0, 4, 2});
-    g.output_node = 4;
-
-    auto r = validate_graph(g, lib);
-    ASSERT_TRUE(r.success) << r.error;
-    auto comp = GraphCompiler::compile(r.ir, lib);
-    ASSERT_TRUE(comp.success) << comp.error;
-    ASSERT_EQ(comp.pass_plan.passes.size(), 4u);
-
-    for (auto& p : comp.pass_plan.passes) {
-        if (p.node_id == 4) continue;  // merge is a PurePixel passthrough
-        EXPECT_EQ(p.kind, PassKind::Dispatch)
-            << "node " << p.node_id << " (pass_kind=" << (int)p.pass_kind
-            << ") must derive Dispatch, not ResourceBind";
-    }
-}
-
-TEST(GraphValidation, ComputePassDefaultsToPurePixelDispatch) {
-    // Edge case: a freshly-constructed ComputePass (default-init) must
-    // default to PurePixel + Dispatch, not to whatever C++ zero-init
-    // happens to produce. Catches regressions where someone moves the
-    // PassKind enum to a new home and the default initializer breaks.
+TEST(GraphValidation, ComputePassDefaultsToCompute) {
     ComputePass p;
-    EXPECT_EQ(p.pass_kind, PassKind::PurePixel);
-    EXPECT_EQ(p.kind,      PassKind::Dispatch);
+    EXPECT_EQ(p.kind, PassKind::Compute);
 }
 
-TEST(GraphValidation, ValidatedNodeDefaultsToPurePixel) {
-    // Same as above, for ValidatedNode. Catches a default-init regression
-    // on the IR mirror.
+TEST(GraphValidation, ValidatedNodeDefaultsToCompute) {
     ValidatedNode vn;
-    EXPECT_EQ(vn.pass_kind, PassKind::PurePixel);
+    EXPECT_EQ(vn.pass_kind, PassKind::Compute);
 }
 
-TEST(GraphValidation, NodeTypeDefaultsToPurePixel) {
-    // And for NodeType. The loader always overwrites this; the default
-    // is the safety net when the key is missing.
+TEST(GraphValidation, NodeTypeDefaultsToCompute) {
     NodeType t;
-    EXPECT_EQ(t.pass_kind, PassKind::PurePixel);
+    EXPECT_EQ(t.pass_kind, PassKind::Compute);
 }
 
 // ===========================================================================
@@ -666,34 +576,26 @@ TEST(GraphValidation, NodeTypeDefaultsToPurePixel) {
 // a smoke test that loads the 13 real manifests in shader_assets/nodes/.
 // ===========================================================================
 
-TEST(ParsePassKind, MapsAllSevenStrings) {
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("pure_pixel"),    PassKind::PurePixel);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("boundary"),      PassKind::Boundary);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("reduction"),     PassKind::Reduction);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("feedback"),      PassKind::Feedback);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("upload"),        PassKind::Upload);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("readback"),      PassKind::Readback);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("debug_preview"), PassKind::DebugPreview);
+TEST(ParsePassKind, MapsThreeStrings) {
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("upload"),   PassKind::Upload);
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("readback"), PassKind::Readback);
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("compute"),  PassKind::Compute);
 }
 
-TEST(ParsePassKind, EmptyStringDefaultsToPurePixelNoWarn) {
-    // The "" case is what we get when JSON has "pass_kind": "" or
-    // when the key is read via m.value(..., "") explicitly. Must
-    // return PurePixel WITHOUT emitting a warning (an empty value
-    // is more likely "author didn't fill it in" than "typo").
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind(""), PassKind::PurePixel);
+TEST(ParsePassKind, EmptyStringDefaultsToComputeNoWarn) {
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind(""), PassKind::Compute);
 }
 
-TEST(ParsePassKind, UnknownStringDefaultsToPurePixelWithWarn) {
-    // A typo like "purepixel" or "Pure_Pixel" must NOT throw. It should
-    // fall back to PurePixel and log a warning so the author can fix it.
-    // We can't easily assert the log, but we CAN assert the return value
-    // is the safe default rather than something undefined.
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("purepixel"),   PassKind::PurePixel);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("Pure_Pixel"),  PassKind::PurePixel);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("garbage"),     PassKind::PurePixel);
-    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("pure_pixel "), PassKind::PurePixel)
-        << "trailing whitespace must NOT match (the comparison is exact)";
+TEST(ParsePassKind, OldStringsStillParseAsCompute) {
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("pure_pixel"),    PassKind::Compute);
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("boundary"),      PassKind::Compute);
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("reduction"),     PassKind::Compute);
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("feedback"),      PassKind::Compute);
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("debug_preview"), PassKind::Compute);
+}
+
+TEST(ParsePassKind, UnknownStringDefaultsToComputeWithWarn) {
+    EXPECT_EQ(NodeRegistryLoader::parse_pass_kind("garbage"), PassKind::Compute);
 }
 
 TEST(GraphValidation, AllThirteenManifestsLoadWithCorrectPassKind) {
@@ -717,19 +619,19 @@ TEST(GraphValidation, AllThirteenManifestsLoadWithCorrectPassKind) {
     // row here so this test keeps pinning the contract.
     struct Expected { const char* id; PassKind kind; };
     const Expected expected[] = {
-        {"perlin",         PassKind::PurePixel},
-        {"simplex",        PassKind::PurePixel},
-        {"value",          PassKind::PurePixel},
-        {"gabor",          PassKind::PurePixel},
-        {"worley",         PassKind::PurePixel},
-        {"white",          PassKind::PurePixel},  // file is white_noise.node.json, id is "white"
-        {"blend",          PassKind::PurePixel},
-        {"grayscale",      PassKind::PurePixel},
-        {"invert",         PassKind::PurePixel},
-        {"combine_rgba",   PassKind::PurePixel},
-        {"color_const",    PassKind::PurePixel},
-        {"image",          PassKind::PurePixel},
-        {"separate_rgba",     PassKind::Boundary},
+        {"perlin",         PassKind::Compute},
+        {"simplex",        PassKind::Compute},
+        {"value",          PassKind::Compute},
+        {"gabor",          PassKind::Compute},
+        {"worley",         PassKind::Compute},
+        {"white",          PassKind::Compute},
+        {"blend",          PassKind::Compute},
+        {"grayscale",      PassKind::Compute},
+        {"invert",         PassKind::Compute},
+        {"combine_rgba",   PassKind::Compute},
+        {"color_const",    PassKind::Compute},
+        {"image",          PassKind::Compute},
+        {"separate_rgba",  PassKind::Compute},
     };
 
     for (auto& e : expected) {

@@ -4,6 +4,7 @@
     "description": "Convert a color input to grayscale. Mode 0=Luminance(Rec.709) 1=Average 2=Max 3=Min",
     "includes": [],
     "inputs": [
+        { "name": "mask", "type": "float", "default": 1.0 },
         { "name": "color", "type": "vec4" }
     ],
     "outputs": [
@@ -19,11 +20,8 @@
             "max": 3.0,
             "step": 1.0,
             "integer": true
-        },
-        { "name": "mask", "display_name": "Mask",
-          "default": 1.0, "min": 0.0, "max": 1.0, "as_socket": true }
+        }
     ],
     "shader": "grayscale.glsl",
-    "entry": "node_grayscale",
-    "pass_kind": "pure_pixel"
+    "entry": "node_grayscale"
 }

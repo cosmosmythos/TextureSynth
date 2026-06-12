@@ -14,6 +14,5 @@
     ],
     "params": [],
     "shader": "separate_rgba.glsl",
-    "entry": "node_separate_rgba",
-    "pass_kind": "boundary"
+    "entry": "node_separate_rgba"
 }

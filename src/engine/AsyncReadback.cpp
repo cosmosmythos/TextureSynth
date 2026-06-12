@@ -26,7 +26,8 @@ bool capacity_bytes(uint32_t w, uint32_t h, VkDeviceSize& out) {
     return true;
 }
 
-// Allocate a fresh staging buffer+allocation. On success caller owns and must vmaDestroyBuffer exactly once. On failure handles are VK_NULL_HANDLE and caller's previous buffer is untouched.
+// Allocate a fresh staging buffer+allocation. On success caller owns and must vmaDestroyBuffer exactly once. 
+// On failure handles are VK_NULL_HANDLE and caller's previous buffer is untouched.
 bool alloc_staging(VulkanContext& ctx, VkDeviceSize capacity,
                    VkBuffer& out_buf, VmaAllocation& out_alloc,
                    void*& out_mapped) {
@@ -323,7 +324,7 @@ uint64_t AsyncReadback::submit(VulkanContext& ctx, Engine& engine, const PushCon
         latest_submitted_generation_ = generation;
 
     // Tell VMA the frame index so vmaGetHeapBudgets()'s cached snapshot is force-refreshed on next read (otherwise refreshed every ~30 VMA ops, too lazy for per-frame budget panel).
-    vmaSetCurrentFrameIndex(ctx.allocator(), slot->ticket);
+    vmaSetCurrentFrameIndex(ctx.allocator(), static_cast<uint32_t>(slot->ticket));
 
     engine.mark_all_clean();
     return slot->ticket;

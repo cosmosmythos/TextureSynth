@@ -3,16 +3,13 @@
     "display_name": "Invert",
     "includes": [],
     "inputs": [
+        { "name": "mask", "type": "float", "default": 1.0 },
         { "name": "color", "type": "vec4" }
     ],
     "outputs": [
         { "name": "color", "type": "vec4" }
     ],
-    "params": [
-        { "name": "mask", "display_name": "Mask",
-          "default": 1.0, "min": 0.0, "max": 1.0, "as_socket": true }
-    ],
+    "params": [],
     "shader": "invert.glsl",
-    "entry": "node_invert",
-    "pass_kind": "pure_pixel"
+    "entry": "node_invert"
 }

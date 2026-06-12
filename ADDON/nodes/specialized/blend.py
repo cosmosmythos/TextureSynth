@@ -32,7 +32,6 @@ class TS_Blend_Node(TextureSynthNode):
     sv_type   = SV_TYPE
     ts_category = 'BLEND'
     supports_format_override = False
-    _as_socket_names = frozenset({'mask'})
 
     mode: bpy.props.EnumProperty(
         name="Mode",
@@ -49,7 +48,6 @@ class TS_Blend_Node(TextureSynthNode):
         super().init(context)
         s = self.inputs.new('TS_DefaultSocketType', "Mask")
         s.name = "mask"
-        self._as_socket_names = frozenset({'mask'})
         self.inputs.new('TS_DefaultSocketType', "A")
         self.inputs.new('TS_DefaultSocketType', "B")
         self.outputs.new('TS_DefaultSocketType', "")
@@ -59,7 +57,7 @@ class TS_Blend_Node(TextureSynthNode):
         self.draw_format_override_ui(layout)
         layout.prop(self, "mode", text="")
 
-    # JSON order: [mode, mask]
+    # SSBO order: [mode_param, mask_default]
     def get_parameters(self):
         return [float(_MODE_INDEX[self.mode]), float(self.mask)]
 

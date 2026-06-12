@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <unordered_set>
 
 namespace te {
 // PassKind enum lives in Graph.hpp to avoid cycles.
@@ -25,28 +26,22 @@ struct ComputePass {
     int          param_base_slot    = 0;
     uint32_t     input_socket_count = 0;
     std::string  shader_glsl;
-    PassKind     kind               = PassKind::Dispatch;   // legacy binary (executor uses this)
-    PassKind     pass_kind          = PassKind::PurePixel;   // Stage 2 classification (stages 3-6 consume)
+    PassKind     kind               = PassKind::Compute;
     InputMode    input_mode         = InputMode::PreSampled;
 
     // Cache lookup is keyed by this, not source hash.
     ShaderVariantKey variant_key;
-
-    // Partial re-execution: set by GraphCompiler, mutated at runtime.
-    mutable bool dirty = true;
-    mutable uint64_t last_executed_gen = 0;
-    bool output_layout_is_general = false;
 
     // Phase 1c: mirrors ValidatedNode::bypassed. Retained in plan (subgraph/resource layout stable), executor emits clear-to-zero instead of normal shader. Bypassed = logical pass producing known-empty output, not removal.
     bool bypassed = false;
 };
 
 
-// A Chain is a maximal run of adjacent PurePixel nodes fused into a single compute shader. Stage 3 builds nodes/params/input-output layout. Stage 4 populates glsl. Stage 5 populates variant_key. Stage 6 consumes them.
+// A Chain is a maximal run of adjacent Compute nodes fused into a single compute shader. Stage 3 builds nodes/params/input-output layout. Stage 4 populates glsl. Stage 5 populates variant_key. Stage 6 consumes them.
 struct Chain {
     std::vector<NodeId>   nodes;            // in topological order; first = head, last = tail
     std::vector<uint32_t> param_offsets;    // SSBO offset of each node's params; size == nodes.size()
-    std::vector<uint32_t> param_global_slots; // each node's global param_base_slot (from GraphCompiler); filled after find_chains
+    std::vector<uint32_t> param_global_slots; // each node's global param_base_slot
     int                   param_base_slot = 0;  // SSBO slot of nodes[0]
     uint32_t              total_inputs   = 0;   // sum across nodes (descriptor layout)
     uint32_t              total_outputs  = 1;   // 1 in Phase 1; multi-output nodes are barriers (singleton chains)
@@ -83,6 +78,7 @@ struct PassPlan {
     };
     std::unordered_map<ResourceUUID, ResourceLifetime, ResourceUUIDHash> lifetimes;
     std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash> color_classes;
+    std::unordered_set<ResourceUUID, ResourceUUIDHash> active_resources;
 };
 
 

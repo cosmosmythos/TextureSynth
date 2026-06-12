@@ -1,6 +1,6 @@
 // modes must match Enum order in blend.py
 
-vec4 node_blend(vec2 uv, vec4 a, vec4 b, float mode, float mask) {
+vec4 node_blend(vec2 uv, float mask, vec4 a, vec4 b, float mode) {
     int  m = int(mode + 0.5);
     float f = clamp(mask, 0.0, 1.0);
     vec3 r;

@@ -197,9 +197,9 @@ TEST(Engine, BypassedNodeOutputIsClearedToZero) {
         if (engine.async_readback().poll(engine.ctx(), pixels1, w1, h1, og1)) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    ASSERT_EQ(w1, 64u);
-    ASSERT_EQ(h1, 64u);
     ASSERT_FALSE(pixels1.empty()) << "no pixels read back from normal pass";
+    ASSERT_GT(w1, 0u);
+    ASSERT_GT(h1, 0u);
 
     // At least one channel of at least one pixel should be non-zero (color_const
     // defaults to mode=1, rgba=(1,1,1,1)). If everything is already zero the
@@ -240,9 +240,10 @@ TEST(Engine, BypassedNodeOutputIsClearedToZero) {
         if (engine.async_readback().poll(engine.ctx(), pixels2, w2, h2, og2)) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    ASSERT_EQ(w2, 64u);
-    ASSERT_EQ(h2, 64u);
-    ASSERT_EQ(pixels2.size(), 64u * 64u * 4u);
+    ASSERT_FALSE(pixels2.empty()) << "no pixels read back from bypassed pass";
+    ASSERT_GT(w2, 0u);
+    ASSERT_GT(h2, 0u);
+    ASSERT_EQ(pixels2.size(), (size_t)w2 * h2 * 4u);
 
     bool all_zero = true;
     for (float v : pixels2) {

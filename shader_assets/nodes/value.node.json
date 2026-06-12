@@ -19,6 +19,5 @@
     ],
     "shader": "value.glsl",
     "entry": "node_value",
-    "format_sensitive": true,
-    "pass_kind": "pure_pixel"
+    "format_sensitive": true
 }

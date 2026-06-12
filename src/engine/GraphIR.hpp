@@ -21,7 +21,7 @@ struct ValidatedNode {
     bool muted    = false;
     bool bypassed = false;
     // Stage 2: mirror of NodeType::pass_kind, copied by validate_graph. Source of truth is NodeType (type-level, not per-instance).
-    PassKind pass_kind = PassKind::PurePixel;
+    PassKind pass_kind = PassKind::Compute;
 };
 
 struct ValidatedConnection {

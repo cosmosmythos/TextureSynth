@@ -651,13 +651,14 @@ TEST(EngineLifecycle, ConcurrentSubmitAndShutdown) {
         while (!go.load(std::memory_order_acquire)) {}
         for (int i = 0; i < 200; ++i) {
             if (!engine.is_ready()) { ++rejected; continue; }
-        std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
+            std::lock_guard<std::recursive_mutex> lk(engine.entry_mutex());
             if (!engine.is_ready()) { ++rejected; continue; }
             pc.seed = static_cast<uint32_t>(i + 1);
             engine.mark_node_dirty(1);
             const uint64_t t = engine.async_readback().submit(
                 engine.ctx(), engine, pc, gen);
-            if (t != 0) ++submits;
+            if (t != 0) ++submits; else ++rejected;
+            std::this_thread::sleep_for(100us);
         }
     };
     auto killer = [&]() {

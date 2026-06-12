@@ -9,7 +9,7 @@
 //           Preserves the brightest channel; useful for lightness maps.
 // mode 3 - Min channel
 //           Preserves the darkest channel; useful for shadow masks.
-vec4 node_grayscale(vec2 uv, vec4 color, float mode, float mask) {
+vec4 node_grayscale(vec2 uv, float mask, vec4 color, float mode) {
     int m = int(mode + 0.5);
     float v;
     if      (m == 1) v = (color.r + color.g + color.b) * 0.33333333;

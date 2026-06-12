@@ -97,9 +97,9 @@ struct EngineFixture {
     if (!fx.initialized) { GTEST_SKIP() << "engine init failed: " << fx.engine.last_error(); }
 
 // =====================================================================
-// Invert mask tests
-// JSON params order: [mask]
-//   mask = index 0
+    // Invert mask tests
+// Inputs: [0]=mask, [1]=color
+// Params: (none)
 // =====================================================================
 
 TEST(Mask, Invert_Mask1_FullyInverts) {
@@ -109,7 +109,7 @@ TEST(Mask, Invert_Mask1_FullyInverts) {
     Graph g;
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "invert"});
-    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({1, 0, 2, 1});  // simplex -> color (input[1])
     g.output_node = 2;
     ASSERT_TRUE(fx.build_graph(g));
 
@@ -142,7 +142,7 @@ TEST(Mask, Invert_Mask0_PassthroughInput) {
     Graph g;
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "invert"});
-    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({1, 0, 2, 1});  // simplex -> color (input[1])
     g.output_node = 2;
     ASSERT_TRUE(fx.build_graph(g));
 
@@ -164,7 +164,7 @@ TEST(Mask, Invert_Mask0and1_Different) {
     Graph g;
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "invert"});
-    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({1, 0, 2, 1});  // simplex -> color (input[1])
     g.output_node = 2;
     ASSERT_TRUE(fx.build_graph(g));
 
@@ -184,9 +184,9 @@ TEST(Mask, Invert_Mask0and1_Different) {
 }
 
 // =====================================================================
-// Grayscale mask tests
-// JSON params order: [mode, mask]
-//   mode = index 0, mask = index 1
+    // Grayscale mask tests
+// Inputs: [0]=mask, [1]=color
+// Params: [0]=mode
 // =====================================================================
 
 TEST(Mask, Grayscale_Mask1_GrayscaleOutput) {
@@ -196,7 +196,7 @@ TEST(Mask, Grayscale_Mask1_GrayscaleOutput) {
     Graph g;
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "grayscale"});
-    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({1, 0, 2, 1});  // simplex -> color (input[1])
     g.output_node = 2;
     ASSERT_TRUE(fx.build_graph(g));
 
@@ -239,7 +239,7 @@ TEST(Mask, Grayscale_Mask0_PassthroughInput) {
     Graph g;
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "grayscale"});
-    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({1, 0, 2, 1});  // simplex -> color (input[1])
     g.output_node = 2;
     ASSERT_TRUE(fx.build_graph(g));
     fx.engine.update_node_params_by_id(2, {0.0f, 0.0f});
@@ -252,9 +252,9 @@ TEST(Mask, Grayscale_Mask0_PassthroughInput) {
 }
 
 // =====================================================================
-// Blend mask tests
-// JSON params order: [mode, mask]
-//   mode = index 0, mask = index 1
+    // Blend mask tests
+// Inputs: [0]=mask, [1]=a, [2]=b
+// Params: [0]=mode
 // =====================================================================
 
 TEST(Mask, Blend_Mask0_PassthroughA) {
@@ -274,8 +274,8 @@ TEST(Mask, Blend_Mask0_PassthroughA) {
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "white"});
     g.nodes.push_back({3, "blend"});
-    g.connections.push_back({1, 0, 3, 0});  // simplex -> A
-    g.connections.push_back({2, 0, 3, 1});  // white   -> B
+    g.connections.push_back({1, 0, 3, 1});  // simplex -> a (input[1])
+    g.connections.push_back({2, 0, 3, 2});  // white   -> b (input[2])
     g.output_node = 3;
     ASSERT_TRUE(fx.build_graph(g));
 
@@ -307,8 +307,8 @@ TEST(Mask, Blend_Mask1_FullBlend) {
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "white"});
     g.nodes.push_back({3, "blend"});
-    g.connections.push_back({1, 0, 3, 0});
-    g.connections.push_back({2, 0, 3, 1});
+    g.connections.push_back({1, 0, 3, 1});  // simplex -> a (input[1])
+    g.connections.push_back({2, 0, 3, 2});  // white   -> b (input[2])
     g.output_node = 3;
     ASSERT_TRUE(fx.build_graph(g));
 
@@ -331,8 +331,8 @@ TEST(Mask, Blend_Mask0and1_Different) {
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "white"});
     g.nodes.push_back({3, "blend"});
-    g.connections.push_back({1, 0, 3, 0});
-    g.connections.push_back({2, 0, 3, 1});
+    g.connections.push_back({1, 0, 3, 1});  // simplex -> a (input[1])
+    g.connections.push_back({2, 0, 3, 2});  // white   -> b (input[2])
     g.output_node = 3;
     ASSERT_TRUE(fx.build_graph(g));
 
@@ -365,9 +365,9 @@ TEST(Mask, Blend_MaskConnectedViaColorConst_RespondsToValue) {
     g.nodes.push_back({2, "white"});
     g.nodes.push_back({3, "color_const"});  // mask source
     g.nodes.push_back({4, "blend"});
-    g.connections.push_back({1, 0, 4, 0});  // simplex -> A
-    g.connections.push_back({2, 0, 4, 1});  // white   -> B
-    g.connections.push_back({3, 0, 4, 2});  // color   -> mask (as_socket slot 2)
+    g.connections.push_back({1, 0, 4, 1});  // simplex -> a (input[1])
+    g.connections.push_back({2, 0, 4, 2});  // white   -> b (input[2])
+    g.connections.push_back({3, 0, 4, 0});  // color   -> mask (input[0])
     g.output_node = 4;
     ASSERT_TRUE(fx.build_graph(g));
 

@@ -493,9 +493,7 @@ NB_MODULE(texturesynth_core, m) {
         });
 
     nb::class_<PassTiming>(m, "PassTiming")
-        .def_rw("node_id",     &PassTiming::node_id)
         .def_rw("pass_index",  &PassTiming::pass_index)
-        .def_rw("is_chain",    &PassTiming::is_chain)
         .def_rw("duration_us", &PassTiming::duration_us)
         .def_rw("available",   &PassTiming::available);
 }

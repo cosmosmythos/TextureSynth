@@ -34,12 +34,17 @@ add_library(engine STATIC
     src/engine/NodeRegistryLoader.cpp
     src/engine/GraphCompiler.cpp
     src/engine/GraphIR.cpp
-    src/engine/ChainFinder.cpp
-    src/engine/ChainShaderEmitter.cpp
     src/engine/ResourceManager.cpp
     src/engine/AsyncReadback.cpp
     src/engine/ImageUploader.cpp
     src/engine/BindlessTable.cpp
+    src/engine/EngineBarriers.cpp
+    src/engine/EngineDispatch.cpp
+    src/engine/EngineParams.cpp
+    src/engine/EnginePassCompile.cpp
+    src/engine/graphfusion/ActivePathTracer.cpp
+    src/engine/graphfusion/FusedGraphEmitter.cpp
+    src/engine/graphfusion/FusedGraphCompiler.cpp
 )
 target_include_directories(engine PUBLIC src)
 target_link_libraries(engine PUBLIC
@@ -122,8 +127,6 @@ if(BUILD_PYTHON_BINDINGS)
     nanobind_add_module(texturesynth_core NOMINSIZE src/bindings/bindings.cpp)
     target_link_libraries(texturesynth_core PRIVATE engine)
 endif()
-
-option(TE_FORCE_NO_FUSION "Disable pass fusion; use per-node dispatch (regression net)" OFF)
 
 # ---- Unit Tests ----
 option(BUILD_TESTS "Build engine unit tests" OFF)

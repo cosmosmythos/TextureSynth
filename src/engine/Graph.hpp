@@ -60,6 +60,7 @@ struct Socket {
     std::string name;   // "color", "height"
     SocketType type = SocketType::Vec4;
     ChannelFormat format = ChannelFormat::RGBA;
+    float default_value = 0.0f;  // for SocketType::Float inputs
 };
 
 
@@ -69,18 +70,9 @@ struct Socket {
 // PassPlan includes GraphIR. See 03_pass_kind.md §2.2 step 1 for
 // the include-chain reasoning.
 enum class PassKind : uint8_t {
-    // Legacy (kept for one release; check sites migrated in stage 2.3).
-    Dispatch,
-    Upload,                 // CPU/external source - end of a chain upstream
-    ResourceBind = Upload,  // deprecated alias; remove in a future stage
-
-    // Stage 2 classification (consumed by stages 3-6).
-    PurePixel,    // 1 texel in, 1 texel out - fuseable into a chain
-    Boundary,     // needs barriers, halo, or resolution change - chain break
-    Reduction,    // N texels in, 1 out - chain break (output is not 1:1)
-    Feedback,     // reads its own previous output - chain break (temporal)
-    Readback,     // GPU -> CPU - terminal node, end of every chain
-    DebugPreview, // materializes an intermediate for inspection
+    Compute,  // has a compute shader — dispatched normally
+    Upload,   // CPU → GPU source — no shader, no dispatch
+    Readback, // GPU → CPU terminal — no shader, no dispatch
 };
 
 
@@ -124,10 +116,10 @@ struct NodeType {
 
     // Stage 2: how this node participates in chain fusion. Set by
     // NodeRegistryLoader from the .node.json "pass_kind" key (defaults to
-    // "pure_pixel"). Mirrored into ValidatedNode::pass_kind by the
-    // validator, then into ComputePass::pass_kind by GraphCompiler.
+    // "compute"). Mirrored into ValidatedNode::pass_kind by the
+    // validator, then into ComputePass::kind by GraphCompiler.
     // Stages 3-6 (chain find, chain emit, dispatch) consume this.
-    PassKind pass_kind = PassKind::PurePixel;
+    PassKind pass_kind = PassKind::Compute;
 };
 
 

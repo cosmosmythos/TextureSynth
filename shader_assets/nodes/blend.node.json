@@ -3,6 +3,7 @@
     "display_name": "Blend",
     "includes": ["color_common", "blend_common"],
     "inputs": [
+        { "name": "mask", "type": "float", "default": 1.0 },
         { "name": "a", "type": "vec4" },
         { "name": "b", "type": "vec4" }
     ],
@@ -12,11 +13,8 @@
     "params": [
         { "name": "mode", "display_name": "Blend Mode",
           "description": "See blend.py for the enum mapping.",
-          "default": 0.0, "min": 0.0, "max": 28.0, "step": 1.0, "integer": true },
-        { "name": "mask", "display_name": "Mask",
-          "default": 1.0, "min": 0.0, "max": 1.0, "as_socket": true }
+          "default": 0.0, "min": 0.0, "max": 28.0, "step": 1.0, "integer": true }
     ],
     "shader": "blend.glsl",
-    "entry": "node_blend",
-    "pass_kind": "pure_pixel"
+    "entry": "node_blend"
 }

@@ -2,6 +2,7 @@
 #include "engine/NodeResource.hpp"
 #include "engine/GraphIR.hpp"
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <cstddef>
 #include <cstdint>
@@ -85,7 +86,17 @@ public:
                             uint32_t width, uint32_t height,
                             VkFormat default_format,
                             std::string* error = nullptr,
-                            const std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash>* color_classes = nullptr);
+                            const std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash>* color_classes = nullptr,
+                            const std::unordered_set<ResourceUUID, ResourceUUIDHash>* active_resources = nullptr);
+
+    // Preview-only: allocate a single image for the active node's output.
+    // Chain-intermediate nodes stay in GPU registers — no VkImage needed.
+    bool allocate_for_preview(VulkanContext& ctx,
+                              const GraphIR& ir,
+                              const NodeLibrary& lib,
+                              ResourceUUID output_rid,
+                              uint32_t width, uint32_t height,
+                              VkFormat default_format);
 
     // Defer destruction; caller must call tick() each frame.
     void retire_all(VulkanContext& ctx);

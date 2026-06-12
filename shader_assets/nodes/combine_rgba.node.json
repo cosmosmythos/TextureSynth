@@ -14,6 +14,5 @@
     ],
     "params": [],
     "shader": "combine_rgba.glsl",
-    "entry": "node_combine_rgba",
-    "pass_kind": "pure_pixel"
+    "entry": "node_combine_rgba"
 }

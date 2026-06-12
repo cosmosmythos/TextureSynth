@@ -44,19 +44,11 @@ static ChannelFormat parse_channel_format(const std::string& s) {
 }
 
 
-// Stage 2: map .node.json "pass_kind" string -> PassKind enum. Defaults to PurePixel if key missing/unrecognized; logs invalid keys but does not abort.
+// Stage 2: map .node.json "pass_kind" string -> PassKind enum. Defaults to Compute if key missing/unrecognized; logs invalid keys but does not abort.
 PassKind NodeRegistryLoader::parse_pass_kind(const std::string& s) {
-    if (s == "pure_pixel")   return PassKind::PurePixel;
-    if (s == "boundary")     return PassKind::Boundary;
-    if (s == "reduction")    return PassKind::Reduction;
-    if (s == "feedback")     return PassKind::Feedback;
-    if (s == "upload")       return PassKind::Upload;
-    if (s == "readback")     return PassKind::Readback;
-    if (s == "debug_preview") return PassKind::DebugPreview;
-    if (!s.empty()) {
-        log_warn("Unknown pass_kind '" + s + "', defaulting to pure_pixel");
-    }
-    return PassKind::PurePixel;
+    if (s == "upload")   return PassKind::Upload;
+    if (s == "readback") return PassKind::Readback;
+    return PassKind::Compute;
 }
 
 
@@ -123,6 +115,7 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                 socket.name   = s.at("name").get<std::string>();
                 socket.type   = parse_socket_type(s.value("type", "vec4"));
                 socket.format = parse_channel_format(s.value("format", "rgba"));
+                socket.default_value = s.value("default", 0.0f);
                 n.inputs.push_back(std::move(socket));
             }
             for (auto& s : m.value("outputs", json::array())) {

@@ -23,6 +23,5 @@
     ],
     "shader": "gabor.glsl",
     "entry": "node_gabor",
-    "format_sensitive": true,
-    "pass_kind": "pure_pixel"
+    "format_sensitive": true
 }

@@ -13,9 +13,6 @@ struct CompileGraphResult {
     PassPlan pass_plan;
     std::unordered_map<NodeId, int> param_base_slot;
     int total_param_floats = 0;
-
-    // Retained for backward compat / debugging; no longer used by the engine.
-    std::string glsl;
 };
 
 class GraphCompiler {
@@ -24,5 +21,11 @@ public:
                                       const NodeLibrary& lib);
 };
 
+std::string emit_node_shader(const ValidatedNode& vn,
+                             const NodeType& type,
+                             const ShaderVariantKey& key,
+                             int param_base,
+                             uint32_t input_count,
+                             ChannelFormat format);
 
 } // namespace te

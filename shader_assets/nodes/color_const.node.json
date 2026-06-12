@@ -15,6 +15,5 @@
         { "name": "a",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 }
     ],
     "shader": "color_const.glsl",
-    "entry": "node_color_const",
-    "pass_kind": "pure_pixel"
+    "entry": "node_color_const"
 }

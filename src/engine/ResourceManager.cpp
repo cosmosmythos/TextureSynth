@@ -129,7 +129,8 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
                                          uint32_t width, uint32_t height,
                                          VkFormat default_format,
                                          std::string* error,
-                                         const std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash>* color_classes) {
+                                         const std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash>* color_classes,
+                                         const std::unordered_set<ResourceUUID, ResourceUUIDHash>* active_resources) {
     retire_all(ctx);
     // alias_pools_ holds metadata only (no VmaPools anymore); the actual
     // VmaAllocations are owned by primary NodeResources and freed via
@@ -148,6 +149,8 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         const auto* type = lib.find(vn.type_id);
         const uint32_t num_outputs = type ? std::max(1u, (uint32_t)type->outputs.size()) : 1;
         for (uint32_t output_id = 0; output_id < num_outputs; ++output_id) {
+            ResourceUUID rid{vn.id, output_id};
+            if (active_resources && !active_resources->count(rid)) continue;
             VkFormat fmt = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
             total += (size_t)width * height * pixel_bytes_(fmt);
         }
@@ -176,6 +179,7 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         const uint32_t num_outputs = std::max(1u, (uint32_t)type->outputs.size());
         for (uint32_t output_id = 0; output_id < num_outputs; ++output_id) {
             ResourceUUID rid{vn.id, output_id};
+            if (active_resources && !active_resources->count(rid)) continue;
             VkFormat fmt = default_format;
             if (output_id < type->outputs.size()) {
                 fmt = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
@@ -381,6 +385,43 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
     log_info("ResourceManager: Allocated " + std::to_string(live_.size())
              + " images, " + std::to_string(current_bytes_ / (1024 * 1024)) + " MB logical"
              + (alias_pools_.empty() ? "" : ", " + std::to_string(alias_pools_.size()) + " alias groups"));
+    return true;
+}
+
+
+bool ResourceManager::allocate_for_preview(VulkanContext& ctx,
+                                           const GraphIR& ir,
+                                           const NodeLibrary& lib,
+                                           ResourceUUID output_rid,
+                                           uint32_t width, uint32_t height,
+                                           VkFormat default_format) {
+    retire_all(ctx);
+    alias_pools_.clear();
+
+    const auto* vn = ir.find(output_rid.node_id);
+    const auto* type = vn ? lib.find(vn->type_id) : nullptr;
+    VkFormat fmt = default_format;
+    if (type && !type->outputs.empty()) {
+        fmt = resolve_node_format(vn->format_override, lib, vn->type_id, default_format);
+        if (type->outputs[0].format != ChannelFormat::RGBA)
+            fmt = channel_to_vk_format(type->outputs[0].format);
+    }
+
+    NodeResource r;
+    r.node_id = output_rid.node_id;
+    r.output_index = output_rid.output_index;
+    r.format = fmt;
+    r.alias_group_id = 0;
+    std::string dbg = (vn ? vn->debug_name : "output") + "_out" + std::to_string(output_rid.output_index);
+    if (!create_image_(ctx, r, width, height, dbg)) {
+        log_error("ResourceManager: preview image allocation failed for " + dbg);
+        return false;
+    }
+    live_[output_rid] = std::move(r);
+    current_bytes_ = (size_t)width * height * pixel_bytes_(fmt);
+
+    log_info("ResourceManager: Preview allocated 1 image, "
+             + std::to_string(current_bytes_ / (1024 * 1024)) + " MB");
     return true;
 }
 

@@ -1,7 +1,5 @@
 #include "engine/GraphCompiler.hpp"
 #include "engine/Graph.hpp"
-#include "engine/ChainFinder.hpp"
-#include "engine/ChainShaderEmitter.hpp"
 #include "engine/PushConstants.hpp"
 #include "engine/BindlessTable.hpp"
 #include "engine/Logging.hpp"
@@ -51,38 +49,7 @@ static ShaderVariantKey build_variant_key(const NodeType& type,
 }
 
 
-// Stage 5: FusedVariantKey for a chain. Ordered over the chain's
-// node types so [perlin,invert,grayscale] and [grayscale,invert,perlin]
-// hash to different values. Mirrors build_variant_key: param_socket_mask
-// and input_count per node. feature_flags is the OR-fold across nodes
-// (low 3 bits = max(format_override) seen in the chain; the tail's
-// format drives the chain's actual output).
-static FusedVariantKey build_fused_key(const Chain& chain,
-                                       const GraphIR& ir,
-                                       const NodeLibrary& lib) {
-    FusedVariantKey k;
-    uint32_t fmt_or = 0;
-    for (NodeId n : chain.nodes) {
-        const auto* inst = ir.find(n);
-        const auto* type = inst ? lib.find(inst->type_id) : nullptr;
-        if (!type) continue;
-        k.node_type_ids.push_back(type->id);
-        uint32_t mask = 0;
-        for (uint32_t i = 0; i < type->params.size() && i < 32; ++i) {
-            if (type->params[i].as_socket) mask |= (1u << i);
-        }
-        k.param_socket_masks.push_back(mask);
-        k.input_counts.push_back(static_cast<uint32_t>(type->inputs.size()));
-        if (inst) {
-            fmt_or |= static_cast<uint32_t>(inst->format_override) & 0x7u;
-        }
-    }
-    k.feature_flags = fmt_or;
-    return k;
-}
-
-
-static std::string emit_node_shader(const ValidatedNode& vn,
+std::string emit_node_shader(const ValidatedNode& vn,
                                     const NodeType& type,
                                     const ShaderVariantKey& key,
                                     int param_base,
@@ -176,11 +143,22 @@ static std::string emit_node_shader(const ValidatedNode& vn,
       << "    vec2 uv = vec2(coord) / vec2(pc.resolution_x, pc.resolution_y);\n";
 
     // Load non-sampler vec4/float inputs via bindless texelFetch, indexed by socket position.
+    // Float inputs use hybrid pattern: SSBO default when unconnected (slot < 6), texture when connected.
+    uint32_t float_input_idx = 0;
     for (uint32_t i = 0; i < inputs_n; ++i) {
         const auto& sock = type.inputs[i];
         if (sock.type == SocketType::Sampler2D) continue;
-        s << "    vec4 in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
-          << i << "])], coord, 0);\n";
+        if (sock.type == SocketType::Float) {
+            uint32_t float_ssbo_idx = (uint32_t)type.params.size() + float_input_idx;
+            s << "    float in" << i << " = (pc.in_sampled_slots[" << i << "] < 6u"
+              << " ? node_params[pc.param_ring_idx].v[pc.param_base_slot + " << float_ssbo_idx << "]"
+              << " : texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
+              << i << "])], coord, 0).r);\n";
+            ++float_input_idx;
+        } else {
+            s << "    vec4 in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
+              << i << "])], coord, 0);\n";
+        }
     }
 
     // Call node function: node_<id>(uv, inputs..., params...)
@@ -265,13 +243,17 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     if (ir.nodes.empty()) { result.error = "Graph has no nodes"; return result; }
 
     // 1. Assign SSBO base slots per node.
+    // Layout per node: [manifest_params..., float_input_defaults...]
     std::unordered_map<NodeId, int> param_base_slot;
     int next_slot = 0;
     for (NodeId id : ir.eval_order) {
         auto* inst = ir.find(id);
         auto* type = lib.find(inst->type_id);
         param_base_slot[id] = next_slot;
-        next_slot += (int)type->params.size();
+        uint32_t float_input_count = 0;
+        for (const auto& inp : type->inputs)
+            if (inp.type == SocketType::Float) ++float_input_count;
+        next_slot += (int)type->params.size() + (int)float_input_count;
     }
 
     // 2. Build the PassPlan with one pass per node, and emit GLSL per pass.
@@ -293,21 +275,7 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
         // the executor can emit a clear-to-zero dispatch when set.
         pass.bypassed        = inst->bypassed;
 
-        // Stage 2: mirror the pass_kind classification from ValidatedNode
-        // (sourced from NodeType by the validator). Stages 3-6 will read
-        // pass.pass_kind to drive chain finding and chain shader emission.
-        pass.pass_kind       = inst->pass_kind;
-
-        // Derive the legacy binary `kind` from pass_kind for the executor:
-        //   Upload / Readback  -> ResourceBind (no dispatch, state only)
-        //   everything else    -> Dispatch
-        // The executor's existing branch on `kind == PassKind::Dispatch`
-        // remains the gate for variant-key build + shader emission. See
-        // 03_pass_kind.md §2.3 for why we keep both fields.
-        pass.kind            = (pass.pass_kind == PassKind::Upload ||
-                                pass.pass_kind == PassKind::Readback)
-                              ? PassKind::ResourceBind
-                              : PassKind::Dispatch;
+        pass.kind            = inst->pass_kind;
     
         const uint32_t inputs_n = (uint32_t)type->inputs.size();
         uint32_t param_socket_count = 0;
@@ -324,7 +292,7 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
         for (const auto& inp : type->inputs)
             pass.input_formats.push_back(inp.format);
     
-        if (pass.kind == PassKind::Dispatch) {
+        if (pass.kind == PassKind::Compute) {
             // Build variant key BEFORE emitting GLSL — cache lookup uses this.
             // format_override flows from ValidatedNode (set from NodeInstance
             // by validate_graph) into the cache key so each format gets its
@@ -337,39 +305,9 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     }
     plan.final_output_resource = {ir.output_node, ir.output_socket};
 
-    // Stage 3: find chains (one Chain per fused dispatch). The
-    // per-node PassPlan is still populated above; chains are an
-    // ADDITIONAL structure that Stages 4-6 will consume. Existing
-    // per-node code is untouched -- this is a pure addition.
-    plan.chains = find_chains(ir, lib);
-
-    // Fill each chain member's global param_base_slot from the per-node
-    // assignment (needed because chain-local offsets differ from global slots
-    // when non-chain nodes interleave in eval_order).
-    for (auto& ch : plan.chains) {
-        ch.param_global_slots.reserve(ch.nodes.size());
-        for (NodeId nid : ch.nodes) {
-            auto it = param_base_slot.find(nid);
-            ch.param_global_slots.push_back(
-                it != param_base_slot.end()
-                    ? static_cast<uint32_t>(it->second) : 0u);
-        }
-    }
-
-    // Stage 6 aliasing: compute chain_index_of_pass, lifetimes, color classes.
+    // Stage 6 aliasing: compute lifetimes and color classes (no chains).
     {
-        std::unordered_map<NodeId, uint32_t> pass_idx_by_node;
-        pass_idx_by_node.reserve(plan.passes.size());
-        for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i)
-            pass_idx_by_node[plan.passes[i].node_id] = i;
-
         plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
-        for (size_t ci = 0; ci < plan.chains.size(); ++ci)
-            for (NodeId n : plan.chains[ci].nodes) {
-                auto it = pass_idx_by_node.find(n);
-                if (it != pass_idx_by_node.end())
-                    plan.chain_index_of_pass[it->second] = (uint32_t)ci;
-            }
 
         for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
             const auto& pass = plan.passes[i];
@@ -423,25 +361,6 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
         }
     }
 
-    // Stage 4.1: emit a fused GLSL shader for each chain. The result
-    // is stored in Chain::glsl and consumed by Stages 5 (cache key) and
-    // 6 (engine dispatch). Chains that are not "linear" per the Stage
-    // 4.1 contract (multi-input nodes, multi-output sources, etc.) are
-    // left with empty glsl; the engine falls back to the per-pass path
-    // for those until Stage 4.2 lifts the constraint.
-    for (auto& ch : plan.chains) {
-        auto glsl = emit_linear(ch, ir, lib);
-        if (glsl.ok()) {
-            ch.glsl = std::move(glsl.source);
-            ch.external_inputs = glsl.external_inputs;
-            ch.variant_key = build_fused_key(ch, ir, lib);
-        } else {
-            log_warn("ChainShaderEmitter: chain ["
-                     + [&]{ std::string s; for (auto n : ch.nodes) s += std::to_string(n) + ","; return s; }()
-                     + "] fell back to per-pass path: " + glsl.error);
-        }
-    }
-
     // ── User-facing error FIRST (param budget) ─────────────────────
     // next_slot is the total floats consumed by the graph. The legal
     // range is [0, MAX_NODE_PARAMS] inclusive — strictly greater means
@@ -470,6 +389,13 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
                     + " output " + std::to_string(rid.output_index);
                 return result;
             }
+        }
+    }
+
+    plan.active_resources.insert(plan.final_output_resource);
+    for (const auto& pass : plan.passes) {
+        for (const auto& rid : pass.output_resources) {
+            plan.active_resources.insert(rid);
         }
     }
 
