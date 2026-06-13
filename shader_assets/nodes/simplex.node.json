@@ -1,21 +1,20 @@
 {
     "id": "simplex",
     "display_name": "Simplex Noise",
-    "description": "Tileable 2-D simplex FBM with analytical gradient derivatives. Based on psrdnoise2 (Gustavson & McEwan, JCGT 2022). Output: R=noise [0,1], G=dN/dx, B=dN/dy. Connect G+B to domain-warp or normal-map nodes for artifact-free effects.",
+    "description": "",
     "includes": ["remap", "noise_common"],
     "inputs": [],
     "outputs": [
-        { "name": "color", "type": "vec4", "description": "R=noise [0,1], G=∂n/∂x [0,1 remapped], B=∂n/∂y [0,1 remapped], A=1" }
+        { "name": "color", "type": "vec4" }
     ],
     "params": [
-        { "name": "period", "display_name": "Period (even integer)", "default": 8.0, "min": 2.0, "max": 64.0, "step": 2.0, "integer": true,
-            "description": "Tile size in simplex lattice cells. MUST be a positive EVEN integer (snapped automatically). The simplex lattice has a 2-row Y stagger; odd periods double the actual Y repeat." },
-        { "name": "octaves", "display_name": "Octaves", "description": "Number of FBM octave layers (1-8). Fractional values blend the last octave smoothly.", "default": 5.0, "min": 1.0, "max": 8.0, "step": 0.1 },
-        { "name": "lacunarity", "display_name": "Lacunarity", "description": "Frequency multiplier per octave. Integer values (2.0 standard) guarantee exact tiling at every octave.", "default": 2.0, "min": 1.0, "max": 4.0, "step": 1.0, "integer": true },
-        { "name": "roughness", "display_name": "Roughness", "description": "Amplitude multiplier per octave (persistence). 0.5 = standard FBM.", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01 },
+        { "name": "period", "display_name": "Period (even integer)", "default": 8.0, "min": 2.0, "max": 64.0, "step": 2.0, "integer": true },
+        { "name": "octaves", "display_name": "Octaves", "default": 5.0, "min": 1.0, "max": 8.0, "step": 0.1 },
+        { "name": "lacunarity", "display_name": "Lacunarity", "default": 2.0, "min": 1.0, "max": 4.0, "step": 1.0, "integer": true },
+        { "name": "roughness", "display_name": "Roughness", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01 },
         { "name": "speed", "display_name": "Speed", "default": 0.0, "min": 0.0, "max": 5.0, "step": 0.01 },
-        { "name": "rotation", "display_name": "Rotation (radians)", "description": "Rotates gradient directions (flow noise effect). 0=no rotation, 6.283=full circle.", "default": 0.0, "min": 0.0, "max": 6.28318, "step": 0.001 },
-        { "name": "seed", "display_name": "Seed", "description": "Per-node noise seed. Change to get a fully decorrelated pattern.", "default": 0.0, "min": 0.0, "max": 65535.0, "step": 1.0, "integer": true }
+        { "name": "rotation", "display_name": "Rotation (radians)", "default": 0.0, "min": 0.0, "max": 6.28318, "step": 0.001 },
+        { "name": "seed", "display_name": "Seed", "default": 0.0, "min": 0.0, "max": 65535.0, "step": 1.0, "integer": true }
     ],
     "shader": "simplex.glsl",
     "entry": "node_simplex",

@@ -1,7 +1,7 @@
 {
     "id": "image",
     "display_name": "Image Input",
-    "description": "Loads an external image or Blender texture map.",
+    "description": "",
     "includes": [],
     "inputs": [
         { "name": "tex", "type": "sampler2D" }

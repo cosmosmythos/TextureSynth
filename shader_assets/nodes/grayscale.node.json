@@ -1,7 +1,7 @@
 {
     "id": "grayscale",
     "display_name": "Grayscale",
-    "description": "Convert a color input to grayscale. Mode 0=Luminance(Rec.709) 1=Average 2=Max 3=Min",
+    "description": "",
     "includes": [],
     "inputs": [
         { "name": "mask", "type": "float", "default": 1.0 },
@@ -14,7 +14,6 @@
         {
             "name": "mode",
             "display_name": "Mode",
-            "description": "0=Luminance(Rec709) 1=Average 2=Max 3=Min",
             "default": 0.0,
             "min": 0.0,
             "max": 3.0,

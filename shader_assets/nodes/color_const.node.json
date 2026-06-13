@@ -1,7 +1,7 @@
 {
     "id": "color_const",
     "display_name": "Color",
-    "description": "Constant color or grayscale value input. Mode 0=Grayscale 1=RGBA.",
+    "description": "",
     "includes": [],
     "inputs": [],
     "outputs": [

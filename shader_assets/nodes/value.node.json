@@ -1,7 +1,7 @@
 {
     "id": "value",
     "display_name": "Value Noise",
-    "description": "Tileable value (lattice-scalar) FBM. Blockier than Perlin; ideal for clouds, organic blobs.",
+    "description": "",
     "includes": ["remap", "noise_common"],
     "inputs": [],
     "outputs": [

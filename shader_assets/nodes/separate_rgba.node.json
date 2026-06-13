@@ -1,7 +1,7 @@
 {
     "id": "separate_rgba",
     "display_name": "Separate RGBA",
-    "description": "Split a color texture into four Mono channels.",
+    "description": "",
     "includes": [],
     "inputs": [
         { "name": "color", "type": "vec4" }

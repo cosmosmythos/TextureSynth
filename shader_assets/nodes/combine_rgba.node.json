@@ -1,7 +1,7 @@
 {
     "id": "combine_rgba",
     "display_name": "Combine RGBA",
-    "description": "Combine grayscale inputs into a single RGBA color output",
+    "description": "",
     "includes": [],
     "inputs": [
         { "name": "R", "type": "vec4", "format": "mono" },
