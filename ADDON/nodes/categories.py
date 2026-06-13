@@ -3,7 +3,7 @@ import bpy
 _CATEGORY_ORDER = ('NOISE', 'INPUT', 'FILTER', 'BLEND', 'COLOR', 'OUTPUT')
 
 _CATEGORY_LABELS = {
-    'NOISE':  'Noise Generators',
+    'NOISE':  'Generators',
     'INPUT':  'Input',
     'FILTER': 'Filters',
     'BLEND':  'Blend',
@@ -41,28 +41,17 @@ def _build_category_menus():
 _category_menus = _build_category_menus()
 
 
-class NODE_MT_category_texturesynth(bpy.types.Menu):
-    bl_idname = "NODE_MT_category_texturesynth"
-    bl_label = "TextureSynth"
-
-    def draw(self, context):
-        layout = self.layout
-        for cat in _CATEGORY_ORDER:
-            cls_name = f"NODE_MT_sub_texturesynth_{cat.lower()}"
-            label = _CATEGORY_LABELS.get(cat, cat.title())
-            layout.menu(cls_name, text=label)
-
-
 def _draw_add_menu(self, context):
     if context.space_data.tree_type != 'TextureSynthTreeType':
         return
     layout = self.layout
     layout.separator()
-    layout.menu("NODE_MT_category_texturesynth", text="TextureSynth")
+    for cat in _CATEGORY_ORDER:
+        cls_name = f"NODE_MT_sub_texturesynth_{cat.lower()}"
+        label = _CATEGORY_LABELS.get(cat, cat.title())
+        layout.menu(cls_name, text=label)
 
-classes = (
-    NODE_MT_category_texturesynth,
-) + tuple(_category_menus.values())
+classes = tuple(_category_menus.values())
 
 
 def _register_extra():

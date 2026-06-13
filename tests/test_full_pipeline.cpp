@@ -68,12 +68,12 @@ TEST(Engine, EndToEndSingleNodeRender) {
 // DirtySet (Layer 2). The next record_dispatch() would then call
 // dirty_set_.propagate() on an empty seed and early-exit on
 // `if (!dirty_set_.any()) return;` at Engine.cpp:776, republishing the
-// previous frame via async readback's synthetic-publish cache. After
-// the fix, the seed change produces different pixels in frame 2.
+// previous frame via async readback's synthetic-publish cache. After the
+// fix, the seed change produces different pixels in frame 2.
 //
-// We use the "value" noise node (8 params: period, octaves, lacunarity,
-// gain, offsetX, offsetY, speed, seed). The shader hashes (seed ^ pc.seed)
-// into the noise, so changing seed -> different pixels.
+// We use the "value" noise node (6 params: period, octaves, lacunarity,
+// roughness, speed, seed). The shader hashes (seed ^ pc.seed) into the
+// noise, so changing seed -> different pixels.
 TEST(Engine, ParamUpdateTriggersRedispatch) {
     te::Engine engine;
 
@@ -120,13 +120,12 @@ TEST(Engine, ParamUpdateTriggersRedispatch) {
     ASSERT_FALSE(p1.empty()) << "no pixels read back from frame 1";
 
     // Change the seed param. This must trigger a re-dispatch.
-    // value.node.json: params are {period, octaves, lacunarity, gain,
-    // offsetX, offsetY, speed, seed} with defaults {8, 5, 2, 0.5, 0, 0, 0, 0}.
+    // value.node.json: params are {period, octaves, lacunarity, roughness,
+    // speed, seed} with defaults {8, 5, 2, 0.5, 0, 0}.
     // Setting seed to 1234 -> iseed = 1234 ^ 1 = 1235, very different noise.
     std::unordered_map<std::string, float> kv{
         {"period", 8.0f}, {"octaves", 5.0f}, {"lacunarity", 2.0f},
-        {"gain", 0.5f},   {"offsetX", 0.0f}, {"offsetY", 0.0f},
-        {"speed", 0.0f},  {"seed", 1234.0f},
+        {"roughness", 0.5f}, {"speed", 0.0f}, {"seed", 1234.0f},
     };
     engine.update_node_params_by_name(1, kv);
 
@@ -356,8 +355,7 @@ TEST(Engine, ChainDispatch_ParamUpdateFiresOneChain) {
     // Change perlin's seed -> different pixels, still 1 dispatch.
     std::unordered_map<std::string, float> kv{
         {"period", 8.0f}, {"octaves", 5.0f}, {"lacunarity", 2.0f},
-        {"gain", 0.5f},   {"offsetX", 0.0f}, {"offsetY", 0.0f},
-        {"speed", 0.0f},  {"seed", 1234.0f},
+        {"roughness", 0.5f}, {"speed", 0.0f}, {"seed", 1234.0f},
     };
     engine.update_node_params_by_name(1, kv);
 

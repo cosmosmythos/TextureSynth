@@ -8,11 +8,11 @@
         { "name": "color", "type": "vec4" }
     ],
     "params": [
-        { "name": "mode",  "default": 1.0, "min": 0.0, "max": 1.0, "step": 1.0, "integer": true },
-        { "name": "r",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 },
-        { "name": "g",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 },
-        { "name": "b",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 },
-        { "name": "a",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 }
+        { "name": "mode",  "display_name": "Mode",  "default": 1.0, "min": 0.0, "max": 1.0, "step": 1.0, "integer": true },
+        { "name": "r",     "display_name": "R",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 },
+        { "name": "g",     "display_name": "G",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 },
+        { "name": "b",     "display_name": "B",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 },
+        { "name": "a",     "display_name": "A",     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001 }
     ],
     "shader": "color_const.glsl",
     "entry": "node_color_const"

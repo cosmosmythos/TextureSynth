@@ -7,7 +7,7 @@
         { "name": "R", "type": "vec4", "format": "mono" },
         { "name": "G", "type": "vec4", "format": "mono" },
         { "name": "B", "type": "vec4", "format": "mono" },
-        { "name": "A", "type": "vec4", "format": "mono" }
+        { "name": "A", "type": "vec4", "format": "mono", "default": 1.0 }
     ],
     "outputs": [
         { "name": "color", "type": "vec4" }

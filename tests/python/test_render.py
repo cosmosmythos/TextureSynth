@@ -275,8 +275,7 @@ def test_param_update_triggers_redispatch(engine):
     # different noise.
     engine.update_node_params_by_name(1, {
         "period": 8.0, "octaves": 5.0, "lacunarity": 2.0,
-        "gain": 0.5, "offsetX": 0.0, "offsetY": 0.0,
-        "speed": 0.0, "seed": 1234.0,
+        "roughness": 0.5, "speed": 0.0, "seed": 1234.0,
     })
 
     # Frame 2: must be different from frame 1

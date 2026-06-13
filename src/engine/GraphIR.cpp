@@ -246,12 +246,21 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     // source (the non-muted node feeding its input[0]). Otherwise the
     // engine would try to read back an image for a node that was excluded
     // from ir.nodes, yielding white/garbage.
+    //
+    // When the rewire is SEVERED (muted node has no input[0] connection),
+    // the original output_node is excluded from ir.nodes.  Fall back to the
+    // first available node in the IR (topologically earliest = a source).
     {
         NodeId on = graph.output_node;
         while (is_muted(graph.nodes, on)) {
             auto eff = resolve_muted_source(on, graph.nodes, graph.connections);
-            if (eff.first == SEVERED) break;  // severed -- keep original
+            if (eff.first == SEVERED) break;  // severed -- fall through below
             on = eff.first;
+        }
+        if (!ir.node_index.empty() && !ir.node_index.count(on)) {
+            on = ir.nodes.front().id;
+        } else if (ir.node_index.empty()) {
+            on = 0;
         }
         ir.output_node = on;
         ir.output_socket = graph.output_socket;

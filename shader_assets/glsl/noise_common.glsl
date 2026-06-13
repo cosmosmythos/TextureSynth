@@ -586,123 +586,172 @@ const float TS_OCTAVE_SEED_PRIME = 6791.0;
 const uint  TS_OCTAVE_SEED_PRIME_U = 6791u;
 const float TS_PI_OVER_PHI = 1.94161103873; // π / φ
 
-// ---- Value FBM ----
-float ts_fbm_value(vec2 p, int period, int octaves,
+// ---- Value FBM (Houdini-matched octave blending) ----
+float ts_fbm_value(vec2 p, int period, float octaves,
                    float lacunarity, float gain, uint seed,
                    out vec2 total_grad) {
-    float sum = 0.0, amp = 1.0, norm = 0.0, freq = 1.0, fper = float(period);
-    total_grad = vec2(0.0);
-    for (int i = 0; i < octaves; ++i) {
-        int iper = max(int(round(fper)), 1);
-        uint os = seed + uint(i) * TS_OCTAVE_SEED_PRIME_U;
-        vec2 g;
-        float n = ts_value_tile(p * freq, iper, os, g);
-        sum += amp * n;
-        total_grad += amp * freq * g;
-        norm += amp;
-        amp *= gain; freq *= lacunarity; fper *= lacunarity;
-    }
+    float weight = 1.0;
+    float g = gain * min(lacunarity, 1.0);
+    float freq = 1.0, fper = float(period);
+    int iper = max(int(round(fper)), 1);
+    uint os = seed;
+    vec2 gr;
+    float base = ts_value_tile(p * freq, iper, os, gr);
+    total_grad = gr;
+    float norm = 1.0;
+    float oct = 0.0;
+    if (oct >= octaves) { return base; }
+    do {
+        weight *= g;
+        oct += 1.0;
+        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
+        freq *= lacunarity;
+        fper *= lacunarity;
+        iper = max(int(round(fper)), 1);
+        os += TS_OCTAVE_SEED_PRIME_U;
+        vec2 g2;
+        float n = ts_value_tile(p * freq, iper, os, g2);
+        base += weight * n;
+        total_grad += weight * freq * g2;
+        norm += weight;
+    } while (oct < octaves);
     float inv = 1.0 / max(norm, 1e-6);
     total_grad *= inv;
-    return sum * inv;
+    return base * inv;
 }
 
-float ts_fbm_value(vec2 p, int period, int octaves,
+float ts_fbm_value(vec2 p, int period, float octaves,
                    float lacunarity, float gain, uint seed) {
     vec2 g; return ts_fbm_value(p, period, octaves, lacunarity, gain, seed, g);
 }
 
-// ---- Perlin FBM ----
-float ts_fbm_perlin(vec2 p, int period, int octaves,
+// ---- Perlin FBM (Houdini-matched octave blending) ----
+float ts_fbm_perlin(vec2 p, int period, float octaves,
                     float lacunarity, float gain, uint seed,
                     out vec2 total_grad) {
-    float sum = 0.0, amp = 1.0, norm = 0.0, freq = 1.0, fper = float(period);
-    total_grad = vec2(0.0);
-    for (int i = 0; i < octaves; ++i) {
-        int iper = max(int(round(fper)), 1);
-        uint os = seed + uint(i) * TS_OCTAVE_SEED_PRIME_U;
-        vec2 g;
-        float n = ts_perlin_tile(p * freq, iper, os, g);
-        sum += amp * n;
-        total_grad += amp * freq * g;
-        norm += amp;
-        amp *= gain; freq *= lacunarity; fper *= lacunarity;
-    }
+    float weight = 1.0;
+    float g = gain * min(lacunarity, 1.0);
+    float freq = 1.0, fper = float(period);
+    int iper = max(int(round(fper)), 1);
+    uint os = seed;
+    vec2 gr;
+    float base = ts_perlin_tile(p * freq, iper, os, gr);
+    total_grad = gr;
+    float norm = 1.0;
+    float oct = 0.0;
+    if (oct >= octaves) { return base; }
+    do {
+        weight *= g;
+        oct += 1.0;
+        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
+        freq *= lacunarity;
+        fper *= lacunarity;
+        iper = max(int(round(fper)), 1);
+        os += TS_OCTAVE_SEED_PRIME_U;
+        vec2 g2;
+        float n = ts_perlin_tile(p * freq, iper, os, g2);
+        base += weight * n;
+        total_grad += weight * freq * g2;
+        norm += weight;
+    } while (oct < octaves);
     float inv = 1.0 / max(norm, 1e-6);
     total_grad *= inv;
-    return sum * inv;
+    return base * inv;
 }
 
-float ts_fbm_perlin(vec2 p, int period, int octaves,
+float ts_fbm_perlin(vec2 p, int period, float octaves,
                     float lacunarity, float gain, uint seed) {
     vec2 g; return ts_fbm_perlin(p, period, octaves, lacunarity, gain, seed, g);
 }
 
-// ---- Simplex FBM ----
-float ts_fbm_simplex(vec2 p, ivec2 period, int octaves,
+// ---- Simplex FBM (Houdini-matched octave blending) ----
+float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
                      float lacunarity, float gain,
                      float alpha, uint seed,
                      out vec2 total_grad) {
-    float sum = 0.0, amp = 1.0, norm = 0.0, freq = 1.0;
-    vec2  fper = vec2(period);
-    total_grad = vec2(0.0);
-
-    for (int i = 0; i < octaves; ++i) {
-        // Snap period.x to int, period.y to even int — both enforced per octave
-        ivec2 per_i = ivec2(
-            max(int(round(fper.x)),         1),
-            max(int(round(fper.y * 0.5))*2, 2)
-        );
-
-        // Per-octave alpha: seed base rotation + irrational octave step (π/φ)
-        float oct_alpha = alpha + float(i) * TS_PI_OVER_PHI;
-        uint  oct_seed  = seed + uint(i) * TS_OCTAVE_SEED_PRIME_U;
-
-        vec2 g;
-        float n = ts_simplex_tile_seeded(p * freq, per_i, oct_alpha, oct_seed, g);
-
-        sum        += amp * n;
-        total_grad += amp * freq * g;
-        norm       += amp;
-
-        amp  *= gain;
+    float weight = 1.0;
+    float g = gain * min(lacunarity, 1.0);
+    float freq = 1.0;
+    vec2 fper = vec2(period);
+    ivec2 per_i = ivec2(
+        max(int(round(fper.x)), 1),
+        max(int(round(fper.y * 0.5)) * 2, 2)
+    );
+    uint os = seed;
+    float oct_alpha = alpha;
+    vec2 gr;
+    float base = ts_simplex_tile_seeded(p * freq, per_i, oct_alpha, os, gr);
+    total_grad = gr;
+    float norm = 1.0;
+    float oct = 0.0;
+    if (oct >= octaves) { return base; }
+    do {
+        weight *= g;
+        oct += 1.0;
+        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
         freq *= lacunarity;
         fper *= lacunarity;
-    }
-
+        per_i = ivec2(
+            max(int(round(fper.x)), 1),
+            max(int(round(fper.y * 0.5)) * 2, 2)
+        );
+        oct_alpha = alpha + oct * TS_PI_OVER_PHI;
+        os += TS_OCTAVE_SEED_PRIME_U;
+        vec2 g2;
+        float n = ts_simplex_tile_seeded(p * freq, per_i, oct_alpha, os, g2);
+        base += weight * n;
+        total_grad += weight * freq * g2;
+        norm += weight;
+    } while (oct < octaves);
     float inv = 1.0 / max(norm, 1e-6);
     total_grad *= inv;
-    return sum * inv;
+    return base * inv;
 }
 
-float ts_fbm_simplex(vec2 p, ivec2 period, int octaves,
+float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
                      float lacunarity, float gain,
                      float alpha, uint seed) {
     vec2 g;
     return ts_fbm_simplex(p, period, octaves, lacunarity, gain, alpha, seed, g);
 }
 
-// ---- Worley FBM ----
+// ---- Worley FBM (Houdini-matched octave blending) ----
 // FBM of F1 distances.  Produces multi-scale cellular patterns (foam, lichen,
 // weathered stone).  No analytical derivative for Worley — caller uses finite
 // differences if needed (cellular noise has discontinuous gradients at cell
 // boundaries anyway, so analytical derivatives are ill-defined there).
-TSWorley ts_fbm_worley(vec2 p, int period, int octaves,
+TSWorley ts_fbm_worley(vec2 p, int period, float octaves,
                        float lacunarity, float gain, float jitter, uint seed) {
-    float f1_sum = 0.0, f2_sum = 0.0, id_sum = 0.0;
-    float amp = 1.0, norm = 0.0, freq = 1.0, fper = float(period);
-
-    for (int i = 0; i < octaves; ++i) {
-        int iper = max(int(round(fper)), 1);
-        uint os  = seed + uint(i) * TS_OCTAVE_SEED_PRIME_U;
-        TSWorley w = ts_worley_tile(p * freq, iper, jitter, os);
-        f1_sum += amp * w.f1;
-        f2_sum += amp * w.f2;
-        id_sum += amp * w.cell_id;
-        norm   += amp;
-        amp *= gain; freq *= lacunarity; fper *= lacunarity;
+    float weight = 1.0;
+    float g = gain * min(lacunarity, 1.0);
+    float freq = 1.0, fper = float(period);
+    int iper = max(int(round(fper)), 1);
+    uint os = seed;
+    TSWorley base = ts_worley_tile(p * freq, iper, jitter, os);
+    float f1_sum = base.f1, f2_sum = base.f2, id_sum = base.cell_id;
+    float norm = 1.0;
+    float oct = 0.0;
+    if (oct >= octaves) {
+        TSWorley o;
+        o.f1 = clamp(f1_sum, 0.0, 1.0);
+        o.f2 = clamp(f2_sum, 0.0, 1.0);
+        o.cell_id = clamp(id_sum, 0.0, 1.0);
+        return o;
     }
-
+    do {
+        weight *= g;
+        oct += 1.0;
+        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
+        freq *= lacunarity;
+        fper *= lacunarity;
+        iper = max(int(round(fper)), 1);
+        os += TS_OCTAVE_SEED_PRIME_U;
+        TSWorley w2 = ts_worley_tile(p * freq, iper, jitter, os);
+        f1_sum += weight * w2.f1;
+        f2_sum += weight * w2.f2;
+        id_sum += weight * w2.cell_id;
+        norm += weight;
+    } while (oct < octaves);
     float inv = 1.0 / max(norm, 1e-6);
     TSWorley o;
     o.f1 = clamp(f1_sum * inv, 0.0, 1.0);
@@ -711,22 +760,35 @@ TSWorley ts_fbm_worley(vec2 p, int period, int octaves,
     return o;
 }
 
-// ---- Gabor FBM ----
-float ts_fbm_gabor(vec2 p, int period, int octaves,
+// ---- Gabor FBM (Houdini-matched octave blending) ----
+float ts_fbm_gabor(vec2 p, int period, float octaves,
                    float lacunarity, float gain,
                    float freq_hz, float bandwidth,
                    float anisotropy, float angle, uint seed) {
-    float sum = 0.0, amp = 1.0, norm = 0.0, freq = 1.0, fper = float(period);
-    for (int i = 0; i < octaves; ++i) {
-        int iper = max(int(round(fper)), 1);
-        uint os  = seed + uint(i) * TS_OCTAVE_SEED_PRIME_U;
-        float n  = ts_gabor_tile(p * freq, iper, freq_hz, bandwidth,
-                                 anisotropy, angle, os);
-        sum  += amp * n;
-        norm += amp;
-        amp *= gain; freq *= lacunarity; fper *= lacunarity;
-    }
-    return clamp(sum / max(norm, 1e-6), -1.0, 1.0);
+    float weight = 1.0;
+    float g = gain * min(lacunarity, 1.0);
+    float freq = 1.0, fper = float(period);
+    int iper = max(int(round(fper)), 1);
+    uint os = seed;
+    float base = ts_gabor_tile(p * freq, iper, freq_hz, bandwidth,
+                               anisotropy, angle, os);
+    float norm = 1.0;
+    float oct = 0.0;
+    if (oct >= octaves) { return clamp(base, -1.0, 1.0); }
+    do {
+        weight *= g;
+        oct += 1.0;
+        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
+        freq *= lacunarity;
+        fper *= lacunarity;
+        iper = max(int(round(fper)), 1);
+        os += TS_OCTAVE_SEED_PRIME_U;
+        float n = ts_gabor_tile(p * freq, iper, freq_hz, bandwidth,
+                                anisotropy, angle, os);
+        base += weight * n;
+        norm += weight;
+    } while (oct < octaves);
+    return clamp(base / max(norm, 1e-6), -1.0, 1.0);
 }
 
 // =============================================================================

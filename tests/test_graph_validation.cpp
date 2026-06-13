@@ -462,6 +462,101 @@ TEST(GraphValidation, MutedWithoutUpstreamSeveresConnection) {
     EXPECT_FALSE(saw_severed) << "severed connection should be dropped";
 }
 
+TEST(GraphValidation, MutedOutputNodeRedirectsToSource) {
+    // A(1) -> B(2, muted, output).  B is muted and is the output node.
+    // After validate: IR has only A; output_node = A (redirected from B).
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "passthrough", ChannelFormat::RGBA, "", true, false});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_EQ(r.ir.find(2), nullptr) << "muted output node must not be in IR";
+    ASSERT_NE(r.ir.find(1), nullptr);
+    EXPECT_EQ(r.ir.output_node, 1u) << "output should redirect to upstream source";
+}
+
+TEST(GraphValidation, MutedOutputNodeSeveredFallsBackToFirstNode) {
+    // B(1, muted, source, output).  B is the output node, is muted, and has
+    // no input[0] (SEVERED).  After validate: IR is empty; output_node = 0
+    // (no valid node to read from).
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "passthrough", ChannelFormat::RGBA, "", true, false});
+    g.output_node = 1;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_EQ(r.ir.find(1), nullptr) << "muted source must not be in IR";
+    // IR is empty — output_node should be 0 (no valid fallback).
+    EXPECT_EQ(r.ir.output_node, 0u);
+}
+
+TEST(GraphValidation, MutedSourceSeversDownstreamInput) {
+    // A(1, muted, source) -> B(2) -> output.  A has no input[0].
+    // After validate: IR has only B; A->B connection severed; B's input[0]
+    // is unsatisfied (will use default).  output_node = B.
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "source", ChannelFormat::RGBA, "", true, false});
+    g.nodes.push_back({2, "passthrough"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_EQ(r.ir.find(1), nullptr);
+    ASSERT_NE(r.ir.find(2), nullptr);
+    EXPECT_EQ(r.ir.output_node, 2u);
+    EXPECT_TRUE(r.ir.connections.empty()) << "severed connection should be dropped";
+}
+
+TEST(GraphValidation, MutedMiddleOfDiamondRewiresCorrectly) {
+    // Diamond: A(1) -> B(2, muted) -> C(3), A(1) -> C(3), C is output.
+    // After validate: IR has 1 and 3; connections 1->3 (both original and
+    // rewired from B).  B excluded.
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "passthrough", ChannelFormat::RGBA, "", true, false});
+    g.nodes.push_back({3, "blend"});
+    g.connections.push_back({1, 0, 2, 0});  // A -> B (muted)
+    g.connections.push_back({2, 0, 3, 0});  // B -> C
+    g.connections.push_back({1, 0, 3, 1});  // A -> C (direct, 2nd input)
+    g.output_node = 3;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_EQ(r.ir.find(2), nullptr);
+    ASSERT_NE(r.ir.find(1), nullptr);
+    ASSERT_NE(r.ir.find(3), nullptr);
+
+    // B->C rewired to A->C (input[0]), plus original A->C (input[1]).
+    int count_1_to_3 = 0;
+    for (auto& c : r.ir.connections)
+        if (c.src_node == 1 && c.dst_node == 3) ++count_1_to_3;
+    EXPECT_EQ(count_1_to_3, 2) << "both A->C connections should exist after rewire";
+}
+
+TEST(GraphValidation, AllNodesMutedFallsBackToEmpty) {
+    // A(1, muted) -> B(2, muted) -> output.
+    // After validate: IR is empty; output_node = 0.
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "source", ChannelFormat::RGBA, "", true, false});
+    g.nodes.push_back({2, "passthrough", ChannelFormat::RGBA, "", true, false});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_TRUE(r.ir.nodes.empty()) << "all nodes muted => empty IR";
+    EXPECT_EQ(r.ir.output_node, 0u);
+}
+
 TEST(GraphValidation, BypassedFlagPropagatesToComputePass) {
     // A(1) -> B(2, bypassed) -> output.
     // After compile: pass for B has bypassed=true; pass for A does not.

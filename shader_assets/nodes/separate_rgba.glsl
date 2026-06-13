@@ -1,5 +1,3 @@
-// Separate RGBA - split a color texture into four grayscale channels.
-
 void node_separate_rgba(vec2 uv, vec4 color,
                      out vec4 r_out,
                      out vec4 g_out,

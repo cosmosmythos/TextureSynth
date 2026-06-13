@@ -616,10 +616,9 @@ TEST_F(FusedRealNodesChain, LinearChain_AllNodesInOneChain) {
 }
 
 TEST_F(FusedRealNodesChain, ParamBaseSlotCorrectness) {
-    // perlin has 8 params, invert has 0 params + 1 float input.
-    // perlin base=0, invert base=8+0=8 (float_input_count=1 for mask, but 0 params).
-    // Actually: perlin params=8, float_inputs=0 -> base=0, next=8.
-    // invert params=0, float_inputs=1 (mask) -> base=8, next=8+0+1=9.
+    // perlin has 6 params, invert has 0 params + 1 float input.
+    // perlin base=0, next=6.
+    // invert params=0, float_inputs=1 (mask) -> base=6, next=6+0+1=7.
     Graph g;
     g.nodes.push_back({1, "perlin"});
     g.nodes.push_back({2, "invert"});
@@ -629,6 +628,6 @@ TEST_F(FusedRealNodesChain, ParamBaseSlotCorrectness) {
     auto cr = compile(g);
     ASSERT_TRUE(cr.success) << cr.error;
     EXPECT_EQ(cr.param_base_slot[1], 0);
-    EXPECT_EQ(cr.param_base_slot[2], 8);  // 8 perlin params + 0 float inputs
-    EXPECT_EQ(cr.total_param_floats, 9);  // 8 + 1
+    EXPECT_EQ(cr.param_base_slot[2], 6);  // 6 perlin params + 0 float inputs
+    EXPECT_EQ(cr.total_param_floats, 7);  // 6 + 1
 }

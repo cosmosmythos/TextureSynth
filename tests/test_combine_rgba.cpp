@@ -196,7 +196,7 @@ TEST_F(CombineRGBAGLSL, ThreeInputsConnected_RGB) {
 }
 
 TEST_F(CombineRGBAGLSL, ZeroInputs_AllUnconnected) {
-    // All 4 sockets unconnected → 4x baked vec4(0)
+    // All 4 sockets unconnected → R/G/B baked as vec4(0), A baked as vec4(1)
     Graph g;
     g.nodes.push_back({1, "combine_rgba"});
     g.output_node = 1;
@@ -379,7 +379,7 @@ TEST_F(CombineRGBAPixel, ThreeInputs_RGB_NoiseInRGB) {
     EXPECT_GT(b_range, 0.001f) << "B channel must vary";
 
     // A: unconnected → baked vec4(0.0)
-    EXPECT_NEAR(s.avg_a, 0.0f, 0.01f) << "A channel must be 0.0 (baked constant)";
+    EXPECT_NEAR(s.avg_a, 1.0f, 0.01f) << "A channel must be 1.0 (baked default)";
 }
 
 TEST_F(CombineRGBAPixel, ZeroInputs_AllDummy) {
@@ -401,11 +401,11 @@ TEST_F(CombineRGBAPixel, ZeroInputs_AllDummy) {
     auto s = stats_of(px);
     dump_stats("0-input combine (all baked vec4(0))", s);
 
-    // All channels = 0.0 (baked constant, no dummy texture)
+    // All channels baked constant, no dummy texture. A defaults to 1.0.
     EXPECT_NEAR(s.avg_r, 0.0f, 0.01f) << "R must be 0.0";
     EXPECT_NEAR(s.avg_g, 0.0f, 0.01f) << "G must be 0.0";
     EXPECT_NEAR(s.avg_b, 0.0f, 0.01f) << "B must be 0.0";
-    EXPECT_NEAR(s.avg_a, 0.0f, 0.01f) << "A must be 0.0";
+    EXPECT_NEAR(s.avg_a, 1.0f, 0.01f) << "A must be 1.0 (default)";
     EXPECT_FALSE(s.has_variation) << "all-baked output should be uniform";
 }
 
@@ -480,11 +480,11 @@ TEST_F(CombineRGBAPixel, SeparateCombine_SingleChannel) {
     auto s = stats_of(px);
     dump_stats("separate→combine (R only)", s);
 
-    // R varies (noise), G/B/A = 0 (baked constant)
+    // R varies (noise), G/B = 0 (baked), A = 1.0 (default)
     EXPECT_TRUE(s.has_variation) << "R must vary with noise";
     EXPECT_NEAR(s.avg_g, 0.0f, 0.01f) << "G must be 0.0";
     EXPECT_NEAR(s.avg_b, 0.0f, 0.01f) << "B must be 0.0";
-    EXPECT_NEAR(s.avg_a, 0.0f, 0.01f) << "A must be 0.0";
+    EXPECT_NEAR(s.avg_a, 1.0f, 0.01f) << "A must be 1.0 (default)";
 }
 
 TEST_F(CombineRGBAPixel, TwoSeperateSources_RG) {

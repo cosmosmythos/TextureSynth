@@ -8,12 +8,10 @@
         { "name": "color", "type": "vec4" }
     ],
     "params": [
-        { "name": "period", "display_name": "Period (integer)", "description": "Noise lattice tile size in cells. MUST be a positive integer. Use the same value as 'scale' for a single tile across the texture.", "default": 8.0, "min": 1.0, "max": 64.0, "step": 1.0, "integer": true },
-        { "name": "octaves", "display_name": "Octaves (integer)", "description": "Number of FBM octave layers (1–8).", "default": 5.0, "min": 1.0, "max": 8.0, "step": 1.0, "integer": true },
-        { "name": "lacunarity", "display_name": "Lacunarity", "description": "Frequency multiplier per octave. USE INTEGER VALUES (2.0 is the standard) for exact tiling at every octave. Non-integer values tile approximately.", "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.01, "integer": true },
-        { "name": "gain", "display_name": "Gain", "description": "Amplitude multiplier per octave (persistence). 0.5 = standard.", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01 },
-        { "name": "offsetX", "display_name": "Offset X", "default": 0.0, "min": -50.0, "max": 50.0, "step": 0.01 },
-        { "name": "offsetY", "display_name": "Offset Y", "default": 0.0, "min": -50.0, "max": 50.0, "step": 0.01 },
+        { "name": "period", "display_name": "Period", "description": "Noise lattice tile size in cells. MUST be a positive integer. Use the same value as 'scale' for a single tile across the texture.", "default": 8.0, "min": 1.0, "max": 64.0, "step": 1.0, "integer": true },
+        { "name": "octaves", "display_name": "Octaves", "description": "Number of FBM octave layers (1-8). Fractional values blend the last octave smoothly.", "default": 5.0, "min": 1.0, "max": 8.0, "step": 0.1 },
+        { "name": "lacunarity", "display_name": "Lacunarity", "description": "Frequency multiplier per octave. Integer values (2.0 standard) guarantee exact tiling at every octave.", "default": 2.0, "min": 1.0, "max": 4.0, "step": 1.0, "integer": true },
+        { "name": "roughness", "display_name": "Roughness", "description": "Amplitude multiplier per octave (persistence). 0.5 = standard FBM.", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01 },
         { "name": "speed", "display_name": "Speed", "description": "Translates the sample point over time (multiplied by pc.time). Produces smooth animation but does NOT preserve tiling along the time axis.", "default": 0.0, "min": 0.0, "max": 5.0, "step": 0.01 },
         { "name": "seed", "display_name": "Seed", "description": "Per-node noise seed. Change to get a fully decorrelated pattern.", "default": 0.0, "min": 0.0, "max": 65535.0, "step": 1.0, "integer": true }
     ],
