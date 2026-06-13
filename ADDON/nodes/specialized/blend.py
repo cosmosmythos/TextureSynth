@@ -40,7 +40,7 @@ class TS_Blend_Node(TextureSynthNode):
         update=update_param,
     )
     mask: bpy.props.FloatProperty(
-        name="Mask", default=0.5, min=0.0, max=1.0,
+        name="Mask", default=1.0, min=0.0, max=1.0,
         subtype='FACTOR', update=update_param,
     )
 

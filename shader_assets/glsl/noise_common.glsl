@@ -1,51 +1,6 @@
 #ifndef TS_NOISE_COMMON
 #define TS_NOISE_COMMON
 
-// =============================================================================
-// TS NOISE COMMON  —  Gold-Standard Tileable 2-D Noise Library
-// =============================================================================
-//
-// CONTENTS
-//   §1  Hash primitives          (permutation polynomial, exact in float32)
-//   §2  Gradient tables          (8-dir, 16-dir, random unit)
-//   §3  Smoothstep family        (quintic Hermite, with derivatives)
-//   §4  Period helpers           (integer enforcement, even-snap)
-//   §5  Value noise              (tileable, analytical derivatives)
-//   §6  Classic Perlin noise     (tileable, analytical derivatives)
-//   §7  Simplex noise            (psrdnoise2, tileable, analytical derivatives)
-//   §8  Worley / cellular noise  (tileable, F1/F2/F2-F1, cell IDs)
-//   §9  White noise              (per-pixel hash, no interp)
-//   §10 Gabor noise              (anisotropic, frequency-controlled)
-//   §11 FBM wrappers             (one per primitive, all with derivatives)
-//
-// DESIGN INVARIANTS
-//   • All primitives return values in [-1, 1] EXACTLY (post-normalization).
-//   • All FBMs return values in [-1, 1] EXACTLY (normalized by amplitude sum).
-//   • All tiling periods are POSITIVE INTEGERS, enforced in-shader.
-//   • All primitives that have derivatives expose them via 'out vec2 grad'.
-//   • Derivatives obey the chain rule across FBM octaves.
-//
-// LICENSE NOTES
-//   psrdnoise2 (§7) by Stefan Gustavson & Ian McEwan, MIT licence.
-//   Permutation hash (§1) by McEwan/Sheets/Gustavson/Richardson (public).
-//   Everything else: original or public-domain construction.
-// =============================================================================
-
-
-// =============================================================================
-// §1  HASH PRIMITIVES
-// =============================================================================
-//
-// Permutation polynomial:  P(x) = (34x² + 10x) mod 289
-//
-// • 289 = 17² fits inside the 23-bit float32 mantissa, so all intermediate
-//   products are computed EXACTLY (no precision drift on any GPU).
-// • The polynomial has excellent avalanche on integer inputs and is the
-//   industry-standard noise hash since 2012 (webgl-noise).
-// • Composing P twice produces a high-quality 2-D hash.
-//
-// Output range: [0, 288].
-// =============================================================================
 
 float ts_perm(float x) {
     return mod((34.0 * x + 10.0) * x, 289.0);
@@ -60,8 +15,7 @@ vec4 ts_perm4(vec4 x) {
 }
 
 // Strong seed mixing — runs the seed through one round of the polynomial
-// before combining with coordinates.  This ensures seeds differing by 1
-// produce fully decorrelated fields, not nearly-identical ones.
+// before combining with coordinates.
 float ts_seed_mix(uint seed) {
     // Two rounds of integer multiply-shift (Wang-style), then map to [0,289).
     uint s = seed;
@@ -89,20 +43,6 @@ vec4 ts_hash2_quad(ivec2 c00, uint seed) {
 }
 
 
-// =============================================================================
-// §2  GRADIENT TABLES
-// =============================================================================
-//
-// 8-direction gradient: hash → angle = floor(h mod 8) × π/4.
-// Cardinal + diagonal unit vectors.  Used by classic Perlin.
-//
-// 16-direction gradient: finer angular resolution for higher-quality
-// single-octave noise (reduces visible directional bias at low octaves).
-//
-// All gradients are UNIT LENGTH — this is required for the analytical
-// normalization constants in each primitive to be exact.
-// =============================================================================
-
 vec2 ts_grad8(float hash) {
     float a = floor(mod(hash, 8.0)) * 0.78539816339; // π/4
     return vec2(cos(a), sin(a));
@@ -122,15 +62,8 @@ vec2 ts_grad_continuous(float hash) {
 
 
 // =============================================================================
-// §3  SMOOTHSTEP FAMILY
+// §3  SMOOTHSTEP 
 // =============================================================================
-//
-// Quintic Hermite: f(t) = 6t⁵ − 15t⁴ + 10t³
-//   f(0)=0, f(1)=1, f'(0)=f'(1)=0, f''(0)=f''(1)=0  →  C² continuity.
-//
-// Derivative: f'(t) = 30t⁴ − 60t³ + 30t²  = 30t²(t−1)²
-// =============================================================================
-
 float ts_quintic(float t) {
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 }
@@ -149,16 +82,21 @@ vec2 ts_quintic_d(vec2 t) {
 
 
 // =============================================================================
-// §4  PERIOD HELPERS
+// §4  PERIOD
 // =============================================================================
-//
-// Artists pass floats from sliders.  These helpers enforce the integer (and,
-// for simplex Y-axis, even-integer) requirements IN-SHADER so misuse from
-// the UI / scripting / animation systems is impossible.
-// =============================================================================
-
 int ts_period_int(float p) {
     return max(int(round(p)), 1);
+}
+
+// Snap period to nearest power of 2 for perfect tiling (Gabor).
+// Cosine carrier completes integer cycles at power-of-2 periods.
+int ts_period_pow2(float p) {
+    int v = max(int(round(p)), 1);
+    float l = floor(log2(float(v)));
+    int lo = int(l);
+    int pow2_lo = 1 << lo;
+    int pow2_hi = pow2_lo * 2;
+    return (v - pow2_lo <= pow2_hi - v) ? pow2_lo : pow2_hi;
 }
 
 int ts_period_even(float p) {
@@ -178,15 +116,6 @@ ivec2 ts_wrap2(ivec2 v, int per) {
 // =============================================================================
 // §5  VALUE NOISE  (tileable, analytical derivatives)
 // =============================================================================
-//
-// Per-lattice-cell random scalar, bilinearly blended with quintic weights.
-// Cheaper than Perlin (no gradient dot products).  Different character:
-// blockier, more "patchy" — good for clouds, organic blobs.
-//
-// Output range: [-1, 1] EXACTLY.  Each corner value is in [-1, 1] and the
-// bilinear blend of values in [-1, 1] stays in [-1, 1].
-// =============================================================================
-
 float ts_value_tile(vec2 p, int per, uint seed, out vec2 grad) {
     ivec2 pi = ivec2(floor(p));
     vec2  pf = p - vec2(pi);
@@ -226,14 +155,6 @@ float ts_value_tile(vec2 p, int per, uint seed) {
 // =============================================================================
 // §6  CLASSIC PERLIN NOISE  (tileable, analytical derivatives)
 // =============================================================================
-//
-// NORMALIZATION
-//   Theoretical max for 2-D Perlin with 8-direction unit gradients and
-//   quintic interpolation is ≈ 0.7468.  We multiply by 1/0.7468 ≈ 1.3393
-//   so the output fits inside [-1, 1] WITHOUT clamping.  No artist will
-//   ever see overshoots, no documentation required.
-// =============================================================================
-
 const float TS_PERLIN_NORM = 1.3393713;   // = 1.0 / 0.74682413
 
 float ts_perlin_tile(vec2 p, int per, uint seed, out vec2 grad) {
@@ -285,23 +206,6 @@ float ts_perlin_tile(vec2 p, int per, uint seed) {
 // =============================================================================
 // §7  SIMPLEX NOISE  (psrdnoise2 — Gustavson & McEwan, JCGT 2022)
 // =============================================================================
-//
-// • Triangular/hexagonal lattice → NO axis-aligned directional artifacts.
-// • Analytical first-order derivatives → exact normal maps, domain warp,
-//   curl noise, flow noise.
-// • Rotating gradients (alpha) → swirling flow animation at zero extra cost.
-//
-// TILING RULES
-//   • period.x : any positive INTEGER
-//   • period.y : any positive EVEN integer (simplex lattice Y-stagger)
-//   Both enforced in-shader via the integer-snapping interface.
-//
-// NORMALIZATION
-//   The empirical scale 10.9 fits the output to ±1 with negligible (<0.5%)
-//   overshoot from extreme inputs.  In practice the output stays inside
-//   [-0.999, +0.999] for all sample points tested.
-// =============================================================================
-
 const float TS_SIMPLEX_NORM = 10.9;
 
 float ts_simplex_tile(vec2 x, ivec2 period, float alpha, out vec2 gradient) {
@@ -378,22 +282,6 @@ float ts_simplex_tile_seeded(vec2 x, ivec2 period, float alpha, uint seed,
 // =============================================================================
 // §8  WORLEY / CELLULAR NOISE  (tileable, F1, F2, F2-F1, cell IDs)
 // =============================================================================
-//
-// Classic Worley with 3×3 cell search.  Each cell hashes a single feature
-// point.  Distances to F1 (nearest) and F2 (second-nearest) are returned.
-//
-// USES
-//   F1        → cellular height fields, stone, scales
-//   F2 - F1   → edge masks (crack patterns, voronoi borders)
-//   cell_id   → flat-color voronoi regions (per-cell randomization)
-//
-// METRIC: Euclidean (squared distance returned; caller sqrts if desired —
-// keeps the function differentiable away from cell boundaries).
-//
-// Output: distances in [0, ~1.414²] = [0, 2].  Returned normalized to [0,1]
-// by dividing by sqrt(2) and clamping.  Hard-cap at 1.0 guaranteed.
-// =============================================================================
-
 struct TSWorley {
     float f1;        // nearest distance, [0, 1]
     float f2;        // second-nearest, [0, 1]
@@ -447,20 +335,8 @@ TSWorley ts_worley_tile(vec2 p, int per, float jitter, uint seed) {
 
 
 // =============================================================================
-// §1b  PCG HASH  —  High-Quality Integer Hash for White Noise
+// §1b  PCG HASH  —  Integer Hash for White Noise
 // =============================================================================
-//
-// Permutation polynomial (§1) has only 289 distinct values, causing visible
-// banding when used for per-pixel White Noise on high-resolution grids.
-// PCG2D (Jarzynski & Olano, JCGT 2020) operates on full uint32 integers and
-// produces 2^32 distinct values — zero banding at any resolution.
-//
-// NOTE: Keep ts_hash2 for interpolating noise (Value, Perlin, etc.) where
-// exact float32 arithmetic is required.  Use ts_pcg2d ONLY for white noise.
-// =============================================================================
-
-// PCG2D — two decorrelated 32-bit hashes from a 2D integer input.
-// Reference: "Hash Functions for GPU Rendering", Jarzynski & Olano, JCGT 2020.
 uvec2 ts_pcg2d(uvec2 v) {
     v = v * 1664525u + 1013904223u;
     v.x += v.y * 1664525u;
@@ -474,16 +350,6 @@ uvec2 ts_pcg2d(uvec2 v) {
 // =============================================================================
 // §9  WHITE NOISE  (per-pixel hash, no interpolation)
 // =============================================================================
-//
-// Pure random per-pixel value.  Used for: film grain, dithering, scatter
-// seeds, stochastic sampling.  Trivially tileable because each pixel is
-// independent and the underlying hash is deterministic.
-//
-// Caller chooses integer "resolution" — at resolution N, the noise has N×N
-// distinct values across the tile.  Set resolution = texture size for full
-// per-pixel noise.
-// =============================================================================
-
 float ts_white_tile(vec2 p, int per, uint seed) {
     ivec2 c = ts_wrap2(ivec2(floor(p)), per);
     return ts_hash2(c, seed) * (1.0 / 288.0) * 2.0 - 1.0; // [-1, 1]
@@ -491,7 +357,7 @@ float ts_white_tile(vec2 p, int per, uint seed) {
 
 
 
-// High-quality PCG white noise — full 32-bit palette, zero banding.
+// PCG white noise — full 32-bit palette, zero banding.
 // Output: [0, 1].  Replaces ts_white_tile in the White Noise node.
 float ts_white_pcg(vec2 p, int per, uint seed) {
     ivec2 c = ts_wrap2(ivec2(floor(p)), per);
@@ -506,22 +372,6 @@ float ts_white_pcg(vec2 p, int per, uint seed) {
 // =============================================================================
 // §10  GABOR NOISE  (anisotropic, frequency-controlled, tileable)
 // =============================================================================
-//
-// Sums Gabor kernels (Gaussian × cosine) from a 5×5 neighborhood of cells.
-// 5×5 (not 3×3) is required: at low bandwidth the Gaussian envelope spans
-// >1 cell, and asymmetric truncation at cell borders produces visible grid
-// lines AND breaks tileability. With 5×5 + wrap, both defects vanish.
-//
-// PARAMS
-//   freq       : cycles per cell (3..20 typical)
-//   bandwidth  : envelope sharpness; we INTERNALLY remap to a sane Gaussian
-//                so the kernel always decays to ~zero by r=2.0 cells.
-//   anisotropy : 0=random per-kernel orientation; 1=all aligned to 'angle'
-//   angle      : preferred orientation (radians)
-//
-// Output: [-1, 1] after empirical normalization.
-// =============================================================================
-
 float ts_gabor_tile(vec2 p, int per, float freq, float bandwidth,
                     float anisotropy, float angle, uint seed) {
     ivec2 pi = ivec2(floor(p));
@@ -573,15 +423,6 @@ float ts_gabor_tile(vec2 p, int per, float freq, float bandwidth,
 // =============================================================================
 // §11  FBM WRAPPERS
 // =============================================================================
-//
-// Universal FBM design:
-//   • Per-octave seed offset by 6791u (prime) for spectral decorrelation.
-//   • For simplex: per-octave alpha rotated by π/φ ≈ 1.9416 rad (irrational
-//     rotation on the circle → maximally decorrelated octave orientations).
-//   • Output normalized by amplitude sum → always in [-1, 1].
-//   • Derivatives summed via chain rule (∂(amp·n(p·freq))/∂p = amp·freq·∇n).
-// =============================================================================
-
 const float TS_OCTAVE_SEED_PRIME = 6791.0;
 const uint  TS_OCTAVE_SEED_PRIME_U = 6791u;
 const float TS_PI_OVER_PHI = 1.94161103873; // π / φ
@@ -599,7 +440,7 @@ float ts_fbm_value(vec2 p, int period, float octaves,
     float base = ts_value_tile(p * freq, iper, os, gr);
     total_grad = gr;
     float norm = 1.0;
-    float oct = 0.0;
+    float oct = 1.0;
     if (oct >= octaves) { return base; }
     do {
         weight *= g;
@@ -638,7 +479,7 @@ float ts_fbm_perlin(vec2 p, int period, float octaves,
     float base = ts_perlin_tile(p * freq, iper, os, gr);
     total_grad = gr;
     float norm = 1.0;
-    float oct = 0.0;
+    float oct = 1.0;
     if (oct >= octaves) { return base; }
     do {
         weight *= g;
@@ -683,7 +524,7 @@ float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
     float base = ts_simplex_tile_seeded(p * freq, per_i, oct_alpha, os, gr);
     total_grad = gr;
     float norm = 1.0;
-    float oct = 0.0;
+    float oct = 1.0;
     if (oct >= octaves) { return base; }
     do {
         weight *= g;
@@ -715,11 +556,7 @@ float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
     return ts_fbm_simplex(p, period, octaves, lacunarity, gain, alpha, seed, g);
 }
 
-// ---- Worley FBM (Houdini-matched octave blending) ----
-// FBM of F1 distances.  Produces multi-scale cellular patterns (foam, lichen,
-// weathered stone).  No analytical derivative for Worley — caller uses finite
-// differences if needed (cellular noise has discontinuous gradients at cell
-// boundaries anyway, so analytical derivatives are ill-defined there).
+
 TSWorley ts_fbm_worley(vec2 p, int period, float octaves,
                        float lacunarity, float gain, float jitter, uint seed) {
     float weight = 1.0;
@@ -730,7 +567,7 @@ TSWorley ts_fbm_worley(vec2 p, int period, float octaves,
     TSWorley base = ts_worley_tile(p * freq, iper, jitter, os);
     float f1_sum = base.f1, f2_sum = base.f2, id_sum = base.cell_id;
     float norm = 1.0;
-    float oct = 0.0;
+    float oct = 1.0;
     if (oct >= octaves) {
         TSWorley o;
         o.f1 = clamp(f1_sum, 0.0, 1.0);
@@ -760,7 +597,7 @@ TSWorley ts_fbm_worley(vec2 p, int period, float octaves,
     return o;
 }
 
-// ---- Gabor FBM (Houdini-matched octave blending) ----
+// ---- Gabor FBM ----
 float ts_fbm_gabor(vec2 p, int period, float octaves,
                    float lacunarity, float gain,
                    float freq_hz, float bandwidth,
@@ -773,7 +610,7 @@ float ts_fbm_gabor(vec2 p, int period, float octaves,
     float base = ts_gabor_tile(p * freq, iper, freq_hz, bandwidth,
                                anisotropy, angle, os);
     float norm = 1.0;
-    float oct = 0.0;
+    float oct = 1.0;
     if (oct >= octaves) { return clamp(base, -1.0, 1.0); }
     do {
         weight *= g;
@@ -792,10 +629,9 @@ float ts_fbm_gabor(vec2 p, int period, float octaves,
 }
 
 // =============================================================================
-// REMAP HELPERS  —  artist-facing utility
+// REMAP HELPERS
 // =============================================================================
-// All FBMs return [-1, 1].  Most display chains want [0, 1].  These helpers
-// make the conversion explicit and obvious in node code.
+// All FBMs return [-1, 1].  want [0, 1].
 float ts_to_unit(float n)  { return n * 0.5 + 0.5; }
 vec2  ts_to_unit(vec2  n)  { return n * 0.5 + 0.5; }
 
