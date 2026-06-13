@@ -10,6 +10,7 @@ _submitted_generation = 0
 _last_applied_generation = 0
 _last_pushed_param_hash = None
 _last_active_node_id = None
+_last_mute_snapshot = {}  # node.name -> bool(mute)
 
 
 def _find_node_tree():
@@ -28,6 +29,18 @@ def _find_node_tree():
         if getattr(nt, "bl_idname", None) == "TextureSynthTreeType"
     ]
     return candidates[0] if candidates else None
+
+
+def poll_mute_state(tree):
+    """Detect mute-state changes across all nodes. Returns True if any node was muted/unmuted."""
+    global _last_mute_snapshot
+    current = {}
+    for n in tree.nodes:
+        if getattr(n, 'sv_type', None) is not None or n.bl_idname == 'TS_Output_Node':
+            current[n.name] = bool(getattr(n, 'mute', False))
+    changed = current != _last_mute_snapshot
+    _last_mute_snapshot = current
+    return changed
 
 
 def _resolve_preview_root(tree):
@@ -738,7 +751,7 @@ def sync_node_errors(tree):
             if hasattr(node, 'ts_compile_error'):
                 node.ts_compile_error = last_err
         else:
-            cat = getattr(node, 'ts_category', 'FILTER')
+            node.use_custom_color = False
             if hasattr(node, 'ts_compile_error') and node.ts_compile_error:
                 node.ts_compile_error = ""
 

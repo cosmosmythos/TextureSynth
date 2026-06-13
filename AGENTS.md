@@ -103,6 +103,8 @@ This is the user's working install.
 
 ## 6. Workflow Rules
 
+**🚫 NEVER deploy .pyd/.so binaries manually.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable.
+
 **🔍 Before Writing Code:**
 1. `ls` the directory (know what exists).
 2. `grep` for the concept (avoid duplicates).

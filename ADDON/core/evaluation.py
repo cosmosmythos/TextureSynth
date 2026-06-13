@@ -115,6 +115,13 @@ def _evaluation_timer():
     except Exception as e:
         _tslog.error(f"sync errors exception: {e}")
 
+    # Detect mute-state changes (Blender 5.0 may not fire tree.update() on mute).
+    try:
+        if tree is not None and engine_bridge.poll_mute_state(tree):
+            request_topology_update()
+    except Exception as e:
+        _tslog.error(f"mute poll exception: {e}")
+
     # Poll for active-node change (msgbus on Nodes.active is unreliable in 4.2+).
     try:
         if tree is not None:
@@ -216,6 +223,7 @@ def unregister():
     engine_bridge._last_applied_generation = 0
     engine_bridge._last_pushed_param_hash = None
     engine_bridge._last_active_node_id = None
+    engine_bridge._last_mute_snapshot = {}
     if bpy.app.timers.is_registered(_evaluation_timer):
         bpy.app.timers.unregister(_evaluation_timer)
     bpy.msgbus.clear_by_owner(_msgbus_owner)

@@ -8,7 +8,8 @@
         { "name": "color", "type": "vec4", "description": "R=noise [0,1], G=∂n/∂x [0,1 remapped], B=∂n/∂y [0,1 remapped], A=1" }
     ],
     "params": [
-        { "name": "period", "display_name": "Period (even integer)", "description": "Tile size in simplex lattice cells. MUST be a positive EVEN integer (snapped automatically). The simplex lattice has a 2-row Y stagger; odd periods double the actual Y repeat.", "default": 8.0, "min": 2.0, "max": 64.0, "step": 2.0, "integer": true },
+        { "name": "period", "display_name": "Period (even integer)", "default": 8.0, "min": 2.0, "max": 64.0, "step": 2.0, "integer": true,
+            "description": "Tile size in simplex lattice cells. MUST be a positive EVEN integer (snapped automatically). The simplex lattice has a 2-row Y stagger; odd periods double the actual Y repeat." },
         { "name": "octaves", "display_name": "Octaves", "description": "Number of FBM octave layers (1-8). Fractional values blend the last octave smoothly.", "default": 5.0, "min": 1.0, "max": 8.0, "step": 0.1 },
         { "name": "lacunarity", "display_name": "Lacunarity", "description": "Frequency multiplier per octave. Integer values (2.0 standard) guarantee exact tiling at every octave.", "default": 2.0, "min": 1.0, "max": 4.0, "step": 1.0, "integer": true },
         { "name": "roughness", "display_name": "Roughness", "description": "Amplitude multiplier per octave (persistence). 0.5 = standard FBM.", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01 },
