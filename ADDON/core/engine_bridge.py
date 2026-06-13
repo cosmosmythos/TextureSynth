@@ -222,6 +222,32 @@ def _build_graph_and_params(tree):
         if not getattr(root, 'mute', False):
             output_src_id = name_to_id[root.name]
 
+    # When root is muted, trace upstream through its inputs to find the first
+    # non-muted source — mirrors C++ resolve_muted_source().
+    if output_src_id is None and root is not None:
+        visited = set()
+        queue = [root]
+        while queue and output_src_id is None:
+            cur = queue.pop(0)
+            if cur.name in visited:
+                continue
+            visited.add(cur.name)
+            for inp in cur.inputs:
+                if not inp.is_linked:
+                    continue
+                for link in inp.links:
+                    if not link.is_valid:
+                        continue
+                    src = link.from_node
+                    if src is None or src.name in visited:
+                        continue
+                    if getattr(src, 'mute', False):
+                        queue.append(src)
+                        continue
+                    if src.name in name_to_id and name_to_id[src.name] in reachable_ids:
+                        output_src_id = name_to_id[src.name]
+                        break
+
     if output_src_id is None:
         return None, None, None
 

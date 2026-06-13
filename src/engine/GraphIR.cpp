@@ -3,6 +3,7 @@
 #include <queue>
 #include <sstream>
 #include <map>
+#include <set>
 
 namespace te {
 
@@ -31,17 +32,22 @@ static std::pair<NodeId, uint32_t> resolve_muted_source(NodeId M, const std::vec
     NodeId cur = M;
     for (size_t step = 0; step < nodes.size() + 1; ++step) {
         bool found = false;
+        // Search through ALL inputs of the muted node (not just input[0]).
+        // Find the first connected input and follow it upstream.
+        std::set<uint32_t> checked_sockets;
         for (auto& c : conns) {
-            if (c.dst_node == cur && c.dst_socket == 0) {
-                if (!is_muted(nodes, c.src_node)) {
-                    return {c.src_node, c.src_socket};
-                }
-                cur = c.src_node;
-                found = true;
-                break;
+            if (c.dst_node != cur) continue;
+            if (checked_sockets.count(c.dst_socket)) continue;  // skip duplicate sockets
+            checked_sockets.insert(c.dst_socket);
+            
+            if (!is_muted(nodes, c.src_node)) {
+                return {c.src_node, c.src_socket};  // found non-muted source
             }
+            cur = c.src_node;
+            found = true;
+            break;
         }
-        if (!found) return {SEVERED, 0};  // severed
+        if (!found) return {SEVERED, 0};  // no connections at all
     }
     return {SEVERED, 0};  // chain too deep — treat as severed
 }

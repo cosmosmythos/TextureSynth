@@ -98,6 +98,7 @@ This is the user's working install.
 | C++ `engine_tests` OFF by default | Reconfigure with `-DBUILD_TESTS:BOOL=ON`. |
 | `IntProperty` truncates `uint64_t` | Store ID as `StringProperty` hex, convert at use site. |
 | `CollectionProperty(type=PropertyGroup)` | Register target `PropertyGroup` BEFORE dependent node classes. |
+| Muted node rewiring socket index | `resolve_muted_source()` must search ALL inputs, not just input[0], to find data connections (control inputs like mask/gain are at socket 0). |
 
 ---
 
@@ -111,6 +112,11 @@ This is the user's working install.
 3. Read target file for style/imports.
 4. Check `DEV_LOG/*/` and `AGENTS.md`.
 5. Run parallel `explore` subagent if unfamiliar.
+
+**🎨 Blender Integration (MCP):**
+- Use Blender MCP to run Python scripts/tests directly in Blender environment
+- Useful for testing addon behavior, debugging graph building, and verifying node behavior
+- Run scripts with live Blender context: `import bpy`, access `bpy.context.scene`, etc.
 
 **🧹 Clean Python Cache (Run after tests/before handoff):**
 ```powershell
