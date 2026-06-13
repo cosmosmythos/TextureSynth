@@ -46,8 +46,7 @@ class TS_Blend_Node(TextureSynthNode):
 
     def init(self, context):
         super().init(context)
-        s = self.inputs.new('TS_DefaultSocketType', "Mask")
-        s.name = "mask"
+        self.inputs.new('TS_DefaultSocketType', "Mask")
         self.inputs.new('TS_DefaultSocketType', "A")
         self.inputs.new('TS_DefaultSocketType', "B")
         self.outputs.new('TS_DefaultSocketType', "")
@@ -62,8 +61,7 @@ class TS_Blend_Node(TextureSynthNode):
         return [float(_MODE_INDEX[self.mode]), float(self.mask)]
 
     def get_named_parameters(self):
-        return {"mode": float(_MODE_INDEX[self.mode]),
-                "mask": float(self.mask)}
+        return None  # mask is a float input; use get_parameters() for full SSBO write
 
 
 NODE_CLASS = TS_Blend_Node

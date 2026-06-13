@@ -230,7 +230,8 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key,
                                             pass.param_base_slot,
                                             pass.input_socket_count,
-                                            inst->format_override);
+                                            inst->format_override,
+                                            pass.input_resources);
     }
 
     // 7. Compute lifetimes and color classes.

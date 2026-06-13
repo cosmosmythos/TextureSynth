@@ -25,6 +25,7 @@ add_executable(engine_tests
     test_fused_graph_compiler.cpp
     test_fused_graph_activation.cpp
     test_fused_real_nodes.cpp
+    test_combine_rgba.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE

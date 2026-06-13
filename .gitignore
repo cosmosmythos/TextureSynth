@@ -11,16 +11,14 @@ test_shader_cache/
 *.lib
 *.dll
 *.egg-info/
-shader_assets/*.c
-shader_assets/*.bat
-opencode.json
-*.lock
 
 # Local-only development artifacts (NOT shipped with the addon).
 DEV_LOG/
 *.bat
 docs/
 src/bindings/*.bak
+opencode.json
+*.lock
 
 # Editor / IDE.
 .vs/
@@ -31,10 +29,13 @@ CMakeUserPresets.json
 # Python tooling (top-level only — test-local Python is in tests/.gitignore).
 __pycache__/
 
-# Vulkan shader cache for the production build. Test shader cache is in
-# tests/.gitignore alongside the rest of the test scaffolding.
+# Shader assets: exclude dev/test/cache files.
+shader_assets/**/*.bat
+shader_assets/**/*.c
+shader_assets/**/glslViewer_tests/
 shader_cache/
-shader_assets/glslViewer_tests/
+shader_assets/**/format_nodes.py
+shader_assets/**/README.md
 
 # ImGui persists UI layout to this file.
 imgui.ini

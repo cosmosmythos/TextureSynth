@@ -88,13 +88,18 @@ TEST(FusedGraphEmitter, ExternalInputs) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
 
-    // Select blend node (socket 1 is unconnected = external input)
+    // Select blend node (socket 1 is unconnected Vec4 = baked constant)
     auto path = ActivePathTracer::trace(r.ir, 3, lib);
     auto result = emit_fused_subgraph(path, r.ir, lib, 0);
 
     ASSERT_TRUE(result.ok()) << result.error;
-    EXPECT_GE(result.external_inputs, 1u);
-    EXPECT_NE(result.source.find("texelFetch"), std::string::npos);
+    // Unconnected Vec4 is baked as vec4(0.0) — no external slot consumed
+    EXPECT_EQ(result.external_inputs, 0u);
+    EXPECT_EQ(result.source.find("texelFetch"), std::string::npos)
+        << "unconnected Vec4 must not use texelFetch";
+    // Must contain baked constant
+    EXPECT_NE(result.source.find("vec4(0"), std::string::npos)
+        << "unconnected Vec4 must be baked as vec4(0.0)";
 }
 
 TEST(FusedGraphEmitter, EmptyPathReturnsError) {

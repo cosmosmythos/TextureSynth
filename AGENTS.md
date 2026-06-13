@@ -1,7 +1,22 @@
 # AGENTS.md — Mandatory rules for AI coding agents
 
-> **Read before ANY build/clean/install/test or technical explanation.**
-> Violating build-cache rules costs internet data. Violating explanation styles makes answers unusable.
+**Read before ANY build/clean/install/test, or before writing a technical explanation.**
+Skipping the cache rules wastes bandwidth and rebuild time. Skipping the explanation rules makes answers unusable.
+
+## 0. STRICT BEHAVIOR: Root-cause or silence
+
+**Do NOT be lazy. Do NOT ship half-fixes.**
+
+When something is broken:
+
+1. **Trace the full chain** — from the root definition, files, through every intermediate layer, to the final consumer. Check each layer, don't skip ahead.
+2. **Read the root definition first** (the schema, type, interface, or config everything else derives from) BEFORE touching the code that consumes it.
+3. **Fix every instance of a pattern in one pass.** If a value or check is wrong in several places, investigate deeply & fix all of them together. Never "fix one and see if it works."
+4. **If a patch "works" but you haven't verified the root cause is correct, STOP.** The underlying design may be broken — a symptom fix just hides the real bug.
+5. **Never assume — search the whole codebase** for every spelling/variant of the broken pattern (different naming conventions, prefixes, abbreviations) before concluding you've found them all.
+6. **When adding a new attribute or function**, audit every existing file and call site that creates/touches the same data. Don't add it and hope.
+
+This is non-negotiable. Senior engineers don't ship partial fixes.
 
 ## 1. Technical Explanations & Style
 The user is a **3D texture artist/developer**. Every architecture/design answer MUST include these 3 layers in order:

@@ -54,7 +54,8 @@ std::string emit_node_shader(const ValidatedNode& vn,
                                     const ShaderVariantKey& key,
                                     int param_base,
                                     uint32_t input_count,
-                                    ChannelFormat format) {
+                                    ChannelFormat format,
+                                    const std::vector<ResourceUUID>& input_resources) {
     (void)vn; (void)key; (void)param_base; (void)input_count;
     std::ostringstream s;
 
@@ -143,21 +144,31 @@ std::string emit_node_shader(const ValidatedNode& vn,
       << "    vec2 uv = vec2(coord) / vec2(pc.resolution_x, pc.resolution_y);\n";
 
     // Load non-sampler vec4/float inputs via bindless texelFetch, indexed by socket position.
-    // Float inputs use hybrid pattern: SSBO default when unconnected (slot < 6), texture when connected.
+    // Unconnected Vec4 inputs: baked as vec4(default_value) — no dummy texture.
+    // Unconnected Float inputs: direct SSBO read — no sentinel branch.
     uint32_t float_input_idx = 0;
     for (uint32_t i = 0; i < inputs_n; ++i) {
         const auto& sock = type.inputs[i];
         if (sock.type == SocketType::Sampler2D) continue;
         if (sock.type == SocketType::Float) {
             uint32_t float_ssbo_idx = (uint32_t)type.params.size() + float_input_idx;
-            s << "    float in" << i << " = (pc.in_sampled_slots[" << i << "] < 6u"
-              << " ? node_params[pc.param_ring_idx].v[pc.param_base_slot + " << float_ssbo_idx << "]"
-              << " : texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
-              << i << "])], coord, 0).r);\n";
+            bool connected = (i < input_resources.size() && input_resources[i].node_id != 0);
+            if (connected) {
+                s << "    float in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
+                  << i << "])], coord, 0).r;\n";
+            } else {
+                s << "    float in" << i << " = node_params[pc.param_ring_idx].v[pc.param_base_slot + "
+                  << float_ssbo_idx << "];\n";
+            }
             ++float_input_idx;
         } else {
-            s << "    vec4 in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
-              << i << "])], coord, 0);\n";
+            bool connected = (i < input_resources.size() && input_resources[i].node_id != 0);
+            if (connected) {
+                s << "    vec4 in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
+                  << i << "])], coord, 0);\n";
+            } else {
+                s << "    vec4 in" << i << " = vec4(" << sock.default_value << ");\n";
+            }
         }
     }
 
@@ -298,7 +309,7 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
             // by validate_graph) into the cache key so each format gets its
             // own .spv. See build_variant_key for the encoding.
             pass.variant_key = build_variant_key(*type, total_slots, param_socket_count, inst->format_override);
-            pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots, inst->format_override);
+            pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots, inst->format_override, pass.input_resources);
         }
         pass.input_socket_count = total_slots;
         plan.passes.push_back(std::move(pass));

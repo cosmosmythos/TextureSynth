@@ -1,20 +1,57 @@
 import bpy
 
+_CATEGORY_ORDER = ('NOISE', 'INPUT', 'FILTER', 'BLEND', 'COLOR', 'OUTPUT')
+
+_CATEGORY_LABELS = {
+    'NOISE':  'Noise Generators',
+    'INPUT':  'Input',
+    'FILTER': 'Filters',
+    'BLEND':  'Blend',
+    'COLOR':  'Color',
+    'OUTPUT': 'Output',
+}
+
+
+def _build_category_menus():
+    """Create one NODE_MT_sub_texturesynth_<cat> submenu per category."""
+    menus = {}
+    for cat in _CATEGORY_ORDER:
+        cls_name = f"NODE_MT_sub_texturesynth_{cat.lower()}"
+        label = _CATEGORY_LABELS.get(cat, cat.title())
+
+        def _make_draw(category):
+            def draw(self, context):
+                from . import factory
+                for cls in factory.get_generated_classes():
+                    if getattr(cls, 'ts_category', 'FILTER') == category:
+                        op = self.layout.operator("node.add_node", text=cls.bl_label)
+                        op.type = cls.bl_idname
+                        op.use_transform = True
+            return draw
+
+        menu_cls = type(cls_name, (bpy.types.Menu,), {
+            'bl_idname': cls_name,
+            'bl_label': label,
+            'draw': _make_draw(cat),
+        })
+        menus[cat] = menu_cls
+    return menus
+
+
+_category_menus = _build_category_menus()
+
+
 class NODE_MT_category_texturesynth(bpy.types.Menu):
     bl_idname = "NODE_MT_category_texturesynth"
     bl_label = "TextureSynth"
 
     def draw(self, context):
         layout = self.layout
-        
-        def add_menu_item(text, node_type):
-            op = layout.operator("node.add_node", text=text)
-            op.type = node_type
-            op.use_transform = True
-            
-        from . import factory
-        for cls in factory.get_generated_classes():
-            add_menu_item(cls.bl_label, cls.bl_idname)
+        for cat in _CATEGORY_ORDER:
+            cls_name = f"NODE_MT_sub_texturesynth_{cat.lower()}"
+            label = _CATEGORY_LABELS.get(cat, cat.title())
+            layout.menu(cls_name, text=label)
+
 
 def _draw_add_menu(self, context):
     if context.space_data.tree_type != 'TextureSynthTreeType':
@@ -25,7 +62,7 @@ def _draw_add_menu(self, context):
 
 classes = (
     NODE_MT_category_texturesynth,
-)
+) + tuple(_category_menus.values())
 
 
 def _register_extra():

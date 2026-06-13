@@ -10,6 +10,38 @@ from ..utils.rna import register_class, unregister_class
 
 _cf = None
 
+
+def _fmt_to_str(fmt):
+    """Normalize a socket format to a lowercase string.
+
+    Handles both C++ ChannelFormat enums (ChannelFormat.Mono) and
+    JSON fallback strings ('float', 'vec4', etc.).
+    """
+    if hasattr(fmt, 'name'):
+        return fmt.name.lower()
+    return str(fmt).lower()
+
+
+def _socket_default(sock):
+    """Get the default value from a socket, handling both C++ (default_value) and JSON (default)."""
+    v = getattr(sock, 'default_value', None)
+    if v is not None:
+        return v
+    return getattr(sock, 'default', None)
+
+
+def _is_float_input(sock):
+    """True when a socket carries a scalar float (manifest float input).
+
+    Handles C++ Socket objects (SocketType.Float + ChannelFormat.Mono) and
+    JSON fallback _JSONSocket objects (format='float' string).
+    """
+    st = getattr(sock, 'type', None)
+    if hasattr(st, 'name') and st.name == 'Float':
+        return True
+    return _fmt_to_str(getattr(sock, 'format', '')) == 'float'
+
+
 _FORMAT_NAME_TO_OVERRIDE = {
     'mono':    'MONO',
     'uv':      'UV',
@@ -208,6 +240,21 @@ def generate_node_classes(core_module):
                 )
             class_dict['__annotations__'][param.name] = prop
 
+        # Register FloatProperty for each float input so the socket draw() can render an
+        # inline slider via layout.prop(node, self.name) when the socket is unlinked.
+        for inp in node_type.inputs:
+            if not _is_float_input(inp) or _socket_default(inp) is None:
+                continue
+            class_dict['__annotations__'][inp.name] = bpy.props.FloatProperty(
+                name=inp.name.replace('_', ' ').title(),
+                default=float(_socket_default(inp)),
+                min=0.0, max=1.0,
+                soft_min=0.0, soft_max=1.0,
+                precision=3,
+                subtype='FACTOR',
+                update=_update_param,
+            )
+
         # Define init function creating sockets and UUID.
         def make_init(node_type_ref):
             def init_func(self, context):
@@ -226,17 +273,16 @@ def generate_node_classes(core_module):
                         as_set.add(p.name)
                 self._as_socket_names = frozenset(as_set)
                 for sock in node_type_ref.inputs:
-                    label = "" if single_in else sock.name.capitalize()
+                    display_label = "" if single_in else sock.name.replace('_', ' ').title()
                     fmt = getattr(sock, 'format', 'vec4')
                     if hasattr(fmt, 'name'):
                         override = _channel_format_to_override(fmt)
                     else:
                         override = _format_name_to_override(fmt)
                     in_type = socket_type_for_format(override)
-                    new_sock = self.inputs.new(in_type, label)
-                    if sock.format == 'float' and sock.default is not None:
-                        new_sock.default_value = float(sock.default)
-                        setattr(self, sock.name, float(sock.default))
+                    new_sock = self.inputs.new(in_type, display_label)
+                    if _is_float_input(sock) and _socket_default(sock) is not None:
+                        setattr(self, sock.name, float(_socket_default(sock)))
 
                 if node_type_ref.outputs:
                     fmt = getattr(node_type_ref.outputs[0], 'format', 'vec4')
@@ -249,7 +295,7 @@ def generate_node_classes(core_module):
                 meta = {}
                 single_out = len(node_type_ref.outputs) == 1
                 for i, sock in enumerate(node_type_ref.outputs):
-                    label = "" if single_out else sock.name.capitalize()
+                    label = "" if single_out else sock.name.replace('_', ' ').title()
                     if allow_format_override:
                         out_type = socket_type_for_format(
                             getattr(self, 'format_override', 'DEFAULT'))
@@ -280,9 +326,9 @@ def generate_node_classes(core_module):
         class_dict['draw_buttons'] = make_draw_buttons(param_names, p_as_socket)
 
         # Collect float input names+defaults for SSBO layout alignment with fused emitter.
-        float_input_specs = [(inp.name, float(inp.default))
+        float_input_specs = [(inp.name, float(_socket_default(inp)))
                              for inp in node_type.inputs
-                             if inp.format == 'float' and inp.default is not None]
+                             if _is_float_input(inp) and _socket_default(inp) is not None]
 
         # Define get_parameters positional mapping.
         # SSBO layout: [manifest_params..., float_input_defaults...]
@@ -295,12 +341,15 @@ def generate_node_classes(core_module):
             return get_parameters_func
         class_dict['get_parameters'] = make_get_parameters(param_names, float_input_specs)
 
-        # Define get_named_parameters dictionary mapping.
-        def make_get_named_parameters(p_names):
+        # get_named_parameters: returns None when float inputs exist so _push_params_using_stable_ids
+        # falls through to get_parameters() which writes both manifest params AND float-input slots.
+        def make_get_named_parameters(p_names, has_float_inputs):
             def get_named_parameters_func(self):
+                if has_float_inputs:
+                    return None
                 return {p: float(getattr(self, p)) for p in p_names}
             return get_named_parameters_func
-        class_dict['get_named_parameters'] = make_get_named_parameters(param_names)
+        class_dict['get_named_parameters'] = make_get_named_parameters(param_names, bool(float_input_specs))
 
         _generated_classes.append(type(class_name, (TextureSynthNode,), class_dict))
 

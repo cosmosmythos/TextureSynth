@@ -549,7 +549,6 @@ def submit_graph():
 
     res = _get_resolution()
     engine.set_resolution(res, res)
-    engine.set_proxy_scale(_get_proxy_scale())
 
     precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
     if precision_str == 'R8':
@@ -623,7 +622,6 @@ def update_params_only(force_submit: bool = False):
 
     res = _get_resolution()
     engine.set_resolution(res, res)
-    engine.set_proxy_scale(_get_proxy_scale())
     precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
     engine.set_precision(0 if precision_str == 'R8'
                          else 1 if precision_str == 'R16' else 2)

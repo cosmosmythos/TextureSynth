@@ -26,6 +26,7 @@ std::string emit_node_shader(const ValidatedNode& vn,
                              const ShaderVariantKey& key,
                              int param_base,
                              uint32_t input_count,
-                             ChannelFormat format);
+                             ChannelFormat format,
+                             const std::vector<ResourceUUID>& input_resources);
 
 } // namespace te

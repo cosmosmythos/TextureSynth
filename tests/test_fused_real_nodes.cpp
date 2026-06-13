@@ -8,6 +8,7 @@
 #include "engine/graphfusion/FusedGraphEmitter.hpp"
 #include "engine/graphfusion/FusedGraphCompiler.hpp"
 #include "test_assets.hpp"
+#include <fstream>
 #include <thread>
 #include <chrono>
 #include <regex>
@@ -131,6 +132,11 @@ TEST_F(FusedRealNodesGLSL, PerlinToInvert_LinearChain) {
     EXPECT_EQ(cr.pass_plan.chains[0].nodes.size(), 2u);
 
     const auto& glsl = cr.pass_plan.chains[0].glsl;
+    // Dump GLSL to file for inspection
+    {
+        std::ofstream f("fused_perlin_invert.glsl");
+        f << glsl;
+    }
 
     // Must contain both node functions.
     EXPECT_NE(glsl.find("node_perlin"), std::string::npos);
@@ -316,10 +322,8 @@ TEST_F(FusedRealNodesGLSL, PerlinToInvert_MiddleFormatIgnored) {
 }
 
 TEST_F(FusedRealNodesGLSL, NoExternalInputs_LinearChain) {
-    // perlin -> invert: invert's mask(float,socket0) is unconnected even though
-    // color(socket1) is connected. The emitter assigns an ExtSrc slot to the
-    // unconnected float input (handled via SSBO inline), so external_inputs=1.
-    // This is correct — the slot count includes all unconnected sockets.
+    // perlin -> invert: invert's mask(float,socket0) is unconnected.
+    // Unconnected Float → ConstSrc (SSBO read, no ext slot consumed).
     Graph g;
     g.nodes.push_back({1, "perlin"});
     g.nodes.push_back({2, "invert"});
@@ -331,15 +335,15 @@ TEST_F(FusedRealNodesGLSL, NoExternalInputs_LinearChain) {
     auto path = ActivePathTracer::trace(r.ir, 2, lib);
     auto result = emit_fused_subgraph(path, r.ir, lib, 0);
     ASSERT_TRUE(result.ok()) << result.error;
-    // 1 unconnected float input (mask) = 1 ExtSrc slot (read from SSBO inline).
-    EXPECT_EQ(result.external_inputs, 1u);
-    // The float input must NOT generate a vec4 texelFetch declaration.
+    // 0 external inputs — Float mask reads SSBO inline (ConstSrc), no ext slot
+    EXPECT_EQ(result.external_inputs, 0u);
     EXPECT_EQ(result.source.find("_in_"), std::string::npos)
         << "float inputs should not generate _in_ declarations";
 }
 
 TEST_F(FusedRealNodesGLSL, ExternalInputs_BlendUnconnected) {
-    // perlin -> blend.a, blend.b unconnected = 1 external input.
+    // perlin -> blend.a, blend.b unconnected Vec4 = baked as vec4(0.0).
+    // blend.mask (Float, unconnected) = ConstSrc (SSBO read, no ext slot).
     Graph g;
     g.nodes.push_back({1, "perlin"});
     g.nodes.push_back({2, "blend"});
@@ -351,8 +355,12 @@ TEST_F(FusedRealNodesGLSL, ExternalInputs_BlendUnconnected) {
     auto path = ActivePathTracer::trace(r.ir, 2, lib);
     auto result = emit_fused_subgraph(path, r.ir, lib, 0);
     ASSERT_TRUE(result.ok()) << result.error;
-    EXPECT_GE(result.external_inputs, 1u)
-        << "blend with unconnected b should have >= 1 external input";
+    // 0 external inputs — Float mask and Vec4 b are both baked/inline
+    EXPECT_EQ(result.external_inputs, 0u)
+        << "all unconnected inputs baked as constants, no ext slots";
+    // No texelFetch — Float reads from SSBO, Vec4 b is vec4(0.0)
+    EXPECT_EQ(result.source.find("texelFetch"), std::string::npos)
+        << "no texelFetch should appear for unconnected inputs";
 }
 
 // ===========================================================================

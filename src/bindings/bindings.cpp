@@ -235,9 +235,10 @@ NB_MODULE(texturesynth_core, m) {
 
     nb::class_<Socket>(m, "Socket")
         .def(nb::init<>())
-        .def_rw("name",   &Socket::name)
-        .def_rw("type",   &Socket::type)
-        .def_rw("format", &Socket::format);
+        .def_rw("name",           &Socket::name)
+        .def_rw("type",           &Socket::type)
+        .def_rw("format",         &Socket::format)
+        .def_rw("default_value",  &Socket::default_value);
 
     nb::class_<NodeParam>(m, "NodeParam")
         .def_rw("name",           &NodeParam::name)

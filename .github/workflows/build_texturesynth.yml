@@ -177,8 +177,14 @@ jobs:
             local BUILD_DIR="build_${OS_NAME}"
             mkdir -p "${BUILD_DIR}/ADDON"
             cp -r ADDON/* "${BUILD_DIR}/ADDON/"
-            mkdir -p "${BUILD_DIR}/ADDON/shader_assets"
-            cp -r shader_assets/* "${BUILD_DIR}/ADDON/shader_assets/"
+
+            mkdir -p "${BUILD_DIR}/ADDON/shader_assets/glsl"
+            cp shader_assets/glsl/*.glsl "${BUILD_DIR}/ADDON/shader_assets/glsl/"
+
+            mkdir -p "${BUILD_DIR}/ADDON/shader_assets/nodes"
+            cp shader_assets/nodes/*.glsl "${BUILD_DIR}/ADDON/shader_assets/nodes/"
+            cp shader_assets/nodes/*.node.json "${BUILD_DIR}/ADDON/shader_assets/nodes/"
+
             rm -rf "${BUILD_DIR}/ADDON/wheels"
             mkdir -p "${BUILD_DIR}/ADDON/wheels"
 

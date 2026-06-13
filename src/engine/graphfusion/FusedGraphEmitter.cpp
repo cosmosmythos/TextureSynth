@@ -13,7 +13,8 @@ namespace {
 
 struct ExtSrc { uint32_t slot; };
 struct RegSrc { size_t local_index; uint32_t output_socket = 0; };
-using InputSrc = std::variant<ExtSrc, RegSrc>;
+struct ConstSrc { float value = 0.0f; };
+using InputSrc = std::variant<ExtSrc, RegSrc, ConstSrc>;
 
 struct NodeEmit {
     NodeId                  node_id = 0;
@@ -111,7 +112,14 @@ FusedResult emit_fused_subgraph(
                 }
                 ne.input_srcs.push_back(RegSrc{node_to_index.at(src), out_sock});
             } else {
-                ne.input_srcs.push_back(ExtSrc{next_ext++});
+                // Unconnected: bake default as GLSL constant (no dummy texture).
+                if (s < type->inputs.size() && type->inputs[s].type == SocketType::Vec4) {
+                    ne.input_srcs.push_back(ConstSrc{type->inputs[s].default_value});
+                } else if (s < type->inputs.size() && type->inputs[s].type == SocketType::Float) {
+                    ne.input_srcs.push_back(ConstSrc{type->inputs[s].default_value});
+                } else {
+                    ne.input_srcs.push_back(ExtSrc{next_ext++});
+                }
             }
         }
 
@@ -136,8 +144,10 @@ FusedResult emit_fused_subgraph(
         const NodeType* type = lib.find(ne.type_id);
         if (!type) continue;
 
-        // Declare external vec4 inputs (skip float-type and Sampler2D — handled inline).
+        // Declare external vec4 inputs (skip float-type, Sampler2D, and ConstSrc).
         for (size_t s = 0; s < ne.input_srcs.size(); ++s) {
+            if (std::holds_alternative<ConstSrc>(ne.input_srcs[s]))
+                continue; // baked as GLSL constant, no slot needed
             if (std::holds_alternative<ExtSrc>(ne.input_srcs[s])) {
                 if (s < type->inputs.size() && type->inputs[s].type == SocketType::Float)
                     continue; // float inputs handled inline via SSBO
@@ -177,6 +187,18 @@ FusedResult emit_fused_subgraph(
                 std::string var = local_var_name(reg.local_index, reg.output_socket, src_out_count);
                 if (is_float_input) var += ".r";
                 args.push_back(std::move(var));
+            } else if (std::holds_alternative<ConstSrc>(ne.input_srcs[s])) {
+                auto c = std::get<ConstSrc>(ne.input_srcs[s]);
+                if (is_float_input) {
+                    uint32_t float_idx = 0;
+                    for (uint32_t f = 0; f < s; ++f)
+                        if (type->inputs[f].type == SocketType::Float) ++float_idx;
+                    uint32_t ssbo_idx = ne.param_offset + ne.param_count + float_idx;
+                    args.push_back("node_params[pc.param_ring_idx].v[pc.param_base_slot + " +
+                                   std::to_string(ssbo_idx) + "]");
+                } else {
+                    args.push_back("vec4(" + std::to_string(c.value) + ")");
+                }
             } else {
                 auto ext = std::get<ExtSrc>(ne.input_srcs[s]);
                 if (is_float_input) {

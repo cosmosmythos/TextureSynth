@@ -11,10 +11,13 @@ def _make_socket_draw(bl_idname):
     def draw(self, context, layout, node, text):
         if self.is_linked:
             layout.label(text=text)
-        elif node and hasattr(node, self.name):
-            layout.prop(node, self.name, text=text)
         else:
-            layout.label(text=text)
+            prop_name = self.name.lower()
+            ann = getattr(type(node), '__annotations__', {})
+            if node and prop_name in ann:
+                layout.prop(node, prop_name, text=text)
+            else:
+                layout.label(text=text)
     return draw
 
 

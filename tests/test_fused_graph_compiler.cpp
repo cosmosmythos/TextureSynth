@@ -108,7 +108,7 @@ TEST(FusedGraphCompiler, ExternalInputChain) {
 
     // Blend node has 2 inputs but only socket 0 is connected.
     // Active path to node 3 includes source→step→blend.
-    // Blend socket 1 is external input.
+    // Blend socket 1 is unconnected Vec4 — baked as vec4(0.0).
     auto result = FusedGraphCompiler::compile(r.ir, lib, 3);
     ASSERT_TRUE(result.success) << result.error;
 
@@ -123,10 +123,10 @@ TEST(FusedGraphCompiler, ExternalInputChain) {
         }
         if (!has_blend) continue;
 
-        // Chain should have external inputs.
-        EXPECT_GE(chain.external_inputs, 1u);
-        // GLSL should use texelFetch for the external input.
-        EXPECT_NE(chain.glsl.find("texelFetch"), std::string::npos);
+        // Unconnected Vec4 baked as constant — no external input slot consumed.
+        EXPECT_EQ(chain.external_inputs, 0u);
+        EXPECT_EQ(chain.glsl.find("texelFetch"), std::string::npos)
+            << "unconnected Vec4 must not use texelFetch";
         break;
     }
 }

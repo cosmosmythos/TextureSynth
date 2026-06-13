@@ -166,17 +166,6 @@ def _evaluation_timer():
         _compiling = False
         _force_render = True
 
-    # Phase 2 (Holster): mouse-release detection for proxy→full-res transition.
-    # If no interactive events for >100ms and proxy is active, set full-res.
-    global _last_interactive_time
-    idle_duration = time.time() - _last_interactive_time
-    if idle_duration > 0.1 and _last_interactive_time > 0:
-        current_scale = engine.proxy_scale()
-        if current_scale > 1:
-            engine.set_proxy_scale(1)
-            _force_render = True
-            _last_interactive_time = 0.0
-
     # Render if graph is ready and params or topology changed.
     needs_dispatch = ready and (_force_render or _params_dirty)
 
