@@ -403,7 +403,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
         return 0;
     }
 
-    auto compile_result = FusedGraphCompiler::compile(ir_result.ir, node_lib_, graph.output_node);
+    auto compile_result = FusedGraphCompiler::compile(ir_result.ir, node_lib_, ir_result.ir.output_node);
     if (!compile_result.success) {
         set_error_(EngineErrorCode::GraphCompile, compile_result.error,
                    EnginePhase::GraphSubmit);
@@ -411,6 +411,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
     }
 
     current_graph_ = graph;
+    current_graph_.output_node = ir_result.ir.output_node;
     current_ir_    = std::move(ir_result.ir);
     current_revision_++;
     rebuild_downstream_adj_();

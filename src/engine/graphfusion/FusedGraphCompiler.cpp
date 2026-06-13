@@ -125,6 +125,19 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
     if (path.nodes.empty()) {
         // No active path — fall back to per-node passes with no chains.
         plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
+        // Emit per-node GLSL so passes have valid shader source.
+        for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
+            auto& pass = plan.passes[i];
+            if (pass.kind != PassKind::Compute || pass.bypassed) continue;
+            const auto* inst = ir.find(pass.node_id);
+            const auto* type = lib.find(pass.type_id);
+            if (!inst || !type) continue;
+            pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key,
+                                                pass.param_base_slot,
+                                                pass.input_socket_count,
+                                                inst->format_override,
+                                                pass.input_resources);
+        }
         result.success = true;
         result.pass_plan = std::move(plan);
         result.param_base_slot = std::move(param_base_slot);

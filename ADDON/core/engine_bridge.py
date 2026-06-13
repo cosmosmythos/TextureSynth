@@ -197,6 +197,7 @@ def _build_graph_and_params(tree):
             and active is not None
             and hasattr(active, "stable_id")
             and getattr(active, "sv_type", None) is not None
+            and not getattr(active, 'mute', False)
             and active is not output_node
             and active.name in name_to_id
             and name_to_id[active.name] in reachable_ids):
@@ -212,11 +213,14 @@ def _build_graph_and_params(tree):
             src = link.from_node
             if src.bl_idname == 'NodeUndefined':
                 continue
+            if getattr(src, 'mute', False):
+                continue
             if src.name in name_to_id:
                 output_src_id = name_to_id[src.name]
                 break
     if output_src_id is None and root is not None and root.name in name_to_id:
-        output_src_id = name_to_id[root.name]
+        if not getattr(root, 'mute', False):
+            output_src_id = name_to_id[root.name]
 
     if output_src_id is None:
         return None, None, None
@@ -605,7 +609,6 @@ def submit_graph():
     _last_pushed_param_hash = None
 
     _push_params_using_stable_ids(tree, engine)
-    sync_node_errors(tree)
     return generation
 
 
@@ -744,14 +747,15 @@ def sync_node_errors(tree):
         if getattr(node, 'sv_type', None) is None and node.bl_idname != 'TS_Output_Node':
             continue
         
-        # Reset colors for all nodes and highlight compile failure on the failed node.
         if failed_node_name and node.name == failed_node_name:
-            node.use_custom_color = True
+            if not getattr(node, 'use_custom_color', False):
+                node.use_custom_color = True
             node.color = (0.8, 0.1, 0.1)
-            if hasattr(node, 'ts_compile_error'):
+            if hasattr(node, 'ts_compile_error') and node.ts_compile_error != last_err:
                 node.ts_compile_error = last_err
         else:
-            node.use_custom_color = False
+            if getattr(node, 'use_custom_color', False):
+                node.use_custom_color = False
             if hasattr(node, 'ts_compile_error') and node.ts_compile_error:
                 node.ts_compile_error = ""
 

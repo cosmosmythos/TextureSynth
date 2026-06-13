@@ -1,5 +1,5 @@
-
 #version 460
+
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_samplerless_texture_functions : require
 layout(local_size_x = 8, local_size_y = 8) in;

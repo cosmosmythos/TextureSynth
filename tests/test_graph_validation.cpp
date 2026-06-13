@@ -4,6 +4,7 @@
 #include "engine/GraphCompiler.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
+#include "engine/graphfusion/FusedGraphCompiler.hpp"
 #include "test_assets.hpp"
 
 using namespace te;
@@ -736,4 +737,111 @@ TEST(GraphValidation, AllThirteenManifestsLoadWithCorrectPassKind) {
         EXPECT_EQ(nt->pass_kind, e.kind)
             << "manifest '" << e.id << "' has wrong pass_kind";
     }
+}
+
+// ── Compile-pipeline mute tests ──────────────────────────────────────────────
+// These verify that muted nodes don't just validate correctly — they also
+// compile correctly. Previous tests stopped at validate_graph() and never
+// passed the IR to FusedGraphCompiler::compile().
+
+TEST(CompilePipeline, MutedMiddleNodeCompilesSuccessfully) {
+    // A(1) -> M(2, muted) -> B(3) -> output.
+    // After validate: IR has A and B; M excluded; output_node = B.
+    // FusedGraphCompiler should produce chain GLSL (fused path).
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "passthrough", ChannelFormat::RGBA, "", true, false});
+    g.nodes.push_back({3, "passthrough"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({2, 0, 3, 0});
+    g.output_node = 3;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_EQ(r.ir.find(2), nullptr) << "muted node must not be in IR";
+    EXPECT_EQ(r.ir.output_node, 3u);
+
+    auto cr = FusedGraphCompiler::compile(r.ir, lib, r.ir.output_node);
+    ASSERT_TRUE(cr.success) << cr.error;
+    EXPECT_FALSE(cr.pass_plan.passes.empty());
+    EXPECT_FALSE(cr.pass_plan.chains.empty())
+        << "fused path should produce chains with GLSL";
+    for (auto& chain : cr.pass_plan.chains) {
+        EXPECT_FALSE(chain.glsl.empty())
+            << "chain has empty GLSL";
+    }
+}
+
+TEST(CompilePipeline, MutedOutputNodeCompilesWithCorrectedOutput) {
+    // A(1) -> B(2, muted, output).
+    // After validate: IR has A; B excluded; output_node = A.
+    // FusedGraphCompiler should use ir.output_node (A), not the muted ID (B).
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "passthrough", ChannelFormat::RGBA, "", true, false});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_EQ(r.ir.find(2), nullptr);
+    EXPECT_EQ(r.ir.output_node, 1u) << "output must redirect to A";
+
+    // CRITICAL: pass ir.output_node, NOT graph.output_node (which is 2, muted).
+    auto cr = FusedGraphCompiler::compile(r.ir, lib, r.ir.output_node);
+    ASSERT_TRUE(cr.success) << cr.error;
+    EXPECT_FALSE(cr.pass_plan.passes.empty());
+    EXPECT_FALSE(cr.pass_plan.chains.empty())
+        << "fused path should produce chains with GLSL";
+    for (auto& chain : cr.pass_plan.chains) {
+        EXPECT_FALSE(chain.glsl.empty())
+            << "chain has empty GLSL";
+    }
+}
+
+TEST(CompilePipeline, MutedOutputNodeWithWrongIdStillCompiles) {
+    // Regression: passing the MUTED node ID (graph.output_node = 2) as
+    // active_node_id should NOT crash. The compiler should produce valid
+    // GLSL for all passes even when the active node isn't in the IR.
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "passthrough", ChannelFormat::RGBA, "", true, false});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_EQ(r.ir.output_node, 1u);
+
+    // Pass the MUTED ID — this was the bug at Engine.cpp:406.
+    auto cr = FusedGraphCompiler::compile(r.ir, lib, 2);
+    ASSERT_TRUE(cr.success) << "compile should not fail with muted active_node_id";
+    EXPECT_FALSE(cr.pass_plan.passes.empty());
+    for (auto& pass : cr.pass_plan.passes) {
+        EXPECT_FALSE(pass.shader_glsl.empty())
+            << "pass for node " << pass.node_id
+            << " has empty GLSL when muted ID used as active";
+    }
+}
+
+TEST(CompilePipeline, AllNodesMutedCompilesEmptyGraph) {
+    // A(1, muted) -> B(2, muted) -> output.
+    // After validate: IR is empty. Compiler should return no-passes result.
+    auto lib = make_library();
+    Graph g;
+    g.nodes.push_back({1, "source", ChannelFormat::RGBA, "", true, false});
+    g.nodes.push_back({2, "passthrough", ChannelFormat::RGBA, "", true, false});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    EXPECT_TRUE(r.ir.nodes.empty());
+    EXPECT_EQ(r.ir.output_node, 0u);
+
+    auto cr = FusedGraphCompiler::compile(r.ir, lib, r.ir.output_node);
+    EXPECT_TRUE(cr.pass_plan.passes.empty());
 }
