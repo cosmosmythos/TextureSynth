@@ -180,7 +180,15 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         chain.nodes = group.nodes;
 
         // Compute param offsets and base slot.
-        chain.param_base_slot = param_base_slot[group.nodes[0]];
+        // chain_base = min global slot so all nodes get non-negative relative offsets.
+        uint32_t min_slot = UINT32_MAX;
+        for (NodeId nid : group.nodes) {
+            auto it = param_base_slot.find(nid);
+            if (it != param_base_slot.end() && it->second >= 0)
+                min_slot = std::min(min_slot, static_cast<uint32_t>(it->second));
+        }
+        if (min_slot == UINT32_MAX) min_slot = 0;
+        chain.param_base_slot = min_slot;
         chain.param_offsets.reserve(group.nodes.size());
         chain.param_global_slots.reserve(group.nodes.size());
         uint32_t running_offset = 0;
@@ -208,7 +216,8 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         ActivePath group_path;
         group_path.nodes = group.nodes;
 
-        auto fused = emit_fused_subgraph(group_path, ir, lib, chain.param_base_slot);
+        auto fused = emit_fused_subgraph(group_path, ir, lib, chain.param_base_slot,
+                                         param_base_slot);
         if (fused.ok()) {
             chain.glsl = std::move(fused.source);
             chain.external_inputs = fused.external_inputs;

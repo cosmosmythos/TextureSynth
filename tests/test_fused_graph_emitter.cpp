@@ -62,7 +62,9 @@ TEST(FusedGraphEmitter, LinearChain) {
     ASSERT_TRUE(r.success) << r.error;
 
     auto path = ActivePathTracer::trace(r.ir, 3, lib);
-    auto result = emit_fused_subgraph(path, r.ir, lib, 0);
+    std::unordered_map<NodeId, int> param_map;
+    for (auto n : path.nodes) param_map[n] = 0;
+    auto result = emit_fused_subgraph(path, r.ir, lib, 0, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;
     EXPECT_FALSE(result.source.empty());
@@ -90,7 +92,9 @@ TEST(FusedGraphEmitter, ExternalInputs) {
 
     // Select blend node (socket 1 is unconnected Vec4 = baked constant)
     auto path = ActivePathTracer::trace(r.ir, 3, lib);
-    auto result = emit_fused_subgraph(path, r.ir, lib, 0);
+    std::unordered_map<NodeId, int> param_map;
+    for (auto n : path.nodes) param_map[n] = 0;
+    auto result = emit_fused_subgraph(path, r.ir, lib, 0, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;
     // Unconnected Vec4 is baked as vec4(0.0) — no external slot consumed
@@ -106,7 +110,7 @@ TEST(FusedGraphEmitter, EmptyPathReturnsError) {
     auto lib = make_lib();
     ActivePath empty_path;
     GraphIR ir;
-    auto result = emit_fused_subgraph(empty_path, ir, lib, 0);
+    auto result = emit_fused_subgraph(empty_path, ir, lib, 0, {});
     EXPECT_FALSE(result.ok());
 }
 
@@ -122,7 +126,9 @@ TEST(FusedGraphEmitter, ParamsEmitted) {
     ASSERT_TRUE(r.success) << r.error;
 
     auto path = ActivePathTracer::trace(r.ir, 2, lib);
-    auto result = emit_fused_subgraph(path, r.ir, lib, 5);
+    std::unordered_map<NodeId, int> param_map;
+    for (auto n : path.nodes) param_map[n] = 5;
+    auto result = emit_fused_subgraph(path, r.ir, lib, 5, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;
     EXPECT_NE(result.source.find("node_params"), std::string::npos);
@@ -173,7 +179,9 @@ TEST(FusedGraphEmitter, FloatInputReadsSSBO) {
     ASSERT_TRUE(r.success) << r.error;
 
     auto path = ActivePathTracer::trace(r.ir, 2, lib);
-    auto result = emit_fused_subgraph(path, r.ir, lib, 0);
+    std::unordered_map<NodeId, int> param_map;
+    for (auto n : path.nodes) param_map[n] = 0;
+    auto result = emit_fused_subgraph(path, r.ir, lib, 0, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;
 

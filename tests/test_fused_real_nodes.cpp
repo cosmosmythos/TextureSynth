@@ -85,7 +85,7 @@ protected:
         EXPECT_TRUE(r.success) << r.error;
         if (!r.success) return "";
         auto path = ActivePathTracer::trace(r.ir, g.output_node, lib);
-        auto result = emit_fused_subgraph(path, r.ir, lib, 0);
+        auto result = emit_fused_subgraph(path, r.ir, lib, 0, {});
         EXPECT_TRUE(result.ok()) << result.error;
         return result.source;
     }
@@ -333,7 +333,7 @@ TEST_F(FusedRealNodesGLSL, NoExternalInputs_LinearChain) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
     auto path = ActivePathTracer::trace(r.ir, 2, lib);
-    auto result = emit_fused_subgraph(path, r.ir, lib, 0);
+    auto result = emit_fused_subgraph(path, r.ir, lib, 0, {});
     ASSERT_TRUE(result.ok()) << result.error;
     // 0 external inputs — Float mask reads SSBO inline (ConstSrc), no ext slot
     EXPECT_EQ(result.external_inputs, 0u);
@@ -353,7 +353,7 @@ TEST_F(FusedRealNodesGLSL, ExternalInputs_BlendUnconnected) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
     auto path = ActivePathTracer::trace(r.ir, 2, lib);
-    auto result = emit_fused_subgraph(path, r.ir, lib, 0);
+    auto result = emit_fused_subgraph(path, r.ir, lib, 0, {});
     ASSERT_TRUE(result.ok()) << result.error;
     // 0 external inputs — Float mask and Vec4 b are both baked/inline
     EXPECT_EQ(result.external_inputs, 0u)

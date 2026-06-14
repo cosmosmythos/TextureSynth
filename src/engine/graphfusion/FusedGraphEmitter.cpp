@@ -51,7 +51,8 @@ FusedResult emit_fused_subgraph(
     const ActivePath& path,
     const GraphIR& ir,
     const NodeLibrary& lib,
-    uint32_t /* param_base_slot - used by caller for push constants, not GLSL */)
+    uint32_t chain_base_slot,
+    const std::unordered_map<NodeId, int>& global_param_slots)
 {
     FusedResult result;
     if (path.nodes.empty()) {
@@ -72,7 +73,6 @@ FusedResult emit_fused_subgraph(
     std::unordered_set<std::string> emitted_funcs;
     std::vector<NodeEmit> emits;
     uint32_t next_ext = 0;
-    uint32_t running_param_offset = 0;
 
     for (NodeId id : path.nodes) {
         const ValidatedNode* inst = ir.find(id);
@@ -86,10 +86,13 @@ FusedResult emit_fused_subgraph(
         ne.node_id = id;
         ne.type_id = type->id;
         ne.param_count = static_cast<uint32_t>(type->params.size());
-        ne.param_offset = running_param_offset;
+        // Use actual global SSBO slot offset relative to chain base.
+        auto gslot_it = global_param_slots.find(id);
+        ne.param_offset = (gslot_it != global_param_slots.end())
+            ? gslot_it->second - chain_base_slot
+            : 0;
         for (const auto& inp : type->inputs)
             if (inp.type == SocketType::Float) ++ne.float_input_count;
-        running_param_offset += ne.param_count + ne.float_input_count;
         ne.output_count = static_cast<uint32_t>(type->outputs.size());
         ne.format_override = inst->format_override;
         ne.is_format_sensitive = type->is_format_sensitive;

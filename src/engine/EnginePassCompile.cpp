@@ -264,6 +264,8 @@ void Engine::populate_chains_(const PassPlan& plan) {
         if (!member_pis.empty()) {
             ce.head_pass_index = member_pis.front();
             ce.tail_pass_index = member_pis.back();
+            // Override head pass param_base_slot to chain base (min global slot).
+            passes_[member_pis.front()].param_base_slot = ch.param_base_slot;
         }
 
         uint32_t ext_slot = 0;
