@@ -310,7 +310,7 @@ float ts_simplex_tile(vec2 x, ivec2 period, float alpha, out vec2 gradient) {
     vec2 x1 = x - v1;
     vec2 x2 = x - v2;
 
-    // Wrap corners to period (mandatory — no fast path; artists never disable tiling)
+    // Wrap corners to period
     vec3 xw = vec3(v0.x, v1.x, v2.x);
     vec3 yw = vec3(v0.y, v1.y, v2.y);
     xw = mod(xw, float(period.x));

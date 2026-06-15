@@ -67,6 +67,7 @@ bool ImageUploader::grow_staging_(VulkanContext& ctx, Slot& s, VkDeviceSize cap)
 }
 
 void ImageUploader::destroy_slot_(VulkanContext& ctx, Slot& s) {
+    if (s.image) { s.image->destroy(ctx); s.image.reset(); }
     if (s.staging) {
         vmaDestroyBuffer(ctx.allocator(), s.staging, s.staging_alloc);
         s.staging = VK_NULL_HANDLE;
@@ -76,7 +77,6 @@ void ImageUploader::destroy_slot_(VulkanContext& ctx, Slot& s) {
     if (s.fence) { vkDestroyFence(ctx.device(), s.fence, nullptr); s.fence = VK_NULL_HANDLE; }
     if (s.pool)  { vkDestroyCommandPool(ctx.device(), s.pool, nullptr); s.pool = VK_NULL_HANDLE; }
     s.cmd = VK_NULL_HANDLE;
-    s.image.reset();
 }
 
 void ImageUploader::shutdown(VulkanContext& ctx) {
@@ -89,7 +89,7 @@ void ImageUploader::drain(VulkanContext& ctx) {
         if (s.state == SlotState::InFlight && s.fence) {
             vkWaitForFences(ctx.device(), 1, &s.fence, VK_TRUE, UINT64_MAX);
             s.state = SlotState::Free;
-            s.image.reset();
+            if (s.image) { s.image->destroy(ctx); s.image.reset(); }
             s.ticket = 0;
             s.needs_acquire_on_graphics = false;
         }

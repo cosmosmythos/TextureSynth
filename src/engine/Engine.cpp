@@ -804,7 +804,7 @@ void Engine::poll_timestamps_() {
     const double period = ctx_.timestamp_period();
     tp.cached_timings.clear();
     // Query 0 = frame start (TOP_OF_PIPE). Dispatch pairs start at query 1:
-    //   start query = 1+2*i, end query = 2+2*i
+    // start query = 1+2*i, end query = 2+2*i
     for (uint32_t i = 0; i < query_count / 2; ++i) {
         const uint32_t sq = 1 + 2 * i;  // start query index
         const uint32_t eq = 2 + 2 * i;  // end query index
@@ -901,10 +901,16 @@ bool Engine::release_image(uint64_t node_id) {
 
     auto it = image_registry_.find(node_id);
     if (it == image_registry_.end()) {
-        set_error_(EngineErrorCode::ImageReleaseUnknown,
-                   "no image registered for node " + std::to_string(node_id),
-                   EnginePhase::ImageRelease, node_id);
-        return false;
+        // Check for in-flight upload — drain to wait for GPU, then clean up.
+        auto pit = std::remove_if(pending_uploads_.begin(), pending_uploads_.end(),
+                                  [&](const PendingUpload& p){ return p.node_id == node_id; });
+        if (pit != pending_uploads_.end()) {
+            pending_uploads_.erase(pit, pending_uploads_.end());
+            uploader_.drain(ctx_);
+            return true;
+        }
+        // No image registered and no pending upload — no-op.
+        return true;
     }
 
     bool has_pending = false;

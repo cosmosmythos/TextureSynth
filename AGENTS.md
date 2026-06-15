@@ -108,7 +108,7 @@ This is the user's working install.
 
 **🔍 Before Writing Code:**
 1. `ls` the directory (know what exists).
-2. `grep` for the concept (avoid duplicates).
+2. `grep` for the concept (avoid duplicates). **Always search `src/` and `ADDON/` and `shader_assets/` separately** — a term not in the repo root doesn't mean it's absent from engine code.
 3. Read target file for style/imports.
 4. Check `DEV_LOG/*/` and `AGENTS.md`.
 5. Run parallel `explore` subagent if unfamiliar.
