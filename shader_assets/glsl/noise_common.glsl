@@ -2,67 +2,111 @@
 #define TS_NOISE_COMMON
 
 
-float ts_perm(float x) {
-    return mod((34.0 * x + 10.0) * x, 289.0);
+// =============================================================================
+// §0  PCG INTEGER HASH FAMILY  —  core primitive for all lattice hashing
+// =============================================================================
+// Full-quality bit mixing on uint32. Correct for any integer input/seed and
+// any wrap period — no modular-periodicity constraints like the old
+// mod-289 permutation-polynomial approach required.
+
+uvec2 ts_pcg2d(uvec2 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v ^= v >> 16u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v ^= v >> 16u;
+    return v;
 }
 
-vec3 ts_perm3(vec3 x) {
-    return mod((34.0 * x + 10.0) * x, 289.0);
+uvec3 ts_pcg3d(uvec3 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
 }
 
-vec4 ts_perm4(vec4 x) {
-    return mod((34.0 * x + 10.0) * x, 289.0);
+uvec4 ts_pcg4d(uvec4 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.w; v.y += v.z * v.x; v.z += v.x * v.y; v.w += v.y * v.z;
+    v ^= v >> 16u;
+    v.x += v.y * v.w; v.y += v.z * v.x; v.z += v.x * v.y; v.w += v.y * v.z;
+    return v;
 }
 
-// Strong seed mixing — runs the seed through one round of the polynomial
-// before combining with coordinates.
-float ts_seed_mix(uint seed) {
-    // Two rounds of integer multiply-shift (Wang-style), then map to [0,289).
-    uint s = seed;
-    s = (s ^ 61u) ^ (s >> 16u);
-    s = s + (s << 3u);
-    s = s ^ (s >> 4u);
-    s = s * 0x27d4eb2du;
-    s = s ^ (s >> 15u);
-    return float(s & 0xFFFFu) * (1.0 / 65536.0) * 289.0;
-}
 
-// 2-D hash on integer lattice coordinates.  Returns [0, 288].
+// =============================================================================
+// §1  LATTICE HASHES  (pcg3d-based — seed rides natively in .z)
+// =============================================================================
+// Hash "currency" is [0, 1) throughout this file — no legacy [0,288]/mod-289
+// range survives anywhere. Every *_tile function below consumes hashes in
+// this range directly.
+
+// Angle span used when mapping a unit hash to a rotation, for gradient /
+// kernel-orientation purposes. ~3.43 full turns — matches the decorrelation
+// quality of the original mod-289 implementation, just rebased to [0,1) input.
+const float TS_HASH_TO_ANGLE = 21.548;
+
+// Scalar 2-D lattice hash. Returns [0, 1).
 float ts_hash2(ivec2 c, uint seed) {
-    float s = ts_seed_mix(seed);
-    float h = ts_perm(float(c.x) + s);
-    return ts_perm(h + float(c.y));
+    uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
+    return float(h.x & 0xFFFFu) * (1.0 / 65536.0);
 }
 
-// Vectorized 4-corner hash (faster than 4 scalar calls — one SIMD path).
+// Vectorized 4-corner hash — one mixing pass per corner instead of relying
+// on a shared polynomial table. Returns 4 independent hashes in [0, 1)
+// for corners c00, c10, c01, c11.
 vec4 ts_hash2_quad(ivec2 c00, uint seed) {
-    float s = ts_seed_mix(seed);
-    vec4 xs = vec4(c00.x, c00.x + 1, c00.x,     c00.x + 1) + s;
-    vec4 ys = vec4(c00.y, c00.y,     c00.y + 1, c00.y + 1);
-    return ts_perm4(ts_perm4(xs) + ys);
+    uvec3 h00 = ts_pcg3d(uvec3(uvec2(c00),                seed));
+    uvec3 h10 = ts_pcg3d(uvec3(uvec2(c00) + uvec2(1u, 0u), seed));
+    uvec3 h01 = ts_pcg3d(uvec3(uvec2(c00) + uvec2(0u, 1u), seed));
+    uvec3 h11 = ts_pcg3d(uvec3(uvec2(c00) + uvec2(1u, 1u), seed));
+    return vec4(h00.x & 0xFFFFu, h10.x & 0xFFFFu, h01.x & 0xFFFFu, h11.x & 0xFFFFu)
+         * (1.0 / 65536.0);
 }
 
+// 2-D lattice hash returning TWO decorrelated channels from one pcg3d call
+// (uses .x and .y instead of bumping seed by an arbitrary prime and hashing
+// twice). Used by Worley for the feature-point (x,y) offset. Returns [0,1).
+vec2 ts_hash2_vec2(ivec2 c, uint seed) {
+    uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
+    return vec2(h.x & 0xFFFFu, h.y & 0xFFFFu) * (1.0 / 65536.0);
+}
 
-vec2 ts_grad8(float hash) {
-    float a = floor(mod(hash, 8.0)) * 0.78539816339; // π/4
+// 2-D lattice hash returning THREE decorrelated channels from one pcg3d call.
+// Used by Gabor for (kernel x, kernel y, angle) in a single mix instead of
+// three separate ts_hash2 calls with seed offsets. Returns [0,1).
+vec3 ts_hash2_vec3(ivec2 c, uint seed) {
+    uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
+    return vec3(h.x & 0xFFFFu, h.y & 0xFFFFu, h.z & 0xFFFFu) * (1.0 / 65536.0);
+}
+
+// Gradient direction from a unit hash, snapped to 8 compass directions
+// (classic Perlin-style). Input: [0,1).
+vec2 ts_grad8(float hash01) {
+    float a = floor(hash01 * 8.0) * 0.78539816339; // π/4
     return vec2(cos(a), sin(a));
 }
 
-vec2 ts_grad16(float hash) {
-    float a = floor(mod(hash, 16.0)) * 0.39269908170; // π/8
+// Gradient direction from a unit hash, snapped to 16 compass directions.
+// Input: [0,1).
+vec2 ts_grad16(float hash01) {
+    float a = floor(hash01 * 16.0) * 0.39269908170; // π/8
     return vec2(cos(a), sin(a));
 }
 
 // Continuous-angle gradient (for simplex / Gabor).  Uses the full hash range
-// for maximum directional decorrelation.
-vec2 ts_grad_continuous(float hash) {
-    float a = hash * 0.07482; // (2π × ~3.44) / 289, well-distributed
+// for maximum directional decorrelation. Input: [0,1).
+vec2 ts_grad_continuous(float hash01) {
+    float a = hash01 * TS_HASH_TO_ANGLE;
     return vec2(cos(a), sin(a));
 }
 
 
 // =============================================================================
-// §3  SMOOTHSTEP 
+// §3  SMOOTHSTEP
 // =============================================================================
 float ts_quintic(float t) {
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
@@ -113,23 +157,20 @@ ivec2 ts_wrap2(ivec2 v, int per) {
 }
 
 
-// =============================================================================
-// §5  VALUE NOISE  (tileable, analytical derivatives)
-// =============================================================================
 float ts_value_tile(vec2 p, int per, uint seed, out vec2 grad) {
     ivec2 pi = ivec2(floor(p));
     vec2  pf = p - vec2(pi);
 
-    ivec2 c00 = ts_wrap2(pi,                 per);
-    ivec2 c10 = ts_wrap2(pi + ivec2(1, 0),   per);
-    ivec2 c01 = ts_wrap2(pi + ivec2(0, 1),   per);
-    ivec2 c11 = ts_wrap2(pi + ivec2(1, 1),   per);
+    ivec2 c00 = ts_wrap2(pi,               per);
+    ivec2 c10 = ts_wrap2(pi + ivec2(1, 0), per);
+    ivec2 c01 = ts_wrap2(pi + ivec2(0, 1), per);
+    ivec2 c11 = ts_wrap2(pi + ivec2(1, 1), per);
 
-    // Corner values: hash → [-1, 1]
-    float v00 = ts_hash2(c00, seed) * (2.0 / 288.0) - 1.0;
-    float v10 = ts_hash2(c10, seed) * (2.0 / 288.0) - 1.0;
-    float v01 = ts_hash2(c01, seed) * (2.0 / 288.0) - 1.0;
-    float v11 = ts_hash2(c11, seed) * (2.0 / 288.0) - 1.0;
+    // Corner values: unit hash → [-1, 1]
+    float v00 = ts_hash2(c00, seed) * 2.0 - 1.0;
+    float v10 = ts_hash2(c10, seed) * 2.0 - 1.0;
+    float v01 = ts_hash2(c01, seed) * 2.0 - 1.0;
+    float v11 = ts_hash2(c11, seed) * 2.0 - 1.0;
 
     vec2 u  = ts_quintic(pf);
     vec2 du = ts_quintic_d(pf);
@@ -151,20 +192,39 @@ float ts_value_tile(vec2 p, int per, uint seed) {
     return ts_value_tile(p, per, seed, g);
 }
 
+// Vec3 variant: 3 decorrelated channels from one pcg3d per corner (4 total
+// vs 12 for the scalar ×3 path). No gradient output — used by node_value.
+vec3 ts_value_tile_vec3(vec2 p, int per, uint seed) {
+    ivec2 pi = ivec2(floor(p));
+    vec2  pf = p - vec2(pi);
 
-// =============================================================================
-// §6  CLASSIC PERLIN NOISE  (tileable, analytical derivatives)
-// =============================================================================
+    ivec2 c00 = ts_wrap2(pi,               per);
+    ivec2 c10 = ts_wrap2(pi + ivec2(1, 0), per);
+    ivec2 c01 = ts_wrap2(pi + ivec2(0, 1), per);
+    ivec2 c11 = ts_wrap2(pi + ivec2(1, 1), per);
+
+    vec3 v00 = ts_hash2_vec3(c00, seed) * 2.0 - 1.0;
+    vec3 v10 = ts_hash2_vec3(c10, seed) * 2.0 - 1.0;
+    vec3 v01 = ts_hash2_vec3(c01, seed) * 2.0 - 1.0;
+    vec3 v11 = ts_hash2_vec3(c11, seed) * 2.0 - 1.0;
+
+    vec2 u = ts_quintic(pf);
+    vec3 a = mix(v00, v10, u.x);
+    vec3 b = mix(v01, v11, u.x);
+    return mix(a, b, u.y);
+}
+
+
 const float TS_PERLIN_NORM = 1.3393713;   // = 1.0 / 0.74682413
 
 float ts_perlin_tile(vec2 p, int per, uint seed, out vec2 grad) {
     ivec2 pi = ivec2(floor(p));
     vec2  pf = p - vec2(pi);
 
-    ivec2 c00 = ts_wrap2(pi,                 per);
-    ivec2 c10 = ts_wrap2(pi + ivec2(1, 0),   per);
-    ivec2 c01 = ts_wrap2(pi + ivec2(0, 1),   per);
-    ivec2 c11 = ts_wrap2(pi + ivec2(1, 1),   per);
+    ivec2 c00 = ts_wrap2(pi,               per);
+    ivec2 c10 = ts_wrap2(pi + ivec2(1, 0), per);
+    ivec2 c01 = ts_wrap2(pi + ivec2(0, 1), per);
+    ivec2 c11 = ts_wrap2(pi + ivec2(1, 1), per);
 
     vec2 g00 = ts_grad8(ts_hash2(c00, seed));
     vec2 g10 = ts_grad8(ts_hash2(c10, seed));
@@ -202,10 +262,44 @@ float ts_perlin_tile(vec2 p, int per, uint seed) {
     return ts_perlin_tile(p, per, seed, g);
 }
 
+// Vec3 variant: 3 decorrelated channels from one pcg3d per corner (4 total
+// vs 12 for the scalar ×3 path). No analytical gradient output.
+vec3 ts_perlin_tile_vec3(vec2 p, int per, uint seed) {
+    ivec2 pi = ivec2(floor(p));
+    vec2  pf = p - vec2(pi);
 
-// =============================================================================
-// §7  SIMPLEX NOISE  (psrdnoise2 — Gustavson & McEwan, JCGT 2022)
-// =============================================================================
+    ivec2 c00 = ts_wrap2(pi,               per);
+    ivec2 c10 = ts_wrap2(pi + ivec2(1, 0), per);
+    ivec2 c01 = ts_wrap2(pi + ivec2(0, 1), per);
+    ivec2 c11 = ts_wrap2(pi + ivec2(1, 1), per);
+
+    vec3 h00 = ts_hash2_vec3(c00, seed);
+    vec3 h10 = ts_hash2_vec3(c10, seed);
+    vec3 h01 = ts_hash2_vec3(c01, seed);
+    vec3 h11 = ts_hash2_vec3(c11, seed);
+
+    // 3 independent gradient directions per corner
+    vec2 g00_r = ts_grad8(h00.x), g00_g = ts_grad8(h00.y), g00_b = ts_grad8(h00.z);
+    vec2 g10_r = ts_grad8(h10.x), g10_g = ts_grad8(h10.y), g10_b = ts_grad8(h10.z);
+    vec2 g01_r = ts_grad8(h01.x), g01_g = ts_grad8(h01.y), g01_b = ts_grad8(h01.z);
+    vec2 g11_r = ts_grad8(h11.x), g11_g = ts_grad8(h11.y), g11_b = ts_grad8(h11.z);
+
+    vec2 d00 = pf;
+    vec2 d10 = pf - vec2(1.0, 0.0);
+    vec2 d01 = pf - vec2(0.0, 1.0);
+    vec2 d11 = pf - vec2(1.0, 1.0);
+
+    vec3 n00 = vec3(dot(g00_r, d00), dot(g00_g, d00), dot(g00_b, d00));
+    vec3 n10 = vec3(dot(g10_r, d10), dot(g10_g, d10), dot(g10_b, d10));
+    vec3 n01 = vec3(dot(g01_r, d01), dot(g01_g, d01), dot(g01_b, d01));
+    vec3 n11 = vec3(dot(g11_r, d11), dot(g11_g, d11), dot(g11_b, d11));
+
+    vec2 u = ts_quintic(pf);
+    vec3 a = mix(n00, n10, u.x);
+    vec3 b = mix(n01, n11, u.x);
+    return mix(a, b, u.y) * TS_PERLIN_NORM;
+}
+
 const float TS_SIMPLEX_NORM = 10.9;
 
 float ts_simplex_tile(vec2 x, ivec2 period, float alpha, out vec2 gradient) {
@@ -238,13 +332,15 @@ float ts_simplex_tile(vec2 x, ivec2 period, float alpha, out vec2 gradient) {
     vec3 iu = floor(xw + 0.5 * yw + 0.5);
     vec3 iv = floor(yw + 0.5);
 
-    // Seed-mixed double-permutation hash
-    float s = ts_seed_mix(0u);  // seed handled by caller via alpha offset
-    vec3 h = mod(iu + s, 289.0);
-    h = mod((h * 51.0 + 2.0) * h + iv, 289.0);
-    h = mod((h * 34.0 + 10.0) * h,     289.0);
+    // Lattice hash via pcg3d — per-corner integer hash, mapped to unit range.
+    // Seed is folded in by the caller through `alpha` (see
+    // ts_simplex_tile_seeded below), so no seed term is mixed in here.
+    uvec3 hx = ts_pcg3d(uvec3(uint(iu.x), uint(iv.x), 0u));
+    uvec3 hy = ts_pcg3d(uvec3(uint(iu.y), uint(iv.y), 0u));
+    uvec3 hz = ts_pcg3d(uvec3(uint(iu.z), uint(iv.z), 0u));
+    vec3 h01 = vec3(hx.x & 0xFFFFu, hy.x & 0xFFFFu, hz.x & 0xFFFFu) * (1.0 / 65536.0); // [0,1)
 
-    vec3 psi = h * 0.07482 + alpha;
+    vec3 psi = h01 * TS_HASH_TO_ANGLE + alpha;
     vec3 gx  = cos(psi);
     vec3 gy  = sin(psi);
 
@@ -271,17 +367,13 @@ float ts_simplex_tile(vec2 x, ivec2 period, float alpha, out vec2 gradient) {
     return    TS_SIMPLEX_NORM * n;
 }
 
-// Seed-aware wrapper: folds seed into alpha as a base rotation.
 float ts_simplex_tile_seeded(vec2 x, ivec2 period, float alpha, uint seed,
                              out vec2 gradient) {
-    float seed_alpha = ts_seed_mix(seed) * 0.02174; // map [0,289) → [0, 2π)
+    uvec3 h = ts_pcg3d(uvec3(seed, seed ^ 0x9E3779B9u, seed ^ 0x85EBCA6Bu));
+    float seed_alpha = float(h.x & 0xFFFFu) * (1.0 / 65536.0) * 6.28318530718; // [0, 2π)
     return ts_simplex_tile(x, period, alpha + seed_alpha, gradient);
 }
 
-
-// =============================================================================
-// §8  WORLEY / CELLULAR NOISE  (tileable, F1, F2, F2-F1, cell IDs)
-// =============================================================================
 struct TSWorley {
     float f1;        // nearest distance, [0, 1]
     float f2;        // second-nearest, [0, 1]
@@ -303,12 +395,8 @@ TSWorley ts_worley_tile(vec2 p, int per, float jitter, uint seed) {
             ivec2 neighbor = pi + ivec2(i, j);
             ivec2 wrapped  = ts_wrap2(neighbor, per);
 
-            // Two independent hashes for x and y offset within the cell
-            float hx = ts_hash2(wrapped, seed);
-            float hy = ts_hash2(wrapped, seed + 0x9E3779B9u); // golden-ratio offset
-
-            vec2 feature = vec2(hx, hy) * (1.0 / 288.0); // [0, 1]
-            feature = 0.5 + (feature - 0.5) * jitter;    // shrink toward cell center
+            vec2 feature = ts_hash2_vec2(wrapped, seed);      // one call, x & y
+            feature = 0.5 + (feature - 0.5) * jitter;          // shrink toward cell center
 
             vec2 diff = vec2(i, j) + feature - pf;
             float d2 = dot(diff, diff);
@@ -316,7 +404,7 @@ TSWorley ts_worley_tile(vec2 p, int per, float jitter, uint seed) {
             if (d2 < f1) {
                 f2 = f1;
                 f1 = d2;
-                id = hx * (1.0 / 288.0); // cell identity
+                id = ts_hash2(wrapped, seed);  // cell identity, already unit range
             } else if (d2 < f2) {
                 f2 = d2;
             }
@@ -333,45 +421,24 @@ TSWorley ts_worley_tile(vec2 p, int per, float jitter, uint seed) {
     return o;
 }
 
-
-// =============================================================================
-// §1b  PCG HASH  —  Integer Hash for White Noise
-// =============================================================================
-uvec2 ts_pcg2d(uvec2 v) {
-    v = v * 1664525u + 1013904223u;
-    v.x += v.y * 1664525u;
-    v.y += v.x * 1664525u;
-    v ^= v >> 16u;
-    v.x += v.y * 1664525u;
-    v.y += v.x * 1664525u;
-    v ^= v >> 16u;
-    return v;
-}
-// =============================================================================
-// §9  WHITE NOISE  (per-pixel hash, no interpolation)
-// =============================================================================
 float ts_white_tile(vec2 p, int per, uint seed) {
     ivec2 c = ts_wrap2(ivec2(floor(p)), per);
-    return ts_hash2(c, seed) * (1.0 / 288.0) * 2.0 - 1.0; // [-1, 1]
+    return ts_hash2(c, seed) * 2.0 - 1.0; // [-1, 1]
 }
 
-
-
-// PCG white noise — full 32-bit palette, zero banding.
-// Output: [0, 1].  Replaces ts_white_tile in the White Noise node.
 float ts_white_pcg(vec2 p, int per, uint seed) {
     ivec2 c = ts_wrap2(ivec2(floor(p)), per);
-    // Fold seed into both axes so different seeds produce unrelated fields.
-    uvec2 v = uvec2(uint(c.x) ^ (seed * 2654435761u),
-                    uint(c.y) ^ (seed * 2246822519u));
-    uvec2 h = ts_pcg2d(v);
+    uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
     return float(h.x) * (1.0 / 4294967295.0);
 }
 
+// Vec3 variant: all 3 pcg3d components → [0,1). One call instead of three.
+vec3 ts_white_pcg_vec3(vec2 p, int per, uint seed) {
+    ivec2 c = ts_wrap2(ivec2(floor(p)), per);
+    uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
+    return vec3(h.x, h.y, h.z) * (1.0 / 4294967295.0);
+}
 
-// =============================================================================
-// §10  GABOR NOISE  (anisotropic, frequency-controlled, tileable)
-// =============================================================================
 float ts_gabor_tile(vec2 p, int per, float freq, float bandwidth,
                     float anisotropy, float angle, uint seed) {
     ivec2 pi = ivec2(floor(p));
@@ -392,19 +459,19 @@ float ts_gabor_tile(vec2 p, int per, float freq, float bandwidth,
         for (int i = -2; i <= 2; ++i) {
             ivec2 cell = ts_wrap2(pi + ivec2(i, j), per);
 
-            float h1 = ts_hash2(cell, seed);
-            float h2 = ts_hash2(cell, seed + 0x9E3779B9u);
-            float h3 = ts_hash2(cell, seed + 0x12345678u);
+            // One pcg3d call → 3 decorrelated channels (kernel x, kernel y, angle)
+            // instead of three separate ts_hash2 calls with seed offsets.
+            vec3 h = ts_hash2_vec3(cell, seed);
 
             // Kernel position INSIDE the cell, [0,1)
-            vec2 kpos = vec2(h1, h2) * (1.0 / 288.0);
+            vec2 kpos = h.xy;
             // Vector from kernel center to sample point
             vec2 diff = vec2(i, j) + kpos - pf;
             float r2  = dot(diff, diff);
             if (r2 > r2_max) continue;
 
             // Anisotropic Gabor orientation
-            float rand_angle = h3 * 0.02174;          // [0, 2π)
+            float rand_angle = h.z * 6.28318530718;   // [0, 2π)
             float k_angle    = mix(rand_angle, angle, anisotropy);
             vec2  k_dir      = vec2(cos(k_angle), sin(k_angle));
 
@@ -427,14 +494,14 @@ const float TS_OCTAVE_SEED_PRIME = 6791.0;
 const uint  TS_OCTAVE_SEED_PRIME_U = 6791u;
 const float TS_PI_OVER_PHI = 1.94161103873; // π / φ
 
-// ---- Value FBM (Houdini-matched octave blending) ----
+// ---- Value FBM (Houdini FBM_BOX: period scales with lacunarity) ----
 float ts_fbm_value(vec2 p, int period, float octaves,
                    float lacunarity, float gain, uint seed,
                    out vec2 total_grad) {
     float weight = 1.0;
     float g = gain * min(lacunarity, 1.0);
-    float freq = 1.0, fper = float(period);
-    int iper = max(int(round(fper)), 1);
+    float freq = 1.0;
+    int iper = max(period, 1);
     uint os = seed;
     vec2 gr;
     float base = ts_value_tile(p * freq, iper, os, gr);
@@ -442,13 +509,13 @@ float ts_fbm_value(vec2 p, int period, float octaves,
     float norm = 1.0;
     float oct = 1.0;
     if (oct >= octaves) { return base; }
+    int lac_int = int(lacunarity);
     do {
         weight *= g;
         oct += 1.0;
         if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
         freq *= lacunarity;
-        fper *= lacunarity;
-        iper = max(int(round(fper)), 1);
+        iper *= lac_int;
         os += TS_OCTAVE_SEED_PRIME_U;
         vec2 g2;
         float n = ts_value_tile(p * freq, iper, os, g2);
@@ -466,14 +533,40 @@ float ts_fbm_value(vec2 p, int period, float octaves,
     vec2 g; return ts_fbm_value(p, period, octaves, lacunarity, gain, seed, g);
 }
 
-// ---- Perlin FBM (Houdini-matched octave blending) ----
+// Vec3 FBM: period scales with lacunarity (Houdini FBM_BOX).
+vec3 ts_fbm_value_vec3(vec2 p, int period, float octaves,
+                       float lacunarity, float gain, uint seed) {
+    float weight = 1.0;
+    float g = gain * min(lacunarity, 1.0);
+    float freq = 1.0;
+    int iper = max(period, 1);
+    uint os = seed;
+    vec3 base = ts_value_tile_vec3(p * freq, iper, os);
+    float norm = 1.0;
+    float oct = 1.0;
+    if (oct >= octaves) { return base; }
+    int lac_int = int(lacunarity);
+    do {
+        weight *= g;
+        oct += 1.0;
+        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
+        freq *= lacunarity;
+        iper *= lac_int;
+        os += TS_OCTAVE_SEED_PRIME_U;
+        base += weight * ts_value_tile_vec3(p * freq, iper, os);
+        norm += weight;
+    } while (oct < octaves);
+    return base / max(norm, 1e-6);
+}
+
+// ---- Perlin FBM (Houdini FBM_BOX: period scales with lacunarity) ----
 float ts_fbm_perlin(vec2 p, int period, float octaves,
                     float lacunarity, float gain, uint seed,
                     out vec2 total_grad) {
     float weight = 1.0;
     float g = gain * min(lacunarity, 1.0);
-    float freq = 1.0, fper = float(period);
-    int iper = max(int(round(fper)), 1);
+    float freq = 1.0;
+    int iper = max(period, 1);
     uint os = seed;
     vec2 gr;
     float base = ts_perlin_tile(p * freq, iper, os, gr);
@@ -481,13 +574,13 @@ float ts_fbm_perlin(vec2 p, int period, float octaves,
     float norm = 1.0;
     float oct = 1.0;
     if (oct >= octaves) { return base; }
+    int lac_int = int(lacunarity);
     do {
         weight *= g;
         oct += 1.0;
         if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
         freq *= lacunarity;
-        fper *= lacunarity;
-        iper = max(int(round(fper)), 1);
+        iper *= lac_int;
         os += TS_OCTAVE_SEED_PRIME_U;
         vec2 g2;
         float n = ts_perlin_tile(p * freq, iper, os, g2);
@@ -505,7 +598,33 @@ float ts_fbm_perlin(vec2 p, int period, float octaves,
     vec2 g; return ts_fbm_perlin(p, period, octaves, lacunarity, gain, seed, g);
 }
 
-// ---- Simplex FBM (Houdini-matched octave blending) ----
+// Vec3 FBM: period scales with lacunarity (Houdini FBM_BOX).
+vec3 ts_fbm_perlin_vec3(vec2 p, int period, float octaves,
+                        float lacunarity, float gain, uint seed) {
+    float weight = 1.0;
+    float g = gain * min(lacunarity, 1.0);
+    float freq = 1.0;
+    int iper = max(period, 1);
+    uint os = seed;
+    vec3 base = ts_perlin_tile_vec3(p * freq, iper, os);
+    float norm = 1.0;
+    float oct = 1.0;
+    if (oct >= octaves) { return base; }
+    int lac_int = int(lacunarity);
+    do {
+        weight *= g;
+        oct += 1.0;
+        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
+        freq *= lacunarity;
+        iper *= lac_int;
+        os += TS_OCTAVE_SEED_PRIME_U;
+        base += weight * ts_perlin_tile_vec3(p * freq, iper, os);
+        norm += weight;
+    } while (oct < octaves);
+    return base / max(norm, 1e-6);
+}
+
+// ---- Simplex FBM (Houdini FBM_BOX: period scales, even-Y maintained) ----
 float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
                      float lacunarity, float gain,
                      float alpha, uint seed,
@@ -513,10 +632,10 @@ float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
     float weight = 1.0;
     float g = gain * min(lacunarity, 1.0);
     float freq = 1.0;
-    vec2 fper = vec2(period);
+    int lac_int = int(lacunarity);
     ivec2 per_i = ivec2(
-        max(int(round(fper.x)), 1),
-        max(int(round(fper.y * 0.5)) * 2, 2)
+        max(period.x, 1),
+        max((period.y / 2) * 2, 2)
     );
     uint os = seed;
     float oct_alpha = alpha;
@@ -531,11 +650,8 @@ float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
         oct += 1.0;
         if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
         freq *= lacunarity;
-        fper *= lacunarity;
-        per_i = ivec2(
-            max(int(round(fper.x)), 1),
-            max(int(round(fper.y * 0.5)) * 2, 2)
-        );
+        per_i *= lac_int;
+        per_i.y = max((per_i.y / 2) * 2, 2);
         oct_alpha = alpha + oct * TS_PI_OVER_PHI;
         os += TS_OCTAVE_SEED_PRIME_U;
         vec2 g2;
@@ -561,8 +677,8 @@ TSWorley ts_fbm_worley(vec2 p, int period, float octaves,
                        float lacunarity, float gain, float jitter, uint seed) {
     float weight = 1.0;
     float g = gain * min(lacunarity, 1.0);
-    float freq = 1.0, fper = float(period);
-    int iper = max(int(round(fper)), 1);
+    float freq = 1.0;
+    int iper = max(period, 1);
     uint os = seed;
     TSWorley base = ts_worley_tile(p * freq, iper, jitter, os);
     float f1_sum = base.f1, f2_sum = base.f2, id_sum = base.cell_id;
@@ -575,13 +691,13 @@ TSWorley ts_fbm_worley(vec2 p, int period, float octaves,
         o.cell_id = clamp(id_sum, 0.0, 1.0);
         return o;
     }
+    int lac_int = int(lacunarity);
     do {
         weight *= g;
         oct += 1.0;
         if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
         freq *= lacunarity;
-        fper *= lacunarity;
-        iper = max(int(round(fper)), 1);
+        iper *= lac_int;
         os += TS_OCTAVE_SEED_PRIME_U;
         TSWorley w2 = ts_worley_tile(p * freq, iper, jitter, os);
         f1_sum += weight * w2.f1;
@@ -597,31 +713,29 @@ TSWorley ts_fbm_worley(vec2 p, int period, float octaves,
     return o;
 }
 
-// ---- Gabor FBM ----
+// ---- Gabor FBM (Houdini FBM_BOX: period scales with lacunarity) ----
 float ts_fbm_gabor(vec2 p, int period, float octaves,
                    float lacunarity, float gain,
                    float freq_hz, float bandwidth,
                    float anisotropy, float angle, uint seed) {
     float weight = 1.0;
     float g = gain * min(lacunarity, 1.0);
-    float freq = 1.0, fper = float(period);
-    int iper = max(int(round(fper)), 1);
+    float freq = 1.0;
+    int iper = max(period, 1);
     uint os = seed;
-    float base = ts_gabor_tile(p * freq, iper, freq_hz, bandwidth,
-                               anisotropy, angle, os);
+    float base = ts_gabor_tile(p * freq, iper, freq_hz, bandwidth, anisotropy, angle, os);
     float norm = 1.0;
     float oct = 1.0;
     if (oct >= octaves) { return clamp(base, -1.0, 1.0); }
+    int lac_int = int(lacunarity);
     do {
         weight *= g;
         oct += 1.0;
         if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
         freq *= lacunarity;
-        fper *= lacunarity;
-        iper = max(int(round(fper)), 1);
+        iper *= lac_int;
         os += TS_OCTAVE_SEED_PRIME_U;
-        float n = ts_gabor_tile(p * freq, iper, freq_hz, bandwidth,
-                                anisotropy, angle, os);
+        float n = ts_gabor_tile(p * freq, iper, freq_hz, bandwidth, anisotropy, angle, os);
         base += weight * n;
         norm += weight;
     } while (oct < octaves);

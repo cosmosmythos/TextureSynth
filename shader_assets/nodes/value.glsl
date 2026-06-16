@@ -8,9 +8,7 @@ vec4 node_value(vec2 uv,
     vec2 p = uv * float(iper)
            + vec2(pc.time * speed);
 
-    float r = ts_fbm_value(p, iper, octaves, lacunarity, roughness, iseed);
-    float g = ts_fbm_value(p, iper, octaves, lacunarity, roughness, iseed + 379u);
-    float b = ts_fbm_value(p, iper, octaves, lacunarity, roughness, iseed + 757u);
+    vec3 n = ts_fbm_value_vec3(p, iper, octaves, lacunarity, roughness, iseed);
 
-    return vec4(ts_to_unit(r), ts_to_unit(g), ts_to_unit(b), 1.0);
+    return vec4(ts_to_unit(n.x), ts_to_unit(n.y), ts_to_unit(n.z), 1.0);
 }

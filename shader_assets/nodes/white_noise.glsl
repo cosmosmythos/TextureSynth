@@ -5,8 +5,6 @@ vec4 node_white(vec2 uv,
     uint iseed = uint(clamp(seed, 0.0, 65535.0)) ^ pc.seed;
     int ires = max(int(round(resolution)), 1);
     vec2 p = uv * float(ires);
-    float r = ts_white_pcg(p, ires, iseed);
-    float g = ts_white_pcg(p, ires, iseed + 379u);
-    float b = ts_white_pcg(p, ires, iseed + 757u);
-    return vec4(r, g, b, 1.0);
+    vec3 n = ts_white_pcg_vec3(p, ires, iseed);
+    return vec4(n, 1.0);
 }

@@ -570,6 +570,7 @@ def upload_node_image(node):
         # Extract flat float RGBA pixels from Blender image.
         pixels = np.empty(w * h * 4, dtype=np.float32)
         image.pixels.foreach_get(pixels)
+        pixels = pixels.reshape((h, w, 4))  # Reshape for engine upload.
         
         # Upload pixels to Vulkan engine.
         success = engine.upload_image(nid, pixels, w, h)
