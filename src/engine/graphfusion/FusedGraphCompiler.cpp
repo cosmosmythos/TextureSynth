@@ -36,7 +36,8 @@ FusedVariantKey build_fused_key(const Chain& chain,
                                 const GraphIR& ir,
                                 const NodeLibrary& lib) {
     FusedVariantKey k;
-    uint32_t fmt_or = 0;
+    uint32_t feature = 0;
+    uint32_t shift = 0;
     for (NodeId n : chain.nodes) {
         const auto* inst = ir.find(n);
         const auto* type = inst ? lib.find(inst->type_id) : nullptr;
@@ -48,10 +49,12 @@ FusedVariantKey build_fused_key(const Chain& chain,
         }
         k.param_socket_masks.push_back(mask);
         k.input_counts.push_back(static_cast<uint32_t>(type->inputs.size()));
-        if (inst)
-            fmt_or |= static_cast<uint32_t>(inst->format_override) & 0x7u;
+        if (inst) {
+            feature |= (static_cast<uint32_t>(inst->format_override) & 0x7u) << shift;
+            shift += 3;
+        }
     }
-    k.feature_flags = fmt_or;
+    k.feature_flags = feature;
     return k;
 }
 
