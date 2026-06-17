@@ -96,7 +96,6 @@ uvec2 ts_pcg2d(uvec2 v) {
     v ^= v >> 16u;
     v.x += v.y * 1664525u;
     v.y += v.x * 1664525u;
-    v ^= v >> 16u;
     return v;
 }
 
@@ -110,10 +109,16 @@ uvec3 ts_pcg3d(uvec3 v) {
 
 uvec4 ts_pcg4d(uvec4 v) {
     v = v * 1664525u + 1013904223u;
-    v.x += v.y * v.w; v.y += v.z * v.x; v.z += v.x * v.y; v.w += v.y * v.z;
-    v ^= v >> 16u;
-    v.x += v.y * v.w; v.y += v.z * v.x; v.z += v.x * v.y; v.w += v.y * v.z;
-    return v;
+    uint x = v.x + v.y * v.w;
+    uint y = v.y + v.z * x;
+    uint z = v.z + v.x * y;
+    uint w = v.w + y * z;
+    v = uvec4(x, y, z, w) ^ (uvec4(x, y, z, w) >> 16u);
+    x = v.x + v.y * v.w;
+    y = v.y + v.z * x;
+    z = v.z + v.x * y;
+    w = v.w + y * z;
+    return uvec4(x, y, z, w);
 }
 
 
@@ -862,7 +867,9 @@ vec4 node_invert(vec2 uv, float mask, vec4 color) {
 
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
-    vec2 uv = vec2(coord) / vec2(max(pc.resolution_x - 1u, 1u), max(pc.resolution_y - 1u, 1u));
+    vec2 uv;
+    uv.x = (coord.x >= int(pc.resolution_x) - 1) ? 1.0 : float(coord.x) / float(max(pc.resolution_x - 1u, 1u));
+    uv.y = (coord.y >= int(pc.resolution_y) - 1) ? 1.0 : float(coord.y) / float(max(pc.resolution_y - 1u, 1u));
     vec4 _result = vec4(0.0);
 
     if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;

@@ -45,7 +45,9 @@ public:
         main_started_ = true;
         main_ << "void main() {\n";
         main_ << "    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);\n";
-        main_ << "    vec2 uv = vec2(coord) / vec2(max(pc.resolution_x - 1u, 1u), max(pc.resolution_y - 1u, 1u));\n";
+        main_ << "    vec2 uv;\n";
+        main_ << "    uv.x = (coord.x >= int(pc.resolution_x) - 1) ? 1.0 : float(coord.x) / float(max(pc.resolution_x - 1u, 1u));\n";
+        main_ << "    uv.y = (coord.y >= int(pc.resolution_y) - 1) ? 1.0 : float(coord.y) / float(max(pc.resolution_y - 1u, 1u));\n";
         main_ << "    vec4 _result = vec4(0.0);\n\n";
     }
 

@@ -11,7 +11,7 @@ vec4 node_worley(vec2 uv,
     int iper = ts_period_int(period);
     float jit = clamp(jitter, 0.0, 1.0);
 
-    vec2 p = uv * float(iper)
+    vec2 p = fract(uv) * float(iper)
            + vec2(pc.time * speed);
 
     float r = ts_fbm_worley(p, iper, octaves, lacunarity, roughness, jit, iseed).f1;

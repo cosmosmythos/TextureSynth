@@ -14,7 +14,7 @@ vec4 node_gabor(vec2 uv,
     int iper = ts_period_int(period);
     float aniso = clamp(anisotropy, 0.0, 1.0);
 
-    vec2 p = uv * float(iper)
+    vec2 p = fract(uv) * float(iper)
            + vec2(pc.time * speed);
 
     float r = ts_fbm_gabor(p, iper, octaves, lacunarity, roughness,
