@@ -142,8 +142,8 @@ std::string emit_node_shader(const ValidatedNode& vn,
       << "    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);\n"
       << "    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;\n"
       << "    vec2 uv;\n"
-      << "    uv.x = (coord.x >= int(pc.resolution_x) - 1) ? 1.0 : float(coord.x) / float(max(pc.resolution_x - 1u, 1u));\n"
-      << "    uv.y = (coord.y >= int(pc.resolution_y) - 1) ? 1.0 : float(coord.y) / float(max(pc.resolution_y - 1u, 1u));\n";
+      << "    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));\n"
+      << "    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));\n";
 
     // Load non-sampler vec4/float inputs via bindless texelFetch, indexed by socket position.
     // Unconnected Vec4 inputs: baked as vec4(default_value) — no dummy texture.

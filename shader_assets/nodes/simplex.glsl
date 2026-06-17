@@ -8,7 +8,7 @@ vec4 node_simplex(vec2 uv,
                   float seed)
 {
     uint iseed = uint(clamp(seed, 0.0, 65535.0)) ^ pc.seed;
-    int iper = ts_period_even(period);
+    int iper = ts_period_int(period);
 
     vec2 p = uv * float(iper)
            + vec2(pc.time * speed);

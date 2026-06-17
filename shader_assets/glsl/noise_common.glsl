@@ -305,71 +305,117 @@ vec3 ts_perlin_tile_vec3(vec2 p, int per, uint seed) {
     return mix(a, b, u.y) * TS_PERLIN_NORM;
 }
 
-const float TS_SIMPLEX_NORM = 10.9;
+const float TS_SIMPLEX_NORM_3D = 39.5;
 
+// 3D axis-aligned simplex grid (tetrahedral lattice) evaluated on a 2D slice
+// (z=0). Tiles seamlessly at ANY integer period in x and y.
+// Based on Gustavson & McEwan, JCGT 11(1), 2022 — psrdnoise3.
 float ts_simplex_tile(vec2 x, ivec2 period, float alpha, out vec2 gradient) {
-    // Skew to simplex coordinate space
-    vec2 uv = vec2(x.x + x.y * 0.5, x.y);
+    // Promote to 3D: z=0 slice, no Z wrapping
+    vec3 x3 = vec3(x.x, x.y, 0.0);
 
-    vec2 i0 = floor(uv);
-    vec2 f0 = fract(uv);
+    // Axis-aligned simplex grid transform: uvw = M * x
+    // M = [[0,1,1],[1,0,1],[1,1,0]]
+    vec3 uvw = vec3(x3.y + x3.z, x3.x + x3.z, x3.x + x3.y);
 
-    float cmp = step(f0.y, f0.x);
-    vec2 o1 = vec2(cmp, 1.0 - cmp);
+    vec3 i0 = floor(uvw);
+    vec3 f0 = fract(uvw);
 
-    vec2 i1 = i0 + o1;
-    vec2 i2 = i0 + vec2(1.0);
+    // Rank-order fractional parts to determine tetrahedron corners
+    vec3 g_ = step(f0.xyx, f0.yzz);
+    vec3 l_ = 1.0 - g_;
+    vec3 g  = vec3(l_.z, g_.xy);
+    vec3 l  = vec3(l_.xy, g_.z);
+    vec3 o1 = min(g, l);
+    vec3 o2 = max(g, l);
 
-    // Back-transform corners to texture space
-    vec2 v0 = vec2(i0.x - i0.y * 0.5,        i0.y       );
-    vec2 v1 = vec2(v0.x + o1.x - o1.y * 0.5, v0.y + o1.y);
-    vec2 v2 = vec2(v0.x + 0.5,               v0.y + 1.0 );
+    vec3 i1 = i0 + o1;
+    vec3 i2 = i0 + o2;
+    vec3 i3 = i0 + vec3(1.0);
 
-    vec2 x0 = x - v0;
-    vec2 x1 = x - v1;
-    vec2 x2 = x - v2;
+    // Inverse transform Mi = [[-0.5,0.5,0.5],[0.5,-0.5,0.5],[0.5,0.5,-0.5]]
+    vec3 v0 = vec3(-0.5*i0.x + 0.5*i0.y + 0.5*i0.z,
+                     0.5*i0.x - 0.5*i0.y + 0.5*i0.z,
+                     0.5*i0.x + 0.5*i0.y - 0.5*i0.z);
+    vec3 v1 = vec3(-0.5*i1.x + 0.5*i1.y + 0.5*i1.z,
+                     0.5*i1.x - 0.5*i1.y + 0.5*i1.z,
+                     0.5*i1.x + 0.5*i1.y - 0.5*i1.z);
+    vec3 v2 = vec3(-0.5*i2.x + 0.5*i2.y + 0.5*i2.z,
+                     0.5*i2.x - 0.5*i2.y + 0.5*i2.z,
+                     0.5*i2.x + 0.5*i2.y - 0.5*i2.z);
+    vec3 v3 = vec3(-0.5*i3.x + 0.5*i3.y + 0.5*i3.z,
+                     0.5*i3.x - 0.5*i3.y + 0.5*i3.z,
+                     0.5*i3.x + 0.5*i3.y - 0.5*i3.z);
 
-    // Wrap corners to period
-    vec3 xw = vec3(v0.x, v1.x, v2.x);
-    vec3 yw = vec3(v0.y, v1.y, v2.y);
-    xw = mod(xw, float(period.x));
-    yw = mod(yw, float(period.y));
-    vec3 iu = floor(xw + 0.5 * yw + 0.5);
-    vec3 iv = floor(yw + 0.5);
+    // Displacement vectors (in texture space)
+    vec3 x0 = x3 - v0;
+    vec3 x1 = x3 - v1;
+    vec3 x2 = x3 - v2;
+    vec3 x3_ = x3 - v3;
 
-    // Lattice hash via pcg3d — per-corner integer hash, mapped to unit range.
-    // Seed is folded in by the caller through `alpha` (see
-    // ts_simplex_tile_seeded below), so no seed term is mixed in here.
-    uvec3 hx = ts_pcg3d(uvec3(uint(iu.x), uint(iv.x), 0u));
-    uvec3 hy = ts_pcg3d(uvec3(uint(iu.y), uint(iv.y), 0u));
-    uvec3 hz = ts_pcg3d(uvec3(uint(iu.z), uint(iv.z), 0u));
-    vec3 h01 = vec3(hx.x & 0xFFFFu, hy.x & 0xFFFFu, hz.x & 0xFFFFu) * (1.0 / 65536.0); // [0,1)
+    // Wrap corner positions and transform back to simplex space
+    if (period.x > 0 || period.y > 0) {
+        vec4 vx = vec4(v0.x, v1.x, v2.x, v3.x);
+        vec4 vy = vec4(v0.y, v1.y, v2.y, v3.y);
+        vec4 vz = vec4(v0.z, v1.z, v2.z, v3.z);
 
-    vec3 psi = h01 * TS_HASH_TO_ANGLE + alpha;
-    vec3 gx  = cos(psi);
-    vec3 gy  = sin(psi);
+        if (period.x > 0) vx = mod(vx, float(period.x));
+        if (period.y > 0) vy = mod(vy, float(period.y));
 
-    vec2 g0 = vec2(gx.x, gy.x);
-    vec2 g1 = vec2(gx.y, gy.y);
-    vec2 g2 = vec2(gx.z, gy.z);
+        // Transform wrapped texture-space positions back to simplex space
+        // M = [[0,1,1],[1,0,1],[1,1,0]]: M*v = (v.y+v.z, v.x+v.z, v.x+v.y)
+        vec3 w0 = vec3(vy.x + vz.x, vx.x + vz.x, vx.x + vy.x);
+        vec3 w1 = vec3(vy.y + vz.y, vx.y + vz.y, vx.y + vy.y);
+        vec3 w2 = vec3(vy.z + vz.z, vx.z + vz.z, vx.z + vy.z);
+        vec3 w3 = vec3(vy.w + vz.w, vx.w + vz.w, vx.w + vy.w);
 
-    // Radial decay kernel
-    vec3 w  = max(0.8 - vec3(dot(x0,x0), dot(x1,x1), dot(x2,x2)), 0.0);
-    vec3 w2 = w * w;
-    vec3 w4 = w2 * w2;
+        // Fix rounding errors
+        i0 = floor(w0 + 0.5);
+        i1 = floor(w1 + 0.5);
+        i2 = floor(w2 + 0.5);
+        i3 = floor(w3 + 0.5);
+    }
 
-    vec3 gdotx = vec3(dot(g0,x0), dot(g1,x1), dot(g2,x2));
-    float n = dot(w4, gdotx);
+    // Hash each corner via pcg3d
+    uvec3 h0 = ts_pcg3d(uvec3(uint(i0.x), uint(i0.y), uint(i0.z)));
+    uvec3 h1 = ts_pcg3d(uvec3(uint(i1.x), uint(i1.y), uint(i1.z)));
+    uvec3 h2 = ts_pcg3d(uvec3(uint(i2.x), uint(i2.y), uint(i2.z)));
+    uvec3 h3 = ts_pcg3d(uvec3(uint(i3.x), uint(i3.y), uint(i3.z)));
+
+    // Generate gradient direction from hash
+    float hf0 = float(h0.x & 0xFFFFu) * (1.0 / 65536.0);
+    float hf1 = float(h1.x & 0xFFFFu) * (1.0 / 65536.0);
+    float hf2 = float(h2.x & 0xFFFFu) * (1.0 / 65536.0);
+    float hf3 = float(h3.x & 0xFFFFu) * (1.0 / 65536.0);
+
+    vec4 psi = vec4(hf0, hf1, hf2, hf3) * TS_HASH_TO_ANGLE + alpha;
+    // 2D gradients (xy only — z=0 slice)
+    vec4 gx = cos(psi);
+    vec4 gy = sin(psi);
+
+    vec3 g0 = vec3(gx.x, gy.x, 0.0);
+    vec3 g1 = vec3(gx.y, gy.y, 0.0);
+    vec3 g2 = vec3(gx.z, gy.z, 0.0);
+    vec3 g3 = vec3(gx.w, gy.w, 0.0);
+
+    // Radial decay kernel (3D: 0.5 support radius)
+    vec4 w  = max(0.5 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3_,x3_)), 0.0);
+    vec4 w2 = w * w;
+    vec4 w3 = w2 * w;
+
+    vec4 gdotx = vec4(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3_));
+    float n = dot(w3, gdotx);
 
     // Analytical gradient
-    vec3 w3 = w2 * w;
-    vec3 dw = -8.0 * w3 * gdotx;
-    vec2 dn0 = w4.x * g0 + dw.x * x0;
-    vec2 dn1 = w4.y * g1 + dw.y * x1;
-    vec2 dn2 = w4.z * g2 + dw.z * x2;
+    vec4 dw  = -6.0 * w2 * gdotx;
+    vec3 dn0 = w3.x * g0 + dw.x * x0;
+    vec3 dn1 = w3.y * g1 + dw.y * x1;
+    vec3 dn2 = w3.z * g2 + dw.z * x2;
+    vec3 dn3 = w3.w * g3 + dw.w * x3_;
 
-    gradient = TS_SIMPLEX_NORM * (dn0 + dn1 + dn2);
-    return    TS_SIMPLEX_NORM * n;
+    vec3 grad3 = TS_SIMPLEX_NORM_3D * (dn0 + dn1 + dn2 + dn3);
+    gradient = grad3.xy;
+    return    TS_SIMPLEX_NORM_3D * n;
 }
 
 float ts_simplex_tile_seeded(vec2 x, ivec2 period, float alpha, uint seed,
@@ -629,7 +675,8 @@ vec3 ts_fbm_perlin_vec3(vec2 p, int period, float octaves,
     return base / max(norm, 1e-6);
 }
 
-// ---- Simplex FBM (Houdini FBM_BOX: period scales, even-Y maintained) ----
+// ---- Simplex FBM (period scales uniformly — Y-period even-requirement
+// satisfied by caller via ts_period_even) ----
 float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
                      float lacunarity, float gain,
                      float alpha, uint seed,
@@ -640,7 +687,7 @@ float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
     int lac_int = int(lacunarity);
     ivec2 per_i = ivec2(
         max(period.x, 1),
-        max((period.y / 2) * 2, 2)
+        max(period.y, 1)
     );
     uint os = seed;
     float oct_alpha = alpha;
@@ -656,7 +703,6 @@ float ts_fbm_simplex(vec2 p, ivec2 period, float octaves,
         if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
         freq *= lacunarity;
         per_i *= lac_int;
-        per_i.y = max((per_i.y / 2) * 2, 2);
         oct_alpha = alpha + oct * TS_PI_OVER_PHI;
         os += TS_OCTAVE_SEED_PRIME_U;
         vec2 g2;

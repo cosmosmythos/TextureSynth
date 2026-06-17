@@ -18,6 +18,9 @@ When something is broken:
 
 This is non-negotiable. Senior engineers don't ship partial fixes.
 
+**Debugging rule: When a fix "has no effect", stop guessing and output actual values.**
+Trace backwards from the broken output, injecting known values at each layer until you find where reality diverges from expectation. Don't test the final result — the bug is always upstream. Example: we wasted rounds changing hash functions and compiler flags before injecting a constant into the shader itself, which immediately revealed `255.0/255.0 = 0.9995` on GPU.
+
 ## 1. Technical Explanations & Style
 The user is a **3D texture artist/developer**. Every architecture/design answer MUST include these 3 layers in order:
 
