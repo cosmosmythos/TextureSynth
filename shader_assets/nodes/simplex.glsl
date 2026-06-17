@@ -18,6 +18,7 @@ vec4 node_simplex(vec2 uv,
     float r = ts_fbm_simplex(p, per, octaves, lacunarity, roughness, rotation, iseed);
     float g = ts_fbm_simplex(p, per, octaves, lacunarity, roughness, rotation, iseed + 379u);
     float b = ts_fbm_simplex(p, per, octaves, lacunarity, roughness, rotation, iseed + 757u);
+    float a = ts_fbm_simplex(p, per, octaves, lacunarity, roughness, rotation, iseed + 1013u);
 
-    return vec4(ts_to_unit(r), ts_to_unit(g), ts_to_unit(b), 1.0);
+    return vec4(ts_to_unit(r), ts_to_unit(g), ts_to_unit(b), ts_to_unit(a));
 }

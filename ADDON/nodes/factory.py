@@ -142,6 +142,7 @@ _CATEGORY_BY_SVTYPE = {
     'blend':'BLEND',
     'invert':'FILTER','grayscale':'FILTER',
     'combine_rgba':'COLOR','separate_rgba':'COLOR',
+    'shuffle':'CHANNEL','remap':'CHANNEL',
 }
 
 _FORMAT_OVERRIDE_SV_TYPES = {
@@ -150,6 +151,7 @@ _FORMAT_OVERRIDE_SV_TYPES = {
 }
 
 _generated_classes = []
+_enum_param_indices = {}
 
 
 def _supports_format_override(type_id, node_type):
@@ -208,14 +210,47 @@ def generate_node_classes(core_module):
         param_names = []
 
         # Setup Float and Int properties from parameters.
+        _CHANNEL_ITEMS = [
+            ('R', "R", ""),
+            ('G', "G", ""),
+            ('B', "B", ""),
+            ('A', "A", ""),
+        ]
+        _ENUM_PARAMS = {
+            'channel_mode': [
+                ('MONO', "Mono", ""),
+                ('UV',   "UV",   ""),
+                ('RGB',  "RGB",  ""),
+                ('RGBA', "RGBA", ""),
+            ],
+            'r_src': _CHANNEL_ITEMS,
+            'g_src': _CHANNEL_ITEMS,
+            'b_src': _CHANNEL_ITEMS,
+            'a_src': _CHANNEL_ITEMS,
+        }
+        _ENUM_INDEX = {k: {item[0]: i for i, item in enumerate(v)} for k, v in _ENUM_PARAMS.items()}
+
         for param in node_type.params:
             param_names.append(param.name)
             is_int = bool(getattr(param, "is_integer", False))
             step   = float(getattr(param, "step", 0.0))
-            label  = getattr(param, "display_name", None) or param.name.replace('_', ' ').title()
+            label  = getattr(param, "display_name", None)
+            if label is None:
+                label = param.name.replace('_', ' ').title()
             desc   = getattr(param, "description", "")
 
-            if is_int:
+            if param.name in _ENUM_PARAMS:
+                items = _ENUM_PARAMS[param.name]
+                idx_map = _ENUM_INDEX[param.name]
+                default_key = items[int(round(param.default_value))][0]
+                prop = bpy.props.EnumProperty(
+                    name=label, description=desc,
+                    items=items,
+                    default=default_key,
+                    update=_update_param,
+                )
+                _enum_param_indices[param.name] = idx_map
+            elif is_int:
                 prop = bpy.props.IntProperty(
                     name=label, description=desc,
                     default=int(round(param.default_value)),
@@ -332,14 +367,20 @@ def generate_node_classes(core_module):
 
         # Define get_parameters positional mapping.
         # SSBO layout: [manifest_params..., float_input_defaults...]
-        def make_get_parameters(p_names, float_specs):
+        def make_get_parameters(p_names, float_specs, enum_indices):
             def get_parameters_func(self):
-                result = [float(getattr(self, p)) for p in p_names]
+                result = []
+                for p in p_names:
+                    val = getattr(self, p)
+                    if p in enum_indices:
+                        result.append(float(enum_indices[p].get(val, 0)))
+                    else:
+                        result.append(float(val))
                 for name, default in float_specs:
                     result.append(float(getattr(self, name, default)))
                 return result
             return get_parameters_func
-        class_dict['get_parameters'] = make_get_parameters(param_names, float_input_specs)
+        class_dict['get_parameters'] = make_get_parameters(param_names, float_input_specs, _enum_param_indices)
 
         # get_named_parameters: returns None when float inputs exist so _push_params_using_stable_ids
         # falls through to get_parameters() which writes both manifest params AND float-input slots.

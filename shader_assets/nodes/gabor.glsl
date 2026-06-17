@@ -23,6 +23,8 @@ vec4 node_gabor(vec2 uv,
                            frequency, bandwidth, aniso, angle, iseed + 379u);
     float b = ts_fbm_gabor(p, iper, octaves, lacunarity, roughness,
                            frequency, bandwidth, aniso, angle, iseed + 757u);
+    float a = ts_fbm_gabor(p, iper, octaves, lacunarity, roughness,
+                           frequency, bandwidth, aniso, angle, iseed + 1013u);
 
-    return vec4(ts_to_unit(r), ts_to_unit(g), ts_to_unit(b), 1.0);
+    return vec4(ts_to_unit(r), ts_to_unit(g), ts_to_unit(b), ts_to_unit(a));
 }

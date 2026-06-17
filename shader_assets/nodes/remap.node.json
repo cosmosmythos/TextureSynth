@@ -12,7 +12,8 @@
         { "name": "in_min", "display_name": "In Min", "default": 0.0, "min": -100000.0, "max": 100000.0, "soft_min": 0.0, "soft_max": 1.0 },
         { "name": "in_max", "display_name": "In Max", "default": 1.0, "min": -100000.0, "max": 100000.0, "soft_min": 0.0, "soft_max": 1.0 },
         { "name": "out_min", "display_name": "Out Min", "default": 0.0, "min": -100000.0, "max": 100000.0, "soft_min": 0.0, "soft_max": 1.0 },
-        { "name": "out_max", "display_name": "Out Max", "default": 1.0, "min": -100000.0, "max": 100000.0, "soft_min": 0.0, "soft_max": 1.0 }
+        { "name": "out_max", "display_name": "Out Max", "default": 1.0, "min": -100000.0, "max": 100000.0, "soft_min": 0.0, "soft_max": 1.0 },
+        { "name": "channel_mode", "display_name": "", "default": 3.0, "min": 0.0, "max": 3.0, "step": 1.0, "integer": true }
     ],
     "shader": "remap.glsl",
     "entry": "node_remap"

@@ -45,7 +45,7 @@ class TextureSynthNode(bpy.types.Node):
 
     format_override: bpy.props.EnumProperty(
         name="Format",
-        description="Override the output texture format for this node.",
+        description="Override the texture format",
         items=FORMAT_OVERRIDE_ITEMS,
         default='DEFAULT',
         update=_on_format_override_change,

@@ -1,14 +1,14 @@
-"""Sidebar panel for TextureSynth in the Node Editor N-panel."""
+"""Sidebar panel."""
 import bpy
 from ..core import cpp_module
 
 
 class TEXTURESYNTH_PT_sidebar(bpy.types.Panel):
-    bl_label = "TextureSynth"
+    bl_label = "Settings"
     bl_idname = "TEXTURESYNTH_PT_sidebar"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
-    bl_category = "TextureSynth"
+    bl_category = "Options"
 
     @classmethod
     def poll(cls, context):
@@ -23,14 +23,14 @@ class TEXTURESYNTH_PT_sidebar(bpy.types.Panel):
 
         box = layout.box()
         if cpp_module.is_loaded():
-            box.label(text="Engine: Ready", icon='CHECKMARK')
+            box.label(text="GPU: Active", icon='TEXTURE')
         else:
-            box.label(text="Engine: Not loaded", icon='ERROR')
+            box.label(text="GPU: Unavailable", icon='NOT_FOUND')
 
         col = layout.column(align=True)
         col.prop(context.scene, "texturesynth_resolution")
-        col.prop(context.scene, "texturesynth_precision")
-        col.prop(context.scene, "texturesynth_proxy_scale")
+        col.prop(context.scene, "texturesynth_precision", text="")
+        col.prop(context.scene, "texturesynth_proxy_scale", text="")
 
         layout.operator("texturesynth.update", icon='FILE_REFRESH')
 
@@ -55,7 +55,7 @@ def _register_extra():
     """Add Scene custom properties used by the panel."""
     bpy.types.Scene.texturesynth_resolution = bpy.props.IntProperty(
         name="Resolution",
-        description="Output texture resolution (square)",
+        description="Resolution",
         default=1024,
         min=64,
         max=4096,
@@ -63,22 +63,22 @@ def _register_extra():
     )
     bpy.types.Scene.texturesynth_precision = bpy.props.EnumProperty(
         name="Precision",
-        description="VRAM Bit-Depth precision",
+        description="Bit-Depth precision",
         items=[
-            ('R32', "32-bit Float (High Quality)", "Use 32-bit single-precision floating point"),
-            ('R16', "16-bit Half-Float (Optimized)", "Use 16-bit half-precision floating point (saves 50% VRAM)"),
-            ('R8', "8-bit Int (Preview)", "Use 8-bit integer formats (saves 75% VRAM)"),
+            ('R32', "32-bit Float", ""),
+            ('R16', "16-bit Half-Float", ""),
+            ('R8', "8-bit", ""),
         ],
         default='R16',
         update=on_precision_update,
     )
     bpy.types.Scene.texturesynth_proxy_scale = bpy.props.EnumProperty(
-        name="Viewport Proxy",
-        description="Copernicus-style viewport proxy rendering scale",
+        name="Proxy Scale",
+        description="",
         items=[
-            ('1.0', "100% (Full Quality)", "Render at full resolution"),
-            ('0.5', "50% (Fast)", "Render at half resolution and upscale"),
-            ('0.25', "25% (Extremely Fast)", "Render at quarter resolution and upscale"),
+            ('1.0', "100%", ""),
+            ('0.5', "50%", ""),
+            ('0.25', "25%", ""),
         ],
         default='1.0',
         update=on_proxy_scale_update,

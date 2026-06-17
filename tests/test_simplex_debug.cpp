@@ -1318,3 +1318,162 @@ TEST(Simplex3D, Period3DiffersFromPeriod4) {
         EXPECT_TRUE(different) << "3D simplex period " << odd << " vs " << even << " are IDENTICAL";
     }
 }
+
+// ============================================================================
+// TEST: Storage format mismatch — Simplex(Mono) → Shuffle
+// Verifies that the r32f storage qualifier fix works correctly.
+// With Mono format, per-node image is R16_SFLOAT.
+// Shader writes with r32f qualifier → only R stored.
+// Downstream Shuffle samples this image → Vulkan returns (R, 0, 0, 1).
+// ============================================================================
+TEST_F(SimplexGPUDebug, StorageFormat_SimplexMonoToShuffle) {
+    ASSERT_TRUE(engine_ready_);
+    printf("\n=== STORAGE FORMAT TEST: Simplex(Mono) -> Shuffle ===\n");
+
+    Graph g;
+    // Node 1: Simplex with Mono format override
+    g.nodes.push_back({1, "simplex", ChannelFormat::Mono});
+    // Node 2: Shuffle (identity mapping: R->R, G->G, B->B, A->A)
+    g.nodes.push_back({2, "shuffle"});
+    g.connections.push_back({1, 0, 2, 0});  // simplex.output -> shuffle.color
+    g.output_node = 2;
+
+    submit(g);
+    wait_pipeline();
+    engine_.update_node_params_by_name(1, std::unordered_map<std::string, float>{
+        {"period", 4.0f}, {"octaves", 1.0f}, {"lacunarity", 2.0f},
+        {"roughness", 0.5f}, {"speed", 1.0f}, {"rotation", 0.0f},
+        {"seed", 0.0f}});
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    engine_.poll_pending_compiles();
+
+    std::vector<float> px;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(readback(px, w, h));
+
+    printf("  Readback: %ux%u, %zu floats\n", w, h, px.size());
+
+    // Sample several pixels and print R, G, B, A
+    printf("\n  Pixel values (R, G, B, A):\n");
+    struct Sample { int x, y; const char* label; };
+    Sample samples[] = {
+        {0, 0, "top-left"},
+        {128, 128, "center"},
+        {64, 64, "mid-quad"},
+        {255, 0, "top-right"},
+        {0, 255, "bottom-left"},
+        {128, 0, "top-mid"},
+    };
+    for (auto& s : samples) {
+        if ((uint32_t)s.x < w && (uint32_t)s.y < h) {
+            size_t idx = ((size_t)s.y * w + s.x) * 4;
+            printf("    [%s] (%3d,%3d): R=%.6f G=%.6f B=%.6f A=%.6f\n",
+                   s.label, s.x, s.y,
+                   px[idx+0], px[idx+1], px[idx+2], px[idx+3]);
+        }
+    }
+
+    // Analyze: for Mono output through Shuffle (identity),
+    // we expect R = noise value, G = 0, B = 0, A = 1
+    float min_r = 1e9, max_r = -1e9;
+    float max_g = 0, max_b = 0, min_a = 1e9, max_a = -1e9;
+    int r_nonzero = 0, g_nonzero = 0, b_nonzero = 0;
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            size_t idx = ((size_t)y * w + x) * 4;
+            float r = px[idx+0], g = px[idx+1], b = px[idx+2], a = px[idx+3];
+            min_r = std::min(min_r, r); max_r = std::max(max_r, r);
+            max_g = std::max(max_g, std::abs(g));
+            max_b = std::max(max_b, std::abs(b));
+            min_a = std::min(min_a, a); max_a = std::max(max_a, a);
+            if (r > 0.001f && r < 0.999f) r_nonzero++;
+            if (std::abs(g) > 0.001f) g_nonzero++;
+            if (std::abs(b) > 0.001f) b_nonzero++;
+        }
+    }
+    printf("\n  ANALYSIS:\n");
+    printf("    R range: [%.6f, %.6f] (noise values, %d non-trivial pixels)\n",
+           min_r, max_r, r_nonzero);
+    printf("    |G| max: %.6f (%d non-zero pixels)\n", max_g, g_nonzero);
+    printf("    |B| max: %.6f (%d non-zero pixels)\n", max_b, b_nonzero);
+    printf("    A range: [%.6f, %.6f]\n", min_a, max_a);
+
+    if (max_g > 0.01f || max_b > 0.01f) {
+        printf("  >>> G/B are NON-ZERO — format mismatch may still be present!\n");
+        printf("  >>> Or: Vulkan returns (R, 0, 0, 1) for mono — check Shuffle identity.\n");
+    } else {
+        printf("  >>> G/B are zero — Mono storage format works correctly.\n");
+    }
+}
+
+// ============================================================================
+// TEST: Compare Mono vs RGBA output from Simplex
+// Same graph, different format — check if G/B differ.
+// ============================================================================
+TEST_F(SimplexGPUDebug, StorageFormat_MonoVsRGBA_Comparison) {
+    ASSERT_TRUE(engine_ready_);
+    printf("\n=== STORAGE FORMAT: Mono vs RGBA comparison ===\n");
+
+    auto render_format = [&](ChannelFormat fmt, const char* label) -> std::vector<float> {
+        Graph gf;
+        gf.nodes.push_back({1, "simplex", fmt});
+        gf.output_node = 1;
+        submit(gf); wait_pipeline();
+        engine_.update_node_params_by_name(1, std::unordered_map<std::string, float>{
+            {"period", 4.0f}, {"octaves", 1.0f}, {"lacunarity", 2.0f},
+            {"roughness", 0.5f}, {"speed", 1.0f}, {"rotation", 0.0f},
+            {"seed", 0.0f}});
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        engine_.poll_pending_compiles();
+
+        std::vector<float> px;
+        uint32_t w = 0, h = 0;
+        bool ok = readback(px, w, h);
+        if (!ok) { printf("  %s: readback failed!\n", label); return {}; }
+        printf("  %s: %ux%u read OK\n", label, w, h);
+        return px;
+    };
+
+    auto px_mono = render_format(ChannelFormat::Mono, "Mono");
+    auto px_rgba = render_format(ChannelFormat::RGBA, "RGBA");
+
+    if (px_mono.empty() || px_rgba.empty()) return;
+
+    uint32_t w = 256, h = 256;
+    printf("\n  Per-channel comparison (center 16x16 block):\n");
+
+    for (int c = 0; c < 4; c++) {
+        const char* cname[] = {"R", "G", "B", "A"};
+        float max_diff = 0;
+        float mono_sum = 0, rgba_sum = 0;
+        int count = 0;
+        for (int y = 120; y < 136; y++) {
+            for (int x = 120; x < 136; x++) {
+                size_t idx = ((size_t)y * w + x) * 4 + c;
+                float diff = std::abs(px_mono[idx] - px_rgba[idx]);
+                max_diff = std::max(max_diff, diff);
+                mono_sum += px_mono[idx];
+                rgba_sum += px_rgba[idx];
+                count++;
+            }
+        }
+        printf("    %s: max_diff=%.6f  Mono_avg=%.4f  RGBA_avg=%.4f\n",
+               cname[c], max_diff, mono_sum/count, rgba_sum/count);
+    }
+
+    // Check G/B channel statistics for Mono
+    float mono_g_max = 0, mono_b_max = 0;
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            size_t idx = ((size_t)y * w + x) * 4;
+            mono_g_max = std::max(mono_g_max, std::abs(px_mono[idx+1]));
+            mono_b_max = std::max(mono_b_max, std::abs(px_mono[idx+2]));
+        }
+    }
+    printf("\n  Mono format — |G|_max=%.6f  |B|_max=%.6f\n", mono_g_max, mono_b_max);
+    if (mono_g_max > 0.01f || mono_b_max > 0.01f) {
+        printf("  >>> FAIL: G/B contain non-zero data in Mono output!\n");
+    } else {
+        printf("  >>> OK: G/B are clean in Mono output.\n");
+    }
+}

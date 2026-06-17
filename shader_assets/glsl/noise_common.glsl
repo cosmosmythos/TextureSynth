@@ -197,29 +197,6 @@ float ts_value_tile(vec2 p, int per, uint seed) {
     return ts_value_tile(p, per, seed, g);
 }
 
-// Vec3 variant: 3 decorrelated channels from one pcg3d per corner (4 total
-// vs 12 for the scalar ×3 path). No gradient output — used by node_value.
-vec3 ts_value_tile_vec3(vec2 p, int per, uint seed) {
-    ivec2 pi = ivec2(floor(p));
-    vec2  pf = p - vec2(pi);
-
-    ivec2 c00 = ts_wrap2(pi,               per);
-    ivec2 c10 = ts_wrap2(pi + ivec2(1, 0), per);
-    ivec2 c01 = ts_wrap2(pi + ivec2(0, 1), per);
-    ivec2 c11 = ts_wrap2(pi + ivec2(1, 1), per);
-
-    vec3 v00 = ts_hash2_vec3(c00, seed) * 2.0 - 1.0;
-    vec3 v10 = ts_hash2_vec3(c10, seed) * 2.0 - 1.0;
-    vec3 v01 = ts_hash2_vec3(c01, seed) * 2.0 - 1.0;
-    vec3 v11 = ts_hash2_vec3(c11, seed) * 2.0 - 1.0;
-
-    vec2 u = ts_quintic(pf);
-    vec3 a = mix(v00, v10, u.x);
-    vec3 b = mix(v01, v11, u.x);
-    return mix(a, b, u.y);
-}
-
-
 const float TS_PERLIN_NORM = 1.3393713;   // = 1.0 / 0.74682413
 
 float ts_perlin_tile(vec2 p, int per, uint seed, out vec2 grad) {
@@ -265,44 +242,6 @@ float ts_perlin_tile(vec2 p, int per, uint seed, out vec2 grad) {
 float ts_perlin_tile(vec2 p, int per, uint seed) {
     vec2 g;
     return ts_perlin_tile(p, per, seed, g);
-}
-
-// Vec3 variant: 3 decorrelated channels from one pcg3d per corner (4 total
-// vs 12 for the scalar ×3 path). No analytical gradient output.
-vec3 ts_perlin_tile_vec3(vec2 p, int per, uint seed) {
-    ivec2 pi = ivec2(floor(p));
-    vec2  pf = p - vec2(pi);
-
-    ivec2 c00 = ts_wrap2(pi,               per);
-    ivec2 c10 = ts_wrap2(pi + ivec2(1, 0), per);
-    ivec2 c01 = ts_wrap2(pi + ivec2(0, 1), per);
-    ivec2 c11 = ts_wrap2(pi + ivec2(1, 1), per);
-
-    vec3 h00 = ts_hash2_vec3(c00, seed);
-    vec3 h10 = ts_hash2_vec3(c10, seed);
-    vec3 h01 = ts_hash2_vec3(c01, seed);
-    vec3 h11 = ts_hash2_vec3(c11, seed);
-
-    // 3 independent gradient directions per corner
-    vec2 g00_r = ts_grad8(h00.x), g00_g = ts_grad8(h00.y), g00_b = ts_grad8(h00.z);
-    vec2 g10_r = ts_grad8(h10.x), g10_g = ts_grad8(h10.y), g10_b = ts_grad8(h10.z);
-    vec2 g01_r = ts_grad8(h01.x), g01_g = ts_grad8(h01.y), g01_b = ts_grad8(h01.z);
-    vec2 g11_r = ts_grad8(h11.x), g11_g = ts_grad8(h11.y), g11_b = ts_grad8(h11.z);
-
-    vec2 d00 = pf;
-    vec2 d10 = pf - vec2(1.0, 0.0);
-    vec2 d01 = pf - vec2(0.0, 1.0);
-    vec2 d11 = pf - vec2(1.0, 1.0);
-
-    vec3 n00 = vec3(dot(g00_r, d00), dot(g00_g, d00), dot(g00_b, d00));
-    vec3 n10 = vec3(dot(g10_r, d10), dot(g10_g, d10), dot(g10_b, d10));
-    vec3 n01 = vec3(dot(g01_r, d01), dot(g01_g, d01), dot(g01_b, d01));
-    vec3 n11 = vec3(dot(g11_r, d11), dot(g11_g, d11), dot(g11_b, d11));
-
-    vec2 u = ts_quintic(pf);
-    vec3 a = mix(n00, n10, u.x);
-    vec3 b = mix(n01, n11, u.x);
-    return mix(a, b, u.y) * TS_PERLIN_NORM;
 }
 
 const float TS_SIMPLEX_NORM_3D = 39.5;
@@ -483,13 +422,6 @@ float ts_white_pcg(vec2 p, int per, uint seed) {
     return float(h.x) * (1.0 / 4294967295.0);
 }
 
-// Vec3 variant: all 3 pcg3d components → [0,1). One call instead of three.
-vec3 ts_white_pcg_vec3(vec2 p, int per, uint seed) {
-    ivec2 c = ts_wrap2(ivec2(floor(p)), per);
-    uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
-    return vec3(h.x, h.y, h.z) * (1.0 / 4294967295.0);
-}
-
 float ts_gabor_tile(vec2 p, int per, float freq, float bandwidth,
                     float anisotropy, float angle, uint seed) {
     ivec2 pi = ivec2(floor(p));
@@ -545,7 +477,7 @@ const float TS_OCTAVE_SEED_PRIME = 6791.0;
 const uint  TS_OCTAVE_SEED_PRIME_U = 6791u;
 const float TS_PI_OVER_PHI = 1.94161103873; // π / φ
 
-// ---- Value FBM (Houdini FBM_BOX: period scales with lacunarity) ----
+// ---- Value FBM (period scales with lacunarity) ----
 float ts_fbm_value(vec2 p, int period, float octaves,
                    float lacunarity, float gain, uint seed,
                    out vec2 total_grad) {
@@ -584,33 +516,7 @@ float ts_fbm_value(vec2 p, int period, float octaves,
     vec2 g; return ts_fbm_value(p, period, octaves, lacunarity, gain, seed, g);
 }
 
-// Vec3 FBM: period scales with lacunarity (Houdini FBM_BOX).
-vec3 ts_fbm_value_vec3(vec2 p, int period, float octaves,
-                       float lacunarity, float gain, uint seed) {
-    float weight = 1.0;
-    float g = gain * min(lacunarity, 1.0);
-    float freq = 1.0;
-    int iper = max(period, 1);
-    uint os = seed;
-    vec3 base = ts_value_tile_vec3(p * freq, iper, os);
-    float norm = 1.0;
-    float oct = 1.0;
-    if (oct >= octaves) { return base; }
-    int lac_int = int(lacunarity);
-    do {
-        weight *= g;
-        oct += 1.0;
-        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
-        freq *= lacunarity;
-        iper *= lac_int;
-        os += TS_OCTAVE_SEED_PRIME_U;
-        base += weight * ts_value_tile_vec3(p * freq, iper, os);
-        norm += weight;
-    } while (oct < octaves);
-    return base / max(norm, 1e-6);
-}
-
-// ---- Perlin FBM (Houdini FBM_BOX: period scales with lacunarity) ----
+// ---- Perlin FBM ----
 float ts_fbm_perlin(vec2 p, int period, float octaves,
                     float lacunarity, float gain, uint seed,
                     out vec2 total_grad) {
@@ -647,32 +553,6 @@ float ts_fbm_perlin(vec2 p, int period, float octaves,
 float ts_fbm_perlin(vec2 p, int period, float octaves,
                     float lacunarity, float gain, uint seed) {
     vec2 g; return ts_fbm_perlin(p, period, octaves, lacunarity, gain, seed, g);
-}
-
-// Vec3 FBM: period scales with lacunarity (Houdini FBM_BOX).
-vec3 ts_fbm_perlin_vec3(vec2 p, int period, float octaves,
-                        float lacunarity, float gain, uint seed) {
-    float weight = 1.0;
-    float g = gain * min(lacunarity, 1.0);
-    float freq = 1.0;
-    int iper = max(period, 1);
-    uint os = seed;
-    vec3 base = ts_perlin_tile_vec3(p * freq, iper, os);
-    float norm = 1.0;
-    float oct = 1.0;
-    if (oct >= octaves) { return base; }
-    int lac_int = int(lacunarity);
-    do {
-        weight *= g;
-        oct += 1.0;
-        if (oct >= octaves) { weight *= 1.0 - (oct - octaves); }
-        freq *= lacunarity;
-        iper *= lac_int;
-        os += TS_OCTAVE_SEED_PRIME_U;
-        base += weight * ts_perlin_tile_vec3(p * freq, iper, os);
-        norm += weight;
-    } while (oct < octaves);
-    return base / max(norm, 1e-6);
 }
 
 // ---- Simplex FBM (period scales uniformly — Y-period even-requirement
@@ -764,7 +644,7 @@ TSWorley ts_fbm_worley(vec2 p, int period, float octaves,
     return o;
 }
 
-// ---- Gabor FBM (Houdini FBM_BOX: period scales with lacunarity) ----
+// ---- Gabor FBM ----
 float ts_fbm_gabor(vec2 p, int period, float octaves,
                    float lacunarity, float gain,
                    float freq_hz, float bandwidth,

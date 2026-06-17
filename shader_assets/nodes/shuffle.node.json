@@ -1,0 +1,18 @@
+{
+    "id": "shuffle",
+    "display_name": "Shuffle",
+    "inputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "outputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "params": [
+        { "name": "r_src", "display_name": "", "default": 0.0, "min": 0.0, "max": 3.0, "step": 1.0, "integer": true },
+        { "name": "g_src", "display_name": "", "default": 1.0, "min": 0.0, "max": 3.0, "step": 1.0, "integer": true },
+        { "name": "b_src", "display_name": "", "default": 2.0, "min": 0.0, "max": 3.0, "step": 1.0, "integer": true },
+        { "name": "a_src", "display_name": "", "default": 3.0, "min": 0.0, "max": 3.0, "step": 1.0, "integer": true }
+    ],
+    "shader": "shuffle.glsl",
+    "entry": "node_shuffle"
+}

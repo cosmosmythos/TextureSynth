@@ -1,6 +1,6 @@
 import bpy
 
-_CATEGORY_ORDER = ('NOISE', 'INPUT', 'FILTER', 'BLEND', 'COLOR', 'OUTPUT')
+_CATEGORY_ORDER = ('NOISE', 'INPUT', 'FILTER', 'BLEND', 'COLOR', 'CHANNEL', 'OUTPUT')
 
 _CATEGORY_LABELS = {
     'NOISE':  'Generators',
@@ -8,6 +8,7 @@ _CATEGORY_LABELS = {
     'FILTER': 'Filters',
     'BLEND':  'Blend',
     'COLOR':  'Color',
+    'CHANNEL': 'Channel',
     'OUTPUT': 'Output',
 }
 

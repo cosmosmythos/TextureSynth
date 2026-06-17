@@ -71,7 +71,10 @@ std::string emit_node_shader(const ValidatedNode& vn,
 
     // ── Bindless set 0 (forever-bound) ─────────────────────────────
     s << "layout(set = 0, binding = 0) uniform texture2D u_sampled[];\n";
-    s << "layout(set = 0, binding = 1, rgba32f) writeonly uniform image2D u_storage[];\n";
+    const char* storage_fmt = "rgba32f";
+    if (format == ChannelFormat::Mono)      storage_fmt = "r32f";
+    else if (format == ChannelFormat::UV)   storage_fmt = "rg32f";
+    s << "layout(set = 0, binding = 1, " << storage_fmt << ") writeonly uniform image2D u_storage[];\n";
     s << "layout(set = 0, binding = 2) uniform sampler samp_repeat;\n";
     s << "layout(set = 0, binding = 3) uniform sampler samp_clamp;\n";
     s << "layout(set = 0, binding = 4) uniform sampler samp_mirror;\n";
@@ -225,13 +228,13 @@ std::string emit_node_shader(const ValidatedNode& vn,
     if (type.is_format_sensitive && !multi_output) {
         s << "    // Format post-process (per .node.json format_sensitive)\n"
           << "#if TS_FORMAT == 0\n"        // Mono
-          << "    result = vec4(result.r, result.r, result.r, 1.0);\n"
-          << "#elif TS_FORMAT == 1\n"      // UV (use gradient, drop noise)
-          << "    result = vec4(result.g, result.b, 0.0, 1.0);\n"
+          << "    result = vec4(result.r, 0.0, 0.0, 1.0);\n"
+          << "#elif TS_FORMAT == 1\n"      // UV
+          << "    result = vec4(result.r, result.g, 0.0, 1.0);\n"
           << "#elif TS_FORMAT == 2\n"      // RGB
           << "    result = vec4(result.r, result.g, result.b, 1.0);\n"
           << "#elif TS_FORMAT == 3\n"      // RGBA
-          << "    result = vec4(result.r, result.g, result.b, 1.0);\n"
+          << "    result = vec4(result.r, result.g, result.b, result.a);\n"
           << "#else\n"                      // ID, Metadata — pass through
           << "    result = vec4(result.r, result.g, result.b, result.a);\n"
           << "#endif\n";

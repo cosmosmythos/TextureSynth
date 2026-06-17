@@ -66,8 +66,16 @@ FusedResult emit_fused_subgraph(
         node_to_index[path.nodes[i]] = i;
 
     const ConnByDst conns = index_connections(ir);
+
+    ChannelFormat tail_fmt = ChannelFormat::RGBA;
+    {
+        NodeId tail_id = path.nodes.back();
+        const auto* tail_inst = ir.find(tail_id);
+        if (tail_inst) tail_fmt = tail_inst->format_override;
+    }
+
     glsl::GlslBuilder builder;
-    builder.add_header(glsl::compute_header());
+    builder.add_header(glsl::compute_header(tail_fmt));
     builder.add_function(glsl::format_helpers());
 
     std::unordered_set<std::string> emitted_funcs;
@@ -242,24 +250,29 @@ FusedResult emit_fused_subgraph(
             }
             builder.call_void("node_" + type->id, args);
         }
+
+        // Format post-process IMMEDIATELY after each node so downstream
+        // nodes in the chain see the formatted value (e.g. Mono zeroes G/B).
+        if (ne.is_format_sensitive
+            && ne.format_override != ChannelFormat::RGBA) {
+            std::string var = (ne.output_count <= 1)
+                ? "_local_" + std::to_string(i)
+                : "_local_" + std::to_string(i) + "_0";
+            static const char* fn_for[] = {
+                "_fmt_mono", "_fmt_uv", "_fmt_rgb", "_fmt_rgba",
+                "_fmt_id", "_fmt_metadata"
+            };
+            size_t fi = static_cast<size_t>(ne.format_override);
+            const char* fn = (fi < std::size(fn_for)) ? fn_for[fi] : "_fmt_rgba";
+            builder.statement(var + " = " + fn + "(" + var + ");");
+        }
     }
 
-    // Format post-process for the tail node.
+    // Compute the tail variable name for imageStore output.
     const auto& tail = emits.back();
     std::string tail_var = (tail.output_count <= 1)
         ? "_local_" + std::to_string(emits.size() - 1)
         : "_local_" + std::to_string(emits.size() - 1) + "_0";
-
-    if (tail.is_format_sensitive
-        && tail.format_override != ChannelFormat::RGBA) {
-        static const char* fn_for[] = {
-            "_fmt_mono", "_fmt_uv", "_fmt_rgb", "_fmt_rgba",
-            "_fmt_id", "_fmt_metadata"
-        };
-        size_t fi = static_cast<size_t>(tail.format_override);
-        const char* fn = (fi < std::size(fn_for)) ? fn_for[fi] : "_fmt_rgba";
-        builder.statement(tail_var + " = " + fn + "(" + tail_var + ");");
-    }
 
     builder.main_end(tail_var);
     result.source = builder.build();

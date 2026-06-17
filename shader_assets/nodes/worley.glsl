@@ -17,6 +17,7 @@ vec4 node_worley(vec2 uv,
     float r = ts_fbm_worley(p, iper, octaves, lacunarity, roughness, jit, iseed).f1;
     float g = ts_fbm_worley(p, iper, octaves, lacunarity, roughness, jit, iseed + 379u).f1;
     float b = ts_fbm_worley(p, iper, octaves, lacunarity, roughness, jit, iseed + 757u).f1;
+    float a = ts_fbm_worley(p, iper, octaves, lacunarity, roughness, jit, iseed + 1013u).f1;
 
-    return vec4(r, g, b, 1.0);
+    return vec4(r, g, b, a);
 }

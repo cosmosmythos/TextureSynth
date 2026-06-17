@@ -146,7 +146,10 @@ private:
     bool main_started_ = false;
 };
 
-inline std::string compute_header() {
+inline std::string compute_header(ChannelFormat fmt = ChannelFormat::RGBA) {
+    const char* storage_fmt = "rgba32f";
+    if (fmt == ChannelFormat::Mono)      storage_fmt = "r32f";
+    else if (fmt == ChannelFormat::UV)   storage_fmt = "rg32f";
     return "#version 460\n"
 R"(
 #extension GL_EXT_nonuniform_qualifier : require
@@ -154,7 +157,8 @@ R"(
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform texture2D u_sampled[];
-layout(set = 0, binding = 1, rgba32f) writeonly uniform image2D u_storage[];
+)" + std::string("layout(set = 0, binding = 1, ") + storage_fmt + R"() writeonly uniform image2D u_storage[];
+)" + R"(
 layout(set = 0, binding = 2) uniform sampler samp_repeat;
 layout(set = 0, binding = 3) uniform sampler samp_clamp;
 layout(set = 0, binding = 4) uniform sampler samp_mirror;
@@ -189,7 +193,7 @@ vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
 
 inline std::string format_helpers() {
     return R"(
-vec4 _fmt_mono(vec4 v) { return vec4(v.x, v.x, v.x, 1.0); }
+vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
 vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
 vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
 vec4 _fmt_id(vec4 v) { return v; }
