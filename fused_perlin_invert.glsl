@@ -233,9 +233,10 @@ int ts_period_even(float p) {
     return max(int(round(p * 0.5)) * 2, 2);
 }
 
-// Integer modulo that handles negative coordinates (GLSL % truncates).
+// Floor-based modulo — avoids GLSL integer % bug on some drivers
+// where (-1) % 7 returns -4 instead of -1.
 int ts_wrap(int v, int per) {
-    return ((v % per) + per) % per;
+    return int(mod(float(v), float(per)));
 }
 
 ivec2 ts_wrap2(ivec2 v, int per) {

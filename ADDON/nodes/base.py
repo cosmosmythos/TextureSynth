@@ -3,12 +3,19 @@ import uuid
 
 
 FORMAT_OVERRIDE_ITEMS = [
-    ('DEFAULT', "Auto",    "Use the node type's declared output format"),
-    ('MONO',    "Mono",    "Single-channel grayscale (R16_SFLOAT)"),
-    ('UV',      "UV",      "Two-channel vector (R16G16_SFLOAT)"),
-    ('RGB',     "RGB",     "Three-channel color (R16G16B16A16_SFLOAT)"),
-    ('RGBA',    "RGBA",    "Full four-channel color (R16G16B16A16_SFLOAT)"),
-    ('ID',      "Integer", "Integer identifier (R32_UINT)"),
+    ('DEFAULT', "Auto",    ""),
+    ('MONO',    "Mono",    ""),
+    ('UV',      "UV",      ""),
+    ('RGB',     "RGB",     ""),
+    ('RGBA',    "RGBA",    ""),
+    ('ID',      "Integer", ""),
+]
+
+CHANNEL_MODE_ITEMS = [
+    ('MONO', "Mono", ""),
+    ('UV',   "UV",   ""),
+    ('RGB',  "RGB",  ""),
+    ('RGBA', "RGBA", ""),
 ]
 
 

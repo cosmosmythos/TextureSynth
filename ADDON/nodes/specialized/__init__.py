@@ -7,6 +7,7 @@ _MODULE_NAMES = (
     "color_const",
     "blend",
     "image",
+    "levels",
     "output",
 )
 

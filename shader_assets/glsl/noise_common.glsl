@@ -1,14 +1,7 @@
 #ifndef TS_NOISE_COMMON
 #define TS_NOISE_COMMON
 
-
-// =============================================================================
-// §0  PCG INTEGER HASH FAMILY  —  core primitive for all lattice hashing
-// =============================================================================
-// Full-quality bit mixing on uint32. Correct for any integer input/seed and
-// any wrap period — no modular-periodicity constraints like the old
-// mod-289 permutation-polynomial approach required.
-
+//PCG INTEGER HASH
 uvec2 ts_pcg2d(uvec2 v) {
     v = v * 1664525u + 1013904223u;
     v.x += v.y * 1664525u;
@@ -21,9 +14,13 @@ uvec2 ts_pcg2d(uvec2 v) {
 
 uvec3 ts_pcg3d(uvec3 v) {
     v = v * 1664525u + 1013904223u;
-    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
     v ^= v >> 16u;
-    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
     return v;
 }
 
@@ -42,27 +39,15 @@ uvec4 ts_pcg4d(uvec4 v) {
 }
 
 
-// =============================================================================
-// §1  LATTICE HASHES  (pcg3d-based — seed rides natively in .z)
-// =============================================================================
-// Hash "currency" is [0, 1) throughout this file — no legacy [0,288]/mod-289
-// range survives anywhere. Every *_tile function below consumes hashes in
-// this range directly.
 
-// Angle span used when mapping a unit hash to a rotation, for gradient /
-// kernel-orientation purposes. ~3.43 full turns — matches the decorrelation
-// quality of the original mod-289 implementation, just rebased to [0,1) input.
+// LATTICE HASHES  (pcg3d-based — seed rides natively in .z)
 const float TS_HASH_TO_ANGLE = 21.548;
 
-// Scalar 2-D lattice hash. Returns [0, 1).
 float ts_hash2(ivec2 c, uint seed) {
     uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
     return float(h.x & 0xFFFFu) * (1.0 / 65536.0);
 }
 
-// Vectorized 4-corner hash — one mixing pass per corner instead of relying
-// on a shared polynomial table. Returns 4 independent hashes in [0, 1)
-// for corners c00, c10, c01, c11.
 vec4 ts_hash2_quad(ivec2 c00, uint seed) {
     uvec3 h00 = ts_pcg3d(uvec3(uvec2(c00),                seed));
     uvec3 h10 = ts_pcg3d(uvec3(uvec2(c00) + uvec2(1u, 0u), seed));
@@ -72,47 +57,33 @@ vec4 ts_hash2_quad(ivec2 c00, uint seed) {
          * (1.0 / 65536.0);
 }
 
-// 2-D lattice hash returning TWO decorrelated channels from one pcg3d call
-// (uses .x and .y instead of bumping seed by an arbitrary prime and hashing
-// twice). Used by Worley for the feature-point (x,y) offset. Returns [0,1).
 vec2 ts_hash2_vec2(ivec2 c, uint seed) {
     uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
     return vec2(h.x & 0xFFFFu, h.y & 0xFFFFu) * (1.0 / 65536.0);
 }
 
-// 2-D lattice hash returning THREE decorrelated channels from one pcg3d call.
-// Used by Gabor for (kernel x, kernel y, angle) in a single mix instead of
-// three separate ts_hash2 calls with seed offsets. Returns [0,1).
 vec3 ts_hash2_vec3(ivec2 c, uint seed) {
     uvec3 h = ts_pcg3d(uvec3(uvec2(c), seed));
     return vec3(h.x & 0xFFFFu, h.y & 0xFFFFu, h.z & 0xFFFFu) * (1.0 / 65536.0);
 }
 
-// Gradient direction from a unit hash, snapped to 8 compass directions
-// (classic Perlin-style). Input: [0,1).
 vec2 ts_grad8(float hash01) {
     float a = floor(hash01 * 8.0) * 0.78539816339; // π/4
     return vec2(cos(a), sin(a));
 }
 
-// Gradient direction from a unit hash, snapped to 16 compass directions.
-// Input: [0,1).
 vec2 ts_grad16(float hash01) {
     float a = floor(hash01 * 16.0) * 0.39269908170; // π/8
     return vec2(cos(a), sin(a));
 }
 
-// Continuous-angle gradient (for simplex / Gabor).  Uses the full hash range
-// for maximum directional decorrelation. Input: [0,1).
 vec2 ts_grad_continuous(float hash01) {
     float a = hash01 * TS_HASH_TO_ANGLE;
     return vec2(cos(a), sin(a));
 }
 
 
-// =============================================================================
-// §3  SMOOTHSTEP
-// =============================================================================
+// SMOOTHSTEP
 float ts_quintic(float t) {
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 }
@@ -130,15 +101,11 @@ vec2 ts_quintic_d(vec2 t) {
 }
 
 
-// =============================================================================
-// §4  PERIOD
-// =============================================================================
+// PERIOD
 int ts_period_int(float p) {
     return max(int(round(p)), 1);
 }
 
-// Snap period to nearest power of 2 for perfect tiling (Gabor).
-// Cosine carrier completes integer cycles at power-of-2 periods.
 int ts_period_pow2(float p) {
     int v = max(int(round(p)), 1);
     float l = floor(log2(float(v)));
@@ -152,9 +119,9 @@ int ts_period_even(float p) {
     return max(int(round(p * 0.5)) * 2, 2);
 }
 
-// Integer modulo that handles negative coordinates (GLSL % truncates).
+
 int ts_wrap(int v, int per) {
-    return ((v % per) + per) % per;
+    return int(mod(float(v), float(per)));
 }
 
 ivec2 ts_wrap2(ivec2 v, int per) {

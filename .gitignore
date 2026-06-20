@@ -39,3 +39,6 @@ shader_assets/**/README.md
 
 # ImGui persists UI layout to this file.
 imgui.ini
+
+tuxalin/
+vendor/GLSL/

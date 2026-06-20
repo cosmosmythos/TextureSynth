@@ -4,9 +4,6 @@
 Skipping the cache rules wastes bandwidth and rebuild time. Skipping the explanation rules makes answers unusable.
 
 ## 0. STRICT BEHAVIOR: Root-cause or silence
-
-**Do NOT be lazy. Do NOT ship half-fixes.**
-
 When something is broken:
 
 1. **Trace the full chain** — from the root definition, files, through every intermediate layer, to the final consumer. Check each layer, don't skip ahead.
@@ -15,11 +12,10 @@ When something is broken:
 4. **If a patch "works" but you haven't verified the root cause is correct, STOP.** The underlying design may be broken — a symptom fix just hides the real bug.
 5. **Never assume — search the whole codebase** for every spelling/variant of the broken pattern (different naming conventions, prefixes, abbreviations) before concluding you've found them all.
 6. **When adding a new attribute or function**, audit every existing file and call site that creates/touches the same data. Don't add it and hope.
-
-This is non-negotiable. Senior engineers don't ship partial fixes.
+This is non-negotiable.
 
 **Debugging rule: When a fix "has no effect", stop guessing and output actual values.**
-Trace backwards from the broken output, injecting known values at each layer until you find where reality diverges from expectation. Don't test the final result — the bug is always upstream. Example: we wasted rounds changing hash functions and compiler flags before injecting a constant into the shader itself, which immediately revealed `255.0/255.0 = 0.9995` on GPU.
+Trace backwards from the broken output, injecting known values at each layer until you find where reality diverges from expectation.
 
 ## 1. Technical Explanations & Style
 The user is a **3D texture artist/developer**. Every architecture/design answer MUST include these 3 layers in order:
@@ -77,13 +73,37 @@ A complete Blender 4.2+ extension exists at `ADDON/` in the repo root.
 
 ---
 
-## 4. Installed Extension Folder is STRICTLY OFF LIMITS
-**🚫 DO NOT touch:** `%APPDATA%\Blender Foundation\Blender\{ver}\extensions\user_default\{id}\` without user's permission.
-This is the user's working install.
-- DO NOT `Copy-Item -Recurse -Force` into it.
-- DO NOT edit its `blender_manifest.toml` or delete files.
-- DO NOT touch `wheels/` inside it.
-**Correct workflow:** Edit files in `ADDON/` (repo root). The user will deploy them manually.
+## 4. Installed Extension Folder: Standing Deploy Exception
+**Install root:** `%APPDATA%\Blender Foundation\Blender\5.0\extensions\user_default\texturesynth\`
+
+After editing non-C++ files in the repo, **deploy to the install folder automatically** so the user can manually test in Blender fast. No need to ask each time.
+
+### What auto-deploys (overwrite install copy from repo source)
+
+| Repo source (edit here) | Install destination (copy here) |
+|---|---|
+| `ADDON/**/*.py` | `<install>/**/*.py` (mirror path under install root) |
+| `shader_assets/glsl/**` | `<install>/shader_assets/glsl/**` |
+| `shader_assets/nodes/*.glsl` | `<install>/shader_assets/nodes/*.glsl` |
+| `shader_assets/nodes/*.node.json` | `<install>/shader_assets/nodes/*.node.json` |
+
+Deploy only the files you changed — no blanket `Copy-Item -Recurse -Force` of whole folders.
+
+### Still off-limits (NEVER touch in the install folder)
+
+- `blender_manifest.toml` — edit in `ADDON/` only.
+- `wheels/` and any `.pyd` / `.so` binaries — GitHub CI ships these, never copy manually.
+- `core/` C++ binding sources — rebuild via `build_fast.bat`, do not hand-edit.
+
+### Trigger
+
+Run the deploy when a non-C++ edit to `ADDON/`, `shader_assets/glsl/`, or `shader_assets/nodes/` is committed. State what was copied in the reply.
+
+**Implementation:** the `blender-addon` OpenCode skill (`.opencode/skills/blender-addon/`) owns the deploy script and authoritative allow/deny lists. Invoke it via:
+```bash
+bash .opencode/skills/blender-addon/deploy.sh <repo-relative-files...>
+```
+The scope/extension guards above are enforced by the script. Section 4 and the skill are kept in sync -- do not weaken one without updating the other.
 
 ---
 
@@ -136,3 +156,118 @@ Get-ChildItem -Path .\ADDON -Recurse -Directory -Filter __pycache__ -ErrorAction
 - When the user says "no commentary in code" — they mean it literally. A single sentence in a docstring is OK; a paragraph is not.
 - `git diff` should show *behavior changes*, not comment changes. If your diff is mostly comment edits, delete them.
 - **Inline comments are max 1 line.** If you need more, rename the symbol or extract a function — don't write a paragraph.
+
+---
+
+# DOX framework
+
+- DOX is highly performant AGENTS.md hierarchy installed here
+- Agent must follow DOX instructions across any edits
+
+## Core Contract
+
+- AGENTS.md files are binding work contracts for their subtrees
+- Work products, source materials, instructions, records, assets, and durable docs must stay understandable from the nearest applicable AGENTS.md plus every parent AGENTS.md above it
+
+## Read Before Editing
+
+1. Read the root AGENTS.md
+2. Identify every file or folder you expect to touch
+3. Walk from the repository root to each target path
+4. Read every AGENTS.md found along each route
+5. If a parent AGENTS.md lists a child AGENTS.md whose scope contains the path, read that child and continue from there
+6. Use the nearest AGENTS.md as the local contract and parent docs for repo-wide rules
+7. If docs conflict, the closer doc controls local work details, but no child doc may weaken DOX
+
+Do not rely on memory. Re-read the applicable DOX chain in the current session before editing.
+
+## Update After Editing
+
+Every meaningful change requires a DOX pass before the task is done.
+
+Update the closest owning AGENTS.md when a change affects:
+
+- purpose, scope, ownership, or responsibilities
+- durable structure, contracts, workflows, or operating rules
+- required inputs, outputs, permissions, constraints, side effects, or artifacts
+- user preferences about behavior, communication, process, organization, or quality
+- AGENTS.md creation, deletion, move, rename, or index contents
+
+Update parent docs when parent-level structure, ownership, workflow, or child index changes. Update child docs when parent changes alter local rules. Remove stale or contradictory text immediately. Small edits that do not change behavior or contracts may leave docs unchanged, but the DOX pass still must happen.
+
+## Hierarchy
+
+- Root AGENTS.md is the DOX rail: project-wide instructions, global preferences, durable workflow rules, and the top-level Child DOX Index
+- Child AGENTS.md files own domain-specific instructions and their own Child DOX Index
+- Each parent explains what its direct children cover and what stays owned by the parent
+- The closer a doc is to the work, the more specific and practical it must be
+
+## Child Doc Shape
+
+- Create a child AGENTS.md when a folder becomes a durable boundary with its own purpose, rules, responsibilities, workflow, materials, or quality standards
+- Work Guidance must reflect the current standards of the project or user instructions; if there are no specific standards or instructions yet, leave it empty
+- Update child docs when parent changes alter local rules
+- Verification must reflect an existing check; if no verification framework exists yet, leave it empty and update it when one exists
+
+Default section order:
+- Purpose
+- Ownership
+- Local Contracts
+- Work Guidance
+- Verification
+- Child DOX Index
+
+## Style
+
+- Keep docs concise, current, and operational
+- Document stable contracts, not diary entries
+- Put broad rules in parent docs and concrete SURGICAL details in child docs
+- DO NOT duplicate rules across many files unless each scope needs a local version
+- Delete stale notes instead of explaining history
+- Trim obvious statements, repeated rules, misplaced detail, and warnings for risks that no longer exist
+- The closer a doc is to the work, the more specific and practical it must be
+
+## Closeout
+
+1. Re-check changed paths against the DOX chain
+2. Update nearest owning docs and any affected parents or children
+3. Refresh every affected Child DOX Index
+- Update parent docs when parent-level structure, ownership, workflow, or child index changes
+- Update child docs when parent changes alter local rules
+- Remove stale or contradictory text
+- Run existing verification when relevant
+- Report any docs intentionally left unchanged and why
+
+## User Preferences
+
+When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
+
+## Child DOX Index
+
+TextureSynth is a node-based Vulkan procedural-texture engine with a Python/Blender frontend. The repo splits cleanly into four durable boundaries: C++ engine source, the Blender addon, shader assets, and tests. Each child doc owns its subtree; the root owns project-wide rules (build/cache, style, gotchas).
+
+| Child doc | Owns | Key invariant |
+|---|---|---|
+| [`src/AGENTS.md`](src/AGENTS.md) | C++20 source: static `engine` lib, `texturesynth_core` nanobind extension, optional `viewer` exe | One `VkInstance` per process; `engine` lib must not depend on bindings/viewer |
+| [`src/engine/AGENTS.md`](src/engine/AGENTS.md) | Vulkan compute engine core (Graph→IR→PassPlan→dispatch→readback) | Pipeline stages flow strictly Graph → GraphIR → PassPlan → PassExec → dispatch |
+| [`src/engine/graphfusion/AGENTS.md`](src/engine/graphfusion/AGENTS.md) | Chain fusion: DAG→Planner→Emitter→FusedGraphCompiler | Fused path must be bit-identical to the unfused reference per-node |
+| [`ADDON/AGENTS.md`](ADDON/AGENTS.md) | Blender 4.3+ extension (`ADDON/`): register order, nodes/operators/panels, engine bridge | `cpp_module` loads `.pyd` from wheel; never create `src/*_addon/` |
+| [`shader_assets/AGENTS.md`](shader_assets/AGENTS.md) | Node manifests (`*.node.json`), GLSL node fns, common GLSL | Every node GLSL follows the `vec4 node_<name>(vec2 uv, ...)` signature contract |
+| [`tests/AGENTS.md`](tests/AGENTS.md) | C++ gtest suite + Python pytest suite against the binding | C++ tests need `-DBUILD_TESTS:BOOL=ON`; Python tests skip if Vulkan init fails |
+
+Hierarchy:
+```
+AGENTS.md  (this file — global rules: cache, style, gotchas, DOX)
+├── src/AGENTS.md
+│   └── src/engine/AGENTS.md
+│       └── src/engine/graphfusion/AGENTS.md
+├── ADDON/AGENTS.md
+├── shader_assets/AGENTS.md
+└── tests/AGENTS.md
+```
+
+Cross-cutting artifacts that live at repo root (no dedicated doc — covered by root rules):
+- `CMakeLists.txt`, `cmake/Dependencies.cmake` — build graph; see §2 (cache trap).
+- `build_fast.bat` (use) / `build_clean.bat` (never use) — see §2.
+- `.github/workflows/build_texturesynth.yml` — CI builds wheels for py311/py313.
+- `deploy.ps1`, `scripts/*.bat` — local helper scripts; non-durable.

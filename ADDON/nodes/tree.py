@@ -110,7 +110,7 @@ def _get_channel_format():
     return core.ChannelFormat
 
 FORMAT_CHANNEL_MAP = {
-    'DEFAULT': None,
+    'DEFAULT': lambda: _get_channel_format().Mono,
     'MONO':    lambda: _get_channel_format().Mono,
     'UV':      lambda: _get_channel_format().UV,
     'RGB':     lambda: _get_channel_format().RGB,

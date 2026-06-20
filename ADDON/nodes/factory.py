@@ -3,7 +3,7 @@ import json
 import os
 
 import bpy
-from .base import TextureSynthNode
+from .base import TextureSynthNode, CHANNEL_MODE_ITEMS
 from .tree import socket_type_for_format
 from . import specialized
 from ..utils.rna import register_class, unregister_class
@@ -217,12 +217,7 @@ def generate_node_classes(core_module):
             ('A', "A", ""),
         ]
         _ENUM_PARAMS = {
-            'channel_mode': [
-                ('MONO', "Mono", ""),
-                ('UV',   "UV",   ""),
-                ('RGB',  "RGB",  ""),
-                ('RGBA', "RGBA", ""),
-            ],
+            'channel_mode': CHANNEL_MODE_ITEMS,
             'r_src': _CHANNEL_ITEMS,
             'g_src': _CHANNEL_ITEMS,
             'b_src': _CHANNEL_ITEMS,
