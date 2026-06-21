@@ -55,6 +55,7 @@ FusedVariantKey build_fused_key(const Chain& chain,
         }
     }
     k.feature_flags = feature;
+    k.external_inputs = chain.external_inputs;
     return k;
 }
 

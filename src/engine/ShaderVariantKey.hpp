@@ -82,15 +82,20 @@ struct FusedVariantKey {
     std::vector<uint32_t>    input_counts;        // per-node declared inputs
     uint32_t                 feature_flags = 0;   // OR-fold across all chain nodes
                                                  // (low 3 bits = format; high bits reserved)
-    uint64_t                 epoch         = 5;   // distinct from ShaderVariantKey::epoch=4
+    uint32_t                 external_inputs = 0; // number of cross-group texture inputs
+                                                 // (affects GLSL _in_X_Y declarations
+                                                 //  and pc.in_sampled_slots[] mapping)
+    uint64_t                 epoch         = 6;   // distinct from ShaderVariantKey::epoch=4
                                                  // so the two hash families can't collide
                                                  // if they ever share a directory.
+                                                 // epoch 6: added external_inputs
 
     bool operator==(const FusedVariantKey& o) const noexcept {
         return node_type_ids       == o.node_type_ids
             && param_socket_masks  == o.param_socket_masks
             && input_counts        == o.input_counts
             && feature_flags       == o.feature_flags
+            && external_inputs     == o.external_inputs
             && epoch               == o.epoch;
     }
 
@@ -101,6 +106,7 @@ struct FusedVariantKey {
         for (uint32_t m : param_socket_masks) mix(m);
         for (uint32_t n : input_counts)       mix(n);
         mix(feature_flags);
+        mix(external_inputs);
         mix(epoch);
         return h;
     }

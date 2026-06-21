@@ -34,7 +34,7 @@ TEST(FusedVariantKey, OrderMatters) {
 TEST(FusedVariantKey, IdenticalChainSameKey) {
     auto a = make_chain({"perlin", "invert"}, {0, 0}, {0, 1});
     a.feature_flags = 0;
-    a.epoch = 5;
+    a.epoch = 6;
     auto b = a;
     EXPECT_EQ(a, b);
     EXPECT_EQ(a.hash(), b.hash());
@@ -67,7 +67,7 @@ TEST(FusedVariantKey, HashDeterministic) {
     EXPECT_EQ(hasher(k), static_cast<size_t>(h1));
 }
 
-// Epoch distinctness: FusedVariantKey::epoch=5 differs from
+// Epoch distinctness: FusedVariantKey::epoch=6 differs from
 // ShaderVariantKey::epoch=4. If these two hashes ever shared a
 // directory (unlikely today, possible in a future consolidation),
 // the epoch makes them occupy disjoint hash namespaces.
@@ -79,7 +79,7 @@ TEST(FusedVariantKey, EpochDistinctFromPerNode) {
     fk.node_type_ids = {"perlin"};
     fk.param_socket_masks = {0};
     fk.input_counts = {0};
-    fk.epoch = 5;
+    fk.epoch = 6;
 
     ShaderVariantKey sk;
     sk.node_type_id = "perlin";
@@ -92,4 +92,16 @@ TEST(FusedVariantKey, EpochDistinctFromPerNode) {
     // assert that the per-node key with a single perlin input doesn't
     // collide with the fused key for a one-node chain.
     EXPECT_NE(fk.hash(), static_cast<uint64_t>(std::hash<ShaderVariantKey>{}(sk)));
+}
+
+// Different external_inputs on the SAME node sequence → different key.
+// This is the cache-collision fix: two graphs with the same node types
+// but different connection topologies must not share a cache entry.
+TEST(FusedVariantKey, DifferentExternalInputsDifferentKey) {
+    auto a = make_chain({"worley", "levels", "blend"}, {0, 0, 0}, {0, 1, 3});
+    a.external_inputs = 0;
+    auto b = make_chain({"worley", "levels", "blend"}, {0, 0, 0}, {0, 1, 3});
+    b.external_inputs = 2;
+    EXPECT_NE(a, b);
+    EXPECT_NE(a.hash(), b.hash());
 }
