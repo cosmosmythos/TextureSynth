@@ -255,6 +255,7 @@ TextureSynth is a node-based Vulkan procedural-texture engine with a Python/Blen
 | [`src/AGENTS.md`](src/AGENTS.md) | C++20 source: static `engine` lib, `texturesynth_core` nanobind extension, optional `viewer` exe | One `VkInstance` per process; `engine` lib must not depend on bindings/viewer |
 | [`src/engine/AGENTS.md`](src/engine/AGENTS.md) | Vulkan compute engine core (Graph→IR→PassPlan→dispatch→readback) | Pipeline stages flow strictly Graph → GraphIR → PassPlan → PassExec → dispatch |
 | [`src/engine/graphfusion/AGENTS.md`](src/engine/graphfusion/AGENTS.md) | Chain fusion: DAG→Planner→Emitter→FusedGraphCompiler | Fused path must be bit-identical to the unfused reference per-node |
+| [`src/engine/register_allocation/AGENTS.md`](src/engine/register_allocation/AGENTS.md) | Graph-coloring register allocator for fused shader chains | Interval graphs are perfect; linear scan is optimal for our DAG liveness |
 | [`ADDON/AGENTS.md`](ADDON/AGENTS.md) | Blender 4.3+ extension (`ADDON/`): register order, nodes/operators/panels, engine bridge | `cpp_module` loads `.pyd` from wheel; never create `src/*_addon/` |
 | [`shader_assets/AGENTS.md`](shader_assets/AGENTS.md) | Node manifests (`*.node.json`), GLSL node fns, common GLSL | Every node GLSL follows the `vec4 node_<name>(vec2 uv, ...)` signature contract |
 | [`tests/AGENTS.md`](tests/AGENTS.md) | C++ gtest suite + Python pytest suite against the binding | C++ tests need `-DBUILD_TESTS:BOOL=ON`; Python tests skip if Vulkan init fails |
@@ -264,7 +265,8 @@ Hierarchy:
 AGENTS.md  (this file — global rules: cache, style, gotchas, DOX)
 ├── src/AGENTS.md
 │   └── src/engine/AGENTS.md
-│       └── src/engine/graphfusion/AGENTS.md
+│       ├── src/engine/graphfusion/AGENTS.md
+│       └── src/engine/register_allocation/AGENTS.md
 ├── ADDON/AGENTS.md
 ├── shader_assets/AGENTS.md
 └── tests/AGENTS.md

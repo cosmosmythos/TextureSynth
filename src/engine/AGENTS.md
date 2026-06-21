@@ -4,7 +4,7 @@
 The static `engine` library. Owns the full GPU pipeline: Vulkan instance/device, node library, graph → IR → pass plan compilation, resource/bindless-slot management, async readback, and dispatch. Consumed by the `texturesynth_core` nanobind binding (addon) and the optional `viewer` exe.
 
 ## Ownership
-- All files under `src/engine/` except `src/engine/graphfusion/` (which has its own AGENTS.md).
+- All files under `src/engine/` except `src/engine/graphfusion/` and `src/engine/register_allocation/` (which have their own AGENTS.md files).
 - Linked as `target_link_libraries(... PUBLIC engine)` — public include root is `src/`.
 
 ## Local Contracts
@@ -31,3 +31,4 @@ The static `engine` library. Owns the full GPU pipeline: Vulkan instance/device,
 
 ## Child DOX Index
 - [`graphfusion/AGENTS.md`](graphfusion/AGENTS.md) — chain fusion (DAG → planner → emitter → fused compiler). Distinct compilation model from the per-pass path above.
+- [`register_allocation/AGENTS.md`](register_allocation/AGENTS.md) — graph-coloring register allocator for fused shader chains. Chaitin-Briggs + linear scan; interval graph perfection guarantees optimal greedy coloring.
