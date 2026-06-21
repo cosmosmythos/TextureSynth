@@ -67,7 +67,7 @@ The user is a **3D texture artist/developer**. Every architecture/design answer 
 **When to wipe `build/` (WARN USER FIRST):**
 - User explicitly says "nuke build"
 - MSVC compiler upgrade or FetchContent `GIT_TAG` change
-- *If accidentally wiped*: Note to user and stop!! (Tip: `FETCHCONTENT_FULLY_DISCONNECTED=OFF` repopulates cache if online).
+- *If accidentally wiped*: Note to user and stop!! (Tip: `FETCHCONTENT_FULLY_DISCONNECTED=OFF` repopulates cache if online)
 
 ---
 
