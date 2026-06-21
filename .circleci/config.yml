@@ -1,0 +1,291 @@
+version: 2.1
+
+# TextureSynth CircleCI pipeline (Windows x64 only for now).
+# Mirrors .github/workflows/build_texturesynth.yml.
+# Builds the texturesynth_core nanobind extension, packages it into a
+# wheel, bundles the MSVC CRT via delvewheel, and zips the addon
+# ready for Blender "Install from Disk".
+
+# Cached reusable paths
+constants:
+  - &build_env
+    TEXTURESYNTH_VERSION: "1.0.0"
+    CMAKE_GENERATOR: "Ninja"
+
+orbs:
+  win: circleci/windows@5.0
+  # browse-and-search-github-release wraps `gh release` in a single command
+  gh: circleci/github-release@0.1.4
+
+jobs:
+  read_version:
+    description: "Extract addon version from blender_manifest.toml"
+    executor: win/server-2022
+    parameters:
+      version_out:
+        type: string
+        default: "VERSION"
+    steps:
+      - checkout
+      - run:
+          name: Read version
+          shell: bash.exe
+          command: |
+            VERSION=$(grep '^version' ADDON/blender_manifest.toml \
+                      | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            echo "Extracted version: ${VERSION}"
+            echo "export TEXTURESYNTH_VERSION='${VERSION}'" >> "$BASH_ENV"
+      - run:
+          name: Persist to workspace
+          shell: bash.exe
+          command: |
+            mkdir -p workspace
+            echo "$TEXTURESYNTH_VERSION" > workspace/VERSION
+      - persist_to_workspace:
+          root: workspace
+          paths:
+            - VERSION
+
+  build_wheel:
+    description: "Build texturesynth_core wheel for one Python version"
+    parameters:
+      python_version:
+        type: string
+      python_tag:
+        type: string
+      artifact_suffix:
+        type: string
+    executor:
+      name: win/server-2022
+      size: large   # 4 vCPUs / 15 GB RAM -- compilation is CPU bound
+    environment:
+      <<: *build_env
+    steps:
+      - checkout
+      - attach_workspace:
+          at: workspace
+      - run:
+          name: Read version from workspace
+          shell: bash.exe
+          command: |
+            export TEXTURESYNTH_VERSION="$(cat workspace/VERSION)"
+            echo "export TEXTURESYNTH_VERSION='${TEXTURESYNTH_VERSION}'" >> "$BASH_ENV"
+      - run:
+          name: Install Python << parameters.python_version >>
+          shell: powershell.exe
+          command: |
+            # CircleCI Windows images ship with several Pythons; pick the
+            # requested version via pyenv-win if available, otherwise use
+            # the preinstalled one matching the major.minor.
+            $desired = "<< parameters.python_version >>"
+            $pyver = $desired -replace '(\d+)\.(\d+)\..*','$1.$2'
+            $found = $null
+            foreach ($cand in @(
+              "C:\Python$($pyver.Replace('.',''))\python.exe",
+              "C:\Program Files\Python$($pyver.Replace('.',''))\python.exe",
+              "$env:LOCALAPPDATA\Programs\Python\Python$($pyver.Replace('.',''))\python.exe"
+            )) {
+              if (Test-Path $cand) { $found = $cand; break }
+            }
+            if (-not $found) {
+              # Use Chocolatey to install a clean Python matching the version.
+              choco install python3 --version=$desired -y --no-progress
+              $found = "C:\Python$($pyver.Replace('.',''))\python.exe"
+            }
+            Write-Host "Using Python: $found"
+            $pydir = Split-Path $found
+            echo "$pydir" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            echo "$pydir\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            & $found --version
+      - run:
+          name: Install Python dependencies
+          shell: bash.exe
+          command: |
+            python -m pip install --upgrade pip
+            pip install wheel setuptools build nanobind ninja delvewheel
+      - run:
+          name: Setup MSVC dev environment (VS 2022)
+          shell: powershell.exe
+          # CircleCI Windows orb ships VS 2022; load the x64 environment.
+          command: |
+            $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build"
+            if (-not (Test-Path $vsPath)) {
+              $vsPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build"
+            }
+            cmd /c "`"$vsPath\vcvars64.bat`" && set" | ForEach-Object {
+              if ($_ -match '^(.*?)=(.*)') {
+                Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2]
+              }
+            }
+      - run:
+          name: Install Vulkan SDK
+          shell: powershell.exe
+          command: |
+            # Download the Vulkan SDK installer silently.
+            $progressPreference = 'SilentlyContinue'
+            $installer = "$env:TEMP\vulkan-sdk.exe"
+            Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe" -OutFile $installer
+            Start-Process -FilePath $installer -Args "--accept-licenses --default --quiet --installpath C:\VulkanSDK" -Wait
+            $env:VULKAN_SDK = "C:\VulkanSDK"
+            echo "VULKAN_SDK=C:\VulkanSDK" | Out-File -FilePath $BASH_ENV -Append -Encoding utf8
+      - run:
+          name: Configure CMake
+          shell: bash.exe
+          command: |
+            mkdir -p build
+            cd build
+            PYTHON_EXE=$(python -c 'import sys; print(sys.executable)')
+            echo "Using Python: $PYTHON_EXE"
+            python --version
+            cmake .. \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_PYTHON_BINDINGS=ON \
+              -DPython3_EXECUTABLE="$PYTHON_EXE" \
+              -DVULKAN_SDK="C:/VulkanSDK"
+      - run:
+          name: Build C++ module
+          shell: bash.exe
+          command: |
+            cd build
+            cmake --build . --config Release --target texturesynth_core --verbose
+            # Second pass: ensure the wheel build picks up the final binary.
+            cmake --build . --target texturesynth_core --verbose
+      - run:
+          name: Build wheel
+          shell: bash.exe
+          command: |
+            export TEXTURESYNTH_VERSION="$(cat workspace/VERSION)"
+            python -m build --wheel
+      - run:
+          name: Bundle MSVC CRT with delvewheel
+          shell: bash.exe
+          command: |
+            cd dist || exit 1
+            mkdir -p repaired
+            for whl in *.whl; do
+              echo "--- Showing dependencies for $whl ---"
+              delvewheel show "$whl"
+              echo "--- Repairing $whl ---"
+              delvewheel repair -v -w repaired/ "$whl"
+            done
+            mv repaired/*.whl ./
+            rm -rf repaired
+      - run:
+          name: Rename wheel with correct platform tag
+          shell: bash.exe
+          command: |
+            cd dist
+            PY_TAG="<< parameters.python_tag >>"
+            PLAT_TAG="win_amd64"
+            python - <<PY
+            import os, re
+            py_tag = "$PY_TAG"
+            plat_tag = "$PLAT_TAG"
+            for wheel in os.listdir('.'):
+                if not wheel.endswith('.whl'):
+                    continue
+                m = re.match(r'^(texturesynth)-([^-]+)-([^-]+)-([^-]+)-(.+)\.whl$', wheel)
+                if not m:
+                    continue
+                dist, version, _, _, _ = m.groups()
+                new_name = f"{dist}-{version}-{py_tag}-{plat_tag}.whl"
+                if wheel != new_name:
+                    os.rename(wheel, new_name)
+            PY
+            ls -la
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist
+      - store_artifacts:
+          path: dist
+          destination: wheels
+
+  package:
+    description: "Assemble final Blender addon .zip"
+    executor: win/server-2022
+    environment:
+      <<: *build_env
+    steps:
+      - checkout
+      - attach_workspace:
+          at: workspace
+      - run:
+          name: Build final zip package
+          shell: bash.exe
+          command: |
+            set -euo pipefail
+            VERSION="$(cat workspace/VERSION)"
+            echo "Packaging version ${VERSION}"
+
+            BUILD_DIR="build_windows"
+            mkdir -p "$BUILD_DIR/ADDON"
+            cp -r ADDON/* "$BUILD_DIR/ADDON/"
+
+            mkdir -p "$BUILD_DIR/ADDON/shader_assets/glsl"
+            cp shader_assets/glsl/*.glsl "$BUILD_DIR/ADDON/shader_assets/glsl/"
+
+            mkdir -p "$BUILD_DIR/ADDON/shader_assets/nodes"
+            cp shader_assets/nodes/*.glsl "$BUILD_DIR/ADDON/shader_assets/nodes/"
+            cp shader_assets/nodes/*.node.json "$BUILD_DIR/ADDON/shader_assets/nodes/"
+
+            rm -rf "$BUILD_DIR/ADDON/wheels"
+            mkdir -p "$BUILD_DIR/ADDON/wheels"
+            find workspace/dist -name '*.whl' -exec cp {} "$BUILD_DIR/ADDON/wheels/" \;
+
+            WHEEL_LIST=""
+            for whl in "$BUILD_DIR"/ADDON/wheels/*.whl; do
+              [ -f "$whl" ] || continue
+              bn=$(basename "$whl")
+              if [ -n "$WHEEL_LIST" ]; then
+                WHEEL_LIST="$WHEEL_LIST, \"./wheels/$bn\""
+              else
+                WHEEL_LIST="\"./wheels/$bn\""
+              fi
+            done
+            echo "" >> "$BUILD_DIR/ADDON/blender_manifest.toml"
+            echo "wheels = [$WHEEL_LIST]" >> "$BUILD_DIR/ADDON/blender_manifest.toml"
+
+            ( cd "$BUILD_DIR/ADDON" && \
+              zip -rq "../../texturesynth-${VERSION}-windows-x64.zip" . \
+                -x "*.pyc" -x "__pycache__/*" -x ".DS_Store" )
+
+            ls -lh texturesynth-*.zip
+            mkdir -p workspace/dist_final
+            mv texturesynth-*.zip workspace/dist_final/
+      - persist_to_workspace:
+          root: workspace
+          paths:
+            - dist_final
+      - store_artifacts:
+          path: workspace/dist_final
+          destination: release_zips
+
+workflows:
+  build_and_package:
+    jobs:
+      - read_version
+      - build_wheel:
+          name: build_py311
+          python_version: "3.11.9"
+          python_tag: cp311-cp311
+          artifact_suffix: py311-windows-x64
+          requires:
+            - read_version
+      - build_wheel:
+          name: build_py313
+          python_version: "3.13.9"
+          python_tag: cp313-cp313
+          artifact_suffix: py313-windows-x64
+          requires:
+            - read_version
+      - package:
+          requires:
+            - build_py311
+            - build_py313
+          filters:
+            branches:
+              only:
+                - master
+                - main
