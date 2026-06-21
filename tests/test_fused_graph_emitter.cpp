@@ -194,3 +194,48 @@ TEST(FusedGraphEmitter, FloatInputReadsSSBO) {
     // 1 manifest param (mode) + 1 float input (mask) = 2 SSBO slots consumed.
     // The mask default is at param_base_slot + 1 (after mode).
 }
+
+TEST(FusedGraphEmitter, CrossChainGroupInput) {
+    // Test the core bug: when a node in a chain group receives input from
+    // a node OUTSIDE the chain group (cross-chain-group connection), it must
+    // be treated as an external input (ExtSrc), not baked as a constant.
+    //
+    // We simulate a split chain: group contains [2, 3, 4] but node 5
+    // connects to node 3 — node 5 is NOT in the group.
+    // The emitter only sees nodes in the group, so node 5 is ExtSrc.
+    auto lib = make_lib();
+    Graph g;
+    g.nodes.push_back({1, "source"});
+    g.nodes.push_back({2, "step"});
+    g.nodes.push_back({3, "blend"});
+    g.nodes.push_back({4, "step"});
+    g.nodes.push_back({5, "source"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({2, 0, 3, 0});   // step(2) -> blend(3) input 0
+    g.connections.push_back({5, 0, 3, 1});   // source(5) -> blend(3) input 1
+    g.connections.push_back({3, 0, 4, 0});
+    g.output_node = 4;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+
+    // Manually create a path that simulates a chain group split:
+    // group = [2, 3, 4] — node 5 is NOT in the group
+    ActivePath group_path;
+    group_path.nodes = {2, 3, 4};
+
+    std::unordered_map<NodeId, int> param_map;
+    for (auto n : group_path.nodes) param_map[n] = 0;
+    auto result = emit_fused_subgraph(group_path, r.ir, lib, 0, param_map);
+
+    ASSERT_TRUE(result.ok()) << result.error;
+
+    // blend(3) has input 1 from source(5) which is NOT in [2, 3, 4].
+    // This must use texelFetch (ExtSrc), not be baked as vec4(0).
+    EXPECT_GE(result.external_inputs, 1u)
+        << "cross-chain-group input must consume an external slot";
+    EXPECT_NE(result.source.find("texelFetch"), std::string::npos)
+        << "cross-chain-group input must use texelFetch";
+    EXPECT_NE(result.source.find("_in_"), std::string::npos)
+        << "cross-chain-group input must have _in_ variable";
+}

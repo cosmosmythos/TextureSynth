@@ -277,6 +277,7 @@ void Engine::populate_chains_(const PassPlan& plan) {
             const uint32_t inputs_n = (uint32_t)type->inputs.size();
             for (uint32_t s = 0; s < inputs_n && ext_slot < MAX_PASS_INPUTS; ++s) {
                 NodeId src_node = (s < pe.input_resources.size()) ? pe.input_resources[s].node_id : 0;
+                if (src_node == 0) continue; // unconnected — baked as constant, no ext_slot
                 bool is_chain_member = false;
                 for (NodeId cn : ch.nodes) {
                     if (cn == src_node) { is_chain_member = true; break; }
