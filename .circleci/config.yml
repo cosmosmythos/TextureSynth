@@ -176,7 +176,7 @@ jobs:
             cd dist
             PY_TAG="<< parameters.python_tag >>"
             PLAT_TAG="win_amd64"
-            python - <<PY
+            python - \<<PY
             import os, re
             py_tag = "$PY_TAG"
             plat_tag = "$PLAT_TAG"
