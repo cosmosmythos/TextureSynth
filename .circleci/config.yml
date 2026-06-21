@@ -14,8 +14,6 @@ constants:
 
 orbs:
   win: circleci/windows@5.0
-  # browse-and-search-github-release wraps `gh release` in a single command
-  gh: circleci/github-release@0.1.4
 
 jobs:
   read_version:
