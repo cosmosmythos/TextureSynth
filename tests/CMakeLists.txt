@@ -28,6 +28,7 @@ add_executable(engine_tests
     test_combine_rgba.cpp
     test_dump_gabor_blend.cpp
     test_repro_blend_preview.cpp
+    test_research_register_pressure.cpp
     test_image_upload.cpp
     test_noise_nodes.cpp
     test_simplex_debug.cpp

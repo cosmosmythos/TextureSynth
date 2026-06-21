@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1" failures="0" disabled="0" errors="0" time="0.006" timestamp="2026-06-21T21:00:53.523" name="AllTests">
+  <testsuite name="ReproBlendPreview" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.006" timestamp="2026-06-21T21:00:53.523">
+    <testcase name="ChainStructure_AccessibleNodes" file="C:\Users\User\Documents\0\TEXTURESYNTH\tests\test_repro_blend_preview.cpp" line="144" status="run" result="completed" time="0.006" timestamp="2026-06-21T21:00:53.523" classname="ReproBlendPreview" />
+  </testsuite>
+</testsuites>
