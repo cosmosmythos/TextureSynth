@@ -113,6 +113,16 @@ Full node list, socket layouts, and bl_idnames live in `references/nodes_and_api
 1. **Node `bl_idname`s** are not uniform. Factory-generated nodes use `TS_<SvTypeCapitalized>_Node` (e.g. `TS_Perlin_Node`); specialized nodes use hand-written ids (`TS_Blend_Node`, `TS_Image_Node`, `TS_Levels_Node`, `TS_Color_Const_Node`, `TS_Output_Node`).
 2. **`as_socket` params become input sockets**, and the engine's slot ordering is "regular inputs first, then as_socket inputs" (`ADDON/core/engine_bridge.py:328-341`).
 
+## CRASH PREVENTION — NEVER SET `tree.nodes.active`
+
+**DO NOT set `tree.nodes.active` from MCP scripts. EVER.** This triggers a crash chain:
+
+1. Setting `tree.nodes.active = X` fires Blender's `_on_format_override_change` → deferred `_rebuild` timer
+2. `_rebuild` calls `rebuild_output_sockets()` on the node — if the node is mid-transition or partially constructed, Blender segfaults (access violation in `ColorAdapterClient.dll` / `icm32.dll`)
+3. **The active node IS the preview output.** Making a node active triggers `TS_Preview2D` update via the evaluation timer. You do NOT need to set it — the addon does this automatically.
+
+If you need to inspect the graph, use the existing `tree.nodes` collection. Do NOT touch `.active`.
+
 ## Common live-test pitfalls
 
 - **Operators needing `context.active_node`.** In MCP, `context` is the user's real selection — setting `tree.nodes.active` in code does NOT change `context.active_node` for the operator call. Use `bpy.context.temp_override(active_node=node, ...)` **inside the editor area context**, or skip the operator and use the direct API (e.g. `node.inputs.new(...)` instead of `bpy.ops.texturesynth.output_target_add()`). The scripts prefer the direct API for this reason.

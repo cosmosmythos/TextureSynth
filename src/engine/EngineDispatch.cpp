@@ -64,6 +64,31 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
         ppc.out_storage_slots[t] = tail.out_storage_slots[t];
     ppc.param_ring_idx = param_write_idx_;
 
+    // DIAG: print push constants for chains with external inputs
+    {
+        bool has_ext = false;
+        for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
+            if (ce.chain_in_sampled_slots[k] != 0) { has_ext = true; break; }
+        if (has_ext) {
+            std::string msg = "[DIAG] DISPATCH chain=" + std::to_string(chain_idx)
+                + " head_node=" + std::to_string(head.node_id)
+                + " tail_node=" + std::to_string(tail.node_id)
+                + " in_count=" + std::to_string(head.input_count)
+                + " in_sampled=[";
+            for (uint32_t k = 0; k < head.input_count && k < MAX_PASS_INPUTS; ++k) {
+                msg += std::to_string(ppc.in_sampled_slots[k]);
+                if (k + 1 < head.input_count && k + 1 < MAX_PASS_INPUTS) msg += ", ";
+            }
+            msg += "] out_storage=[";
+            for (uint32_t t = 0; t < tail.output_count && t < MAX_PASS_OUTPUTS; ++t) {
+                msg += std::to_string(ppc.out_storage_slots[t]);
+                if (t + 1 < tail.output_count && t + 1 < MAX_PASS_OUTPUTS) msg += ", ";
+            }
+            msg += "] param_base=" + std::to_string(ppc.param_base_slot);
+            log_info(msg);
+        }
+    }
+
     vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(PassPushConstants), &ppc);
@@ -180,6 +205,20 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
                                      uint32_t gx, uint32_t gy) {
     bool final_pass_was_dirty = false;
     std::vector<uint8_t> chain_dispatched(chain_execs_.size(), 0);
+
+    // DIAG: print dispatch order
+    {
+        std::string msg = "[DIAG] DISPATCH ORDER: " + std::to_string(passes_.size())
+            + " passes, " + std::to_string(chain_execs_.size()) + " chains";
+        log_info(msg);
+        for (size_t i = 0; i < passes_.size(); ++i) {
+            const auto& pe = passes_[i];
+            bool is_chain = (i < chain_id_of_pass_.size() && chain_id_of_pass_[i] != UINT32_MAX);
+            uint32_t cid = is_chain ? chain_id_of_pass_[i] : UINT32_MAX;
+            log_info("[DIAG]   pass[" + std::to_string(i) + "] node=" + std::to_string(pe.node_id)
+                     + (is_chain ? (" chain=" + std::to_string(cid)) : " [solo]"));
+        }
+    }
 
     for (size_t i = 0; i < passes_.size(); ++i) {
         auto& pe = passes_[i];
