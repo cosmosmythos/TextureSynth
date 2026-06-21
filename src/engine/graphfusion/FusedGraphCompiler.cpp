@@ -150,10 +150,18 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
     }
 
     // 4. Build DAG from active path and plan fusion groups.
+    // Use REAL graph edges from ir.connections, not synthetic linear
+    // adjacency. The consumer-constraint check in split_path relies on
+    // dag.successors() returning actual fan-out edges to detect when an
+    // intermediate node has a downstream consumer outside its group.
+    // Linear-adjacency edges hide fan-out and let invalid groups form.
+    std::unordered_set<NodeId> path_set(path.nodes.begin(), path.nodes.end());
     dag::DAG<NodeId>::NodeList dag_nodes(path.nodes.begin(), path.nodes.end());
     dag::DAG<NodeId>::EdgeList dag_edges;
-    for (size_t i = 1; i < path.nodes.size(); ++i) {
-        dag_edges.push_back({path.nodes[i - 1], path.nodes[i]});
+    for (const auto& c : ir.connections) {
+        if (path_set.count(c.src_node) && path_set.count(c.dst_node)) {
+            dag_edges.push_back({c.src_node, c.dst_node});
+        }
     }
     dag::DAG<NodeId> dag(std::move(dag_nodes), std::move(dag_edges));
 
@@ -323,19 +331,54 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         return result;
     }
 
-    plan.active_resources.insert(plan.final_output_resource);
-    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
-        const auto& pass = plan.passes[i];
-        uint32_t chain_idx = plan.chain_index_of_pass[i];
-        if (chain_idx == UINT32_MAX) {
-            for (const auto& rid : pass.output_resources) {
-                plan.active_resources.insert(rid);
-            }
-        } else {
-            const auto& chain = plan.chains[chain_idx];
-            if (pass.node_id == chain.nodes.back()) {
-                for (const auto& rid : pass.output_resources) {
+    // Compute active_resources: the set of node outputs that need a VRAM image.
+    // Single source of truth — the consumer graph. A resource needs an image
+    // iff at least one of:
+    //   (a) it's the final preview output (record_final_blit_ reads it);
+    //   (b) its producer is a solo pass (chain_index_of_pass == UINT32_MAX) —
+    //       dispatched as its own compute pass, must write to an image;
+    //   (c) at least one consumer reads it from a DIFFERENT chain — cross-chain
+    //       consumers texelFetch, and shader registers are invisible across
+    //       dispatches. In-chain consumers read registers and do NOT force
+    //       an image.
+    // The old "chain tail gets an image" heuristic is a special case of (c)
+    // (a tail's output always feeds a downstream chain or the final output)
+    // and is subsumed by this scan.
+    {
+        std::unordered_map<NodeId, uint32_t> node_to_chain;
+        node_to_chain.reserve(plan.passes.size());
+        for (uint32_t ci = 0; ci < (uint32_t)plan.chains.size(); ++ci)
+            for (NodeId n : plan.chains[ci].nodes)
+                node_to_chain[n] = ci;
+
+        // (a)
+        plan.active_resources.insert(plan.final_output_resource);
+
+        for (const auto& pass : plan.passes) {
+            uint32_t producer_chain = node_to_chain.count(pass.node_id)
+                ? node_to_chain[pass.node_id] : UINT32_MAX;
+            // (b) solo passes always materialize their output.
+            if (producer_chain == UINT32_MAX) {
+                for (const auto& rid : pass.output_resources)
                     plan.active_resources.insert(rid);
+                continue;
+            }
+            // (c) chain member: only materialize if some consumer is
+            //     outside this chain.
+            for (const auto& rid : pass.output_resources) {
+                for (const auto& other : plan.passes) {
+                    if (other.node_id == pass.node_id) continue;
+                    uint32_t consumer_chain = node_to_chain.count(other.node_id)
+                        ? node_to_chain[other.node_id] : UINT32_MAX;
+                    if (consumer_chain == producer_chain) continue;
+                    bool consumed = false;
+                    for (const auto& in : other.input_resources) {
+                        if (in == rid) { consumed = true; break; }
+                    }
+                    if (consumed) {
+                        plan.active_resources.insert(rid);
+                        break;
+                    }
                 }
             }
         }

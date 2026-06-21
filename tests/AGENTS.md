@@ -2,7 +2,7 @@
 
 ## Purpose
 Two independent test suites:
-1. **C++ gtest** (`engine_tests` target) — exercises the `engine` lib directly (no Python). Covers Vulkan context, graph validation, full pipeline, async readback, dirty set, aliasing, mask/mute nodes, timestamps, combine/separate RGBA, image upload, noise nodes, simplex debug, and the full fusion path.
+1. **C++ gtest** (`engine_tests` target) — exercises the `engine` lib directly (no Python). Covers Vulkan context, graph validation, full pipeline, async readback, dirty set, aliasing, mask/mute nodes, timestamps, combine/separate RGBA, image upload, noise nodes, simplex debug, the full fusion path, and the cross-group chain preview repro (`test_repro_blend_preview.cpp`).
 2. **Python pytest** (`tests/python/`) — exercises the `texturesynth_core` nanobind binding the way the Blender addon uses it.
 
 ## Ownership

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 namespace te::fusion {
@@ -85,17 +86,26 @@ public:
     }
 
 private:
+    // Validate that every node in `path` exists in `dag` and that the path
+    // respects a topological order (no node appears before one of its
+    // ancestors in the DAG). The path is NOT required to be a linear chain --
+    // active paths from ActivePathTracer are topological orderings of a
+    // sub-DAG, which may include siblings and fan-out. Requiring direct
+    // edges between consecutive path[i-1] -> path[i] was wrong: it rejected
+    // valid fan-out graphs (e.g. two noise sources feeding a blend).
     template <typename NodeId>
     [[nodiscard]] static bool is_valid_path(
         const dag::DAG<NodeId>& dag,
         const std::vector<NodeId>& path)
     {
+        std::unordered_set<NodeId> seen;
+        seen.reserve(path.size());
         for (std::size_t i = 0; i < path.size(); ++i) {
-            if (!dag.has_node(path[i])) {
-                return false;
-            }
-            if (i > 0 && !dag.has_edge(path[i - 1], path[i])) {
-                return false;
+            if (!dag.has_node(path[i])) return false;
+            if (!seen.insert(path[i]).second) return false;  // duplicate
+            // Any ancestor of path[i] must already have appeared earlier.
+            for (NodeId pred : dag.predecessors(path[i])) {
+                if (seen.count(pred) == 0) return false;
             }
         }
         return true;

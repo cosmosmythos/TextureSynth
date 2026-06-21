@@ -127,6 +127,7 @@ The scope/extension guards above are enforced by the script. Section 4 and the s
 | `CollectionProperty(type=PropertyGroup)` | Register target `PropertyGroup` BEFORE dependent node classes. |
 | Muted node rewiring socket index | `resolve_muted_source()` must search ALL inputs, not just input[0], to find data connections (control inputs like mask/gain are at socket 0). |
 | FusedVariantKey stale cache | Cache key MUST include every GLSL-affecting field. `external_inputs` count alone was insufficient — two graphs with same count but different socket mappings shared the same key. Use per-node `external_socket_masks` (bitmask of which sockets are external). Bump `epoch` when adding fields. Current: `node_type_ids`, `param_socket_masks`, `input_counts`, `feature_flags`, `external_socket_masks`, `epoch=7`. |
+| Fusion cross-group producer missing image | When a chain splits, intermediate (non-tail) nodes feed in-chain consumers via registers but **cross-chain consumers via VRAM textures**. `FusedGraphCompiler` MUST scan every pass's input_resources and insert any cross-group producer's output into `active_resources`, or `ResourceManager` skips its image and the downstream chain reads garbage. The planner's DAG MUST use real `ir.connections` edges (not synthetic linear `path[i-1]->path[i]`), and `is_valid_path` must accept any topological order (fan-out OK). |
 
 ---
 
