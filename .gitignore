@@ -11,6 +11,7 @@ test_shader_cache/
 *.lib
 *.dll
 *.egg-info/
+*nul
 
 # Local-only development artifacts (NOT shipped with the addon).
 DEV_LOG/

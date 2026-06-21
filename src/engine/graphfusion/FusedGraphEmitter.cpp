@@ -122,8 +122,12 @@ FusedResult emit_fused_subgraph(
                     }
                 }
                 ne.input_srcs.push_back(RegSrc{node_to_index.at(src), out_sock});
+            } else if (src != 0) {
+                // Connected to a node outside this chain group (split boundary).
+                // Sample its output texture via bindless slot.
+                ne.input_srcs.push_back(ExtSrc{next_ext++});
             } else {
-                // Unconnected: bake default as GLSL constant (no dummy texture).
+                // Truly unconnected: bake default as GLSL constant.
                 if (s < type->inputs.size() && type->inputs[s].type == SocketType::Vec4) {
                     ne.input_srcs.push_back(ConstSrc{type->inputs[s].default_value});
                 } else if (s < type->inputs.size() && type->inputs[s].type == SocketType::Float) {
@@ -155,13 +159,11 @@ FusedResult emit_fused_subgraph(
         const NodeType* type = lib.find(ne.type_id);
         if (!type) continue;
 
-        // Declare external vec4 inputs (skip float-type, Sampler2D, and ConstSrc).
+        // Declare external vec4 inputs (skip Sampler2D and ConstSrc).
         for (size_t s = 0; s < ne.input_srcs.size(); ++s) {
             if (std::holds_alternative<ConstSrc>(ne.input_srcs[s]))
                 continue; // baked as GLSL constant, no slot needed
             if (std::holds_alternative<ExtSrc>(ne.input_srcs[s])) {
-                if (s < type->inputs.size() && type->inputs[s].type == SocketType::Float)
-                    continue; // float inputs handled inline via SSBO
                 if (s < type->inputs.size() && type->inputs[s].type == SocketType::Sampler2D)
                     continue; // Sampler2D handled inline via TSTexture constructor
                 auto ext = std::get<ExtSrc>(ne.input_srcs[s]);
@@ -213,14 +215,8 @@ FusedResult emit_fused_subgraph(
             } else {
                 auto ext = std::get<ExtSrc>(ne.input_srcs[s]);
                 if (is_float_input) {
-                    // Float input: read slider default from param SSBO.
-                    // Layout: [regular_params..., float_input_defaults...]
-                    uint32_t float_idx = 0;
-                    for (uint32_t f = 0; f < s; ++f)
-                        if (type->inputs[f].type == SocketType::Float) ++float_idx;
-                    uint32_t ssbo_idx = ne.param_offset + ne.param_count + float_idx;
-                    args.push_back("node_params[pc.param_ring_idx].v[pc.param_base_slot + " +
-                                   std::to_string(ssbo_idx) + "]");
+                    // Float input from outside chain group: sample texture, take .r.
+                    args.push_back("_in_" + std::to_string(i) + "_" + std::to_string(s) + ".r");
                 } else if (is_sampler) {
                     // Sampler2D: construct TSTexture with bindless slot + computed texel size.
                     uint32_t slot = ext.slot;

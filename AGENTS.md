@@ -3,6 +3,10 @@
 **Read before ANY build/clean/install/test, or before writing a technical explanation.**
 Skipping the cache rules wastes bandwidth and rebuild time. Skipping the explanation rules makes answers unusable.
 
+## Skill Usage
+
+Invoke relevant or requested skills BEFORE any response or action. Even a 1% chance a skill might apply means that you should invoke the skill to check. If an invoked skill turns out to be wrong for the situation, you don't need to use it.
+
 ## 0. STRICT BEHAVIOR: Root-cause or silence
 When something is broken:
 
