@@ -77,23 +77,40 @@ jobs:
             # the preinstalled one matching the major.minor.
             $desired = "<< parameters.python_version >>"
             $pyver = $desired -replace '(\d+)\.(\d+)\..*','$1.$2'
+            $installDir = "C:\Python$($pyver.Replace('.',''))"
             $found = $null
             foreach ($cand in @(
-              "C:\Python$($pyver.Replace('.',''))\python.exe",
+              "$installDir\python.exe",
               "C:\Program Files\Python$($pyver.Replace('.',''))\python.exe",
               "$env:LOCALAPPDATA\Programs\Python\Python$($pyver.Replace('.',''))\python.exe"
             )) {
               if (Test-Path $cand) { $found = $cand; break }
             }
             if (-not $found) {
-              # Use Chocolatey to install a clean Python matching the version.
-              choco install python3 --version=$desired -y --no-progress
-              $found = "C:\Python$($pyver.Replace('.',''))\python.exe"
+              # Install this exact version side-by-side into a known
+              # directory, regardless of any newer Python already on the
+              # image (the CircleCI Windows image ships Python 3.14+ by
+              # default, which would otherwise block this as a "downgrade").
+              choco install python3 --version=$desired -y --no-progress `
+                --side-by-side --allow-downgrade --force `
+                --params "'/InstallDir:$installDir'"
+              if ($LASTEXITCODE -ne 0) {
+                Write-Error "Chocolatey failed to install Python $desired (exit $LASTEXITCODE)"
+                exit 1
+              }
+              $found = "$installDir\python.exe"
+            }
+            if (-not (Test-Path $found)) {
+              Write-Error "Python executable not found at $found after install"
+              exit 1
             }
             Write-Host "Using Python: $found"
             $pydir = Split-Path $found
-            echo "$pydir" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-            echo "$pydir\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            # CircleCI (unlike GitHub Actions) has no $env:GITHUB_PATH.
+            # Persist PATH for later bash.exe steps via $env:BASH_ENV,
+            # converting to the Unix-style path bash.exe expects.
+            $unixDir = "/" + $pydir.Substring(0,1).ToLower() + $pydir.Substring(2).Replace('\','/')
+            Add-Content -Path $env:BASH_ENV -Value "export PATH=`"$unixDir:$unixDir/Scripts:`$PATH`""
             & $found --version
       - run:
           name: Install Python dependencies
@@ -125,7 +142,7 @@ jobs:
             Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe" -OutFile $installer
             Start-Process -FilePath $installer -Args "--accept-licenses --default --quiet --installpath C:\VulkanSDK" -Wait
             $env:VULKAN_SDK = "C:\VulkanSDK"
-            echo "VULKAN_SDK=C:\VulkanSDK" | Out-File -FilePath $BASH_ENV -Append -Encoding utf8
+            echo "VULKAN_SDK=C:\VulkanSDK" | Out-File -FilePath $env:BASH_ENV -Append -Encoding utf8
       - run:
           name: Configure CMake
           shell: bash.exe
