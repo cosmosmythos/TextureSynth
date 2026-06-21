@@ -179,6 +179,7 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         pass_idx_by_node[plan.passes[i].node_id] = i;
 
     plan.chains.reserve(fusion_plan.groups.size());
+    uint32_t chain_idx_gen = 0;
     for (auto& group : fusion_plan.groups) {
         Chain chain;
         chain.nodes = group.nodes;
@@ -226,6 +227,16 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             chain.glsl = std::move(fused.source);
             chain.external_inputs = fused.external_inputs;
             chain.variant_key = build_fused_key(chain, ir, lib);
+            // TEMP DIAGNOSTIC: dump GLSL for each chain
+            {
+                std::string node_ids_str;
+                for (auto nid : group.nodes) node_ids_str += std::to_string(nid) + ",";
+                log_info("[FUSED GLSL] chain group " + std::to_string(chain_idx_gen)
+                         + " nodes=[" + node_ids_str + "]"
+                         + " ext=" + std::to_string(fused.external_inputs)
+                         + " base_slot=" + std::to_string(chain.param_base_slot));
+                log_info("[FUSED GLSL SOURCE]\n" + chain.glsl);
+            }
         } else {
             log_warn("FusedGraphCompiler: group [" +
                      [&]{ std::string s; for (auto n : group.nodes) s += std::to_string(n) + ","; return s; }() +
@@ -233,6 +244,7 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         }
 
         plan.chains.push_back(std::move(chain));
+        ++chain_idx_gen;
     }
 
     // 6. Fill chain_index_of_pass.

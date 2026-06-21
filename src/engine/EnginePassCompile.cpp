@@ -304,6 +304,19 @@ void Engine::populate_chains_(const PassPlan& plan) {
             }
         }
 
+        // TEMP DIAGNOSTIC: dump chain_in_sampled_slots mapping
+        {
+            std::string node_ids_str;
+            for (auto nid : ch.nodes) node_ids_str += std::to_string(nid) + ",";
+            std::string slots_str;
+            for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
+                slots_str += std::to_string(ce.chain_in_sampled_slots[k]) + " ";
+            log_info("[CHAIN MAP] chain " + std::to_string(ci)
+                     + " nodes=[" + node_ids_str + "]"
+                     + " ext_slots=" + std::to_string(ext_slot)
+                     + " chain_in_sampled_slots=[" + slots_str + "]");
+        }
+
         if (!ch.glsl.empty() && !ch.bypassed) {
             std::optional<std::vector<uint32_t>> blob;
             if (cache_) blob = cache_->load(ch.variant_key);

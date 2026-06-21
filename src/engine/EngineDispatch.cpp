@@ -64,6 +64,23 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
         ppc.out_storage_slots[t] = tail.out_storage_slots[t];
     ppc.param_ring_idx = param_write_idx_;
 
+    // TEMP DIAGNOSTIC: dump push constants for chain dispatch
+    {
+        std::string in_slots_str;
+        for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
+            in_slots_str += std::to_string(ppc.in_sampled_slots[k]) + " ";
+        std::string out_slots_str;
+        for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
+            out_slots_str += std::to_string(ppc.out_storage_slots[t]) + " ";
+        log_info("[CHAIN DISPATCH] chain=" + std::to_string(chain_idx)
+                 + " head=" + std::to_string(ce.head_pass_index)
+                 + " tail=" + std::to_string(ce.tail_pass_index)
+                 + " param_base=" + std::to_string(ppc.param_base_slot)
+                 + " in_sampled=[" + in_slots_str + "]"
+                 + " out_storage=[" + out_slots_str + "]"
+                 + " ring_idx=" + std::to_string(ppc.param_ring_idx));
+    }
+
     vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(PassPushConstants), &ppc);
