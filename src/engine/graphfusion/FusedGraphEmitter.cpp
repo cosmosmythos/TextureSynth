@@ -140,6 +140,18 @@ FusedResult emit_fused_subgraph(
 
         emits.push_back(std::move(ne));
 
+        // Build per-node external-socket mask for cache key.
+        // Bit s = 1 means socket s of this node is an external input (ExtSrc).
+        {
+            const auto& ne_ref = emits.back();
+            uint32_t mask = 0;
+            for (uint32_t s = 0; s < ne_ref.input_srcs.size() && s < 32; ++s) {
+                if (std::holds_alternative<ExtSrc>(ne_ref.input_srcs[s]))
+                    mask |= (1u << s);
+            }
+            result.external_socket_masks.push_back(mask);
+        }
+
         if (emitted_funcs.insert(type->glsl_function).second)
             builder.add_function(type->glsl_function);
     }

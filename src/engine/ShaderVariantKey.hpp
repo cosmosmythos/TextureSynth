@@ -82,31 +82,36 @@ struct FusedVariantKey {
     std::vector<uint32_t>    input_counts;        // per-node declared inputs
     uint32_t                 feature_flags = 0;   // OR-fold across all chain nodes
                                                  // (low 3 bits = format; high bits reserved)
-    uint32_t                 external_inputs = 0; // number of cross-group texture inputs
-                                                 // (affects GLSL _in_X_Y declarations
-                                                 //  and pc.in_sampled_slots[] mapping)
-    uint64_t                 epoch         = 6;   // distinct from ShaderVariantKey::epoch=4
-                                                 // so the two hash families can't collide
-                                                 // if they ever share a directory.
-                                                 // epoch 6: added external_inputs
+    std::vector<uint32_t>    external_socket_masks; // per-node bitmask: bit s = 1 means
+                                                    // socket s is an external (cross-group)
+                                                    // input. Same length as node_type_ids.
+                                                    // Encodes WHICH sockets are external,
+                                                    // not just HOW MANY — fixes cache
+                                                    // collision when same count maps to
+                                                    // different sockets.
+    uint64_t                 epoch         = 7;   // distinct from ShaderVariantKey::epoch=4
+                                                  // so the two hash families can't collide
+                                                  // if they ever share a directory.
+                                                  // epoch 6: added external_inputs (insufficient)
+                                                  // epoch 7: external_inputs → external_socket_masks
 
     bool operator==(const FusedVariantKey& o) const noexcept {
-        return node_type_ids       == o.node_type_ids
-            && param_socket_masks  == o.param_socket_masks
-            && input_counts        == o.input_counts
-            && feature_flags       == o.feature_flags
-            && external_inputs     == o.external_inputs
-            && epoch               == o.epoch;
+        return node_type_ids          == o.node_type_ids
+            && param_socket_masks     == o.param_socket_masks
+            && input_counts           == o.input_counts
+            && feature_flags          == o.feature_flags
+            && external_socket_masks  == o.external_socket_masks
+            && epoch                  == o.epoch;
     }
 
     uint64_t hash() const noexcept {
         uint64_t h = 1469598103934665603ull;
         auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ull; };
-        for (const auto& s : node_type_ids)   for (char c : s) mix(static_cast<uint8_t>(c));
-        for (uint32_t m : param_socket_masks) mix(m);
-        for (uint32_t n : input_counts)       mix(n);
+        for (const auto& s : node_type_ids)          for (char c : s) mix(static_cast<uint8_t>(c));
+        for (uint32_t m : param_socket_masks)        mix(m);
+        for (uint32_t n : input_counts)              mix(n);
+        for (uint32_t m : external_socket_masks)     mix(m);
         mix(feature_flags);
-        mix(external_inputs);
         mix(epoch);
         return h;
     }

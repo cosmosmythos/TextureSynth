@@ -126,7 +126,7 @@ The scope/extension guards above are enforced by the script. Section 4 and the s
 | `IntProperty` truncates `uint64_t` | Store ID as `StringProperty` hex, convert at use site. |
 | `CollectionProperty(type=PropertyGroup)` | Register target `PropertyGroup` BEFORE dependent node classes. |
 | Muted node rewiring socket index | `resolve_muted_source()` must search ALL inputs, not just input[0], to find data connections (control inputs like mask/gain are at socket 0). |
-| FusedVariantKey stale cache | Cache key MUST include every GLSL-affecting field. Missing `external_inputs` caused stale SPIR-V reuse across different connection topologies. Bump `epoch` when adding fields. |
+| FusedVariantKey stale cache | Cache key MUST include every GLSL-affecting field. `external_inputs` count alone was insufficient — two graphs with same count but different socket mappings shared the same key. Use per-node `external_socket_masks` (bitmask of which sockets are external). Bump `epoch` when adding fields. Current: `node_type_ids`, `param_socket_masks`, `input_counts`, `feature_flags`, `external_socket_masks`, `epoch=7`. |
 
 ---
 

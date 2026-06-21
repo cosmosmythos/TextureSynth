@@ -277,7 +277,13 @@ void Engine::populate_chains_(const PassPlan& plan) {
             const uint32_t inputs_n = (uint32_t)type->inputs.size();
             for (uint32_t s = 0; s < inputs_n && ext_slot < MAX_PASS_INPUTS; ++s) {
                 NodeId src_node = (s < pe.input_resources.size()) ? pe.input_resources[s].node_id : 0;
-                if (src_node == 0) continue; // unconnected — baked as constant, no ext_slot
+                if (src_node == 0) {
+                    if (s < type->inputs.size() && type->inputs[s].type == SocketType::Sampler2D) {
+                        // Unconnected Sampler2D: not baked as constant, gets dummy slot in ext_slot
+                    } else {
+                        continue; // unconnected float/vec4 — baked as constant, no ext_slot
+                    }
+                }
                 bool is_chain_member = false;
                 for (NodeId cn : ch.nodes) {
                     if (cn == src_node) { is_chain_member = true; break; }
@@ -302,19 +308,6 @@ void Engine::populate_chains_(const PassPlan& plan) {
                 }
                 ++as_socket_idx;
             }
-        }
-
-        // TEMP DIAGNOSTIC: dump chain_in_sampled_slots mapping
-        {
-            std::string node_ids_str;
-            for (auto nid : ch.nodes) node_ids_str += std::to_string(nid) + ",";
-            std::string slots_str;
-            for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
-                slots_str += std::to_string(ce.chain_in_sampled_slots[k]) + " ";
-            log_info("[CHAIN MAP] chain " + std::to_string(ci)
-                     + " nodes=[" + node_ids_str + "]"
-                     + " ext_slots=" + std::to_string(ext_slot)
-                     + " chain_in_sampled_slots=[" + slots_str + "]");
         }
 
         if (!ch.glsl.empty() && !ch.bypassed) {

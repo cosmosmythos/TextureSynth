@@ -46,8 +46,10 @@ struct Chain {
     uint32_t              total_inputs   = 0;   // sum across nodes (descriptor layout)
     uint32_t              total_outputs  = 1;   // 1 in Phase 1; multi-output nodes are barriers (singleton chains)
     uint32_t              total_params   = 0;   // sum across nodes (SSBO slice width)
-    // Stage 4.2: # of pc.in_sampled_slots[] indices consumed (= max slot index + 1). 0 for source-only chains.
-    uint32_t              external_inputs = 0;
+    // Stage 4.2: per-node bitmask of which input sockets are cross-group texture inputs.
+    // Size == nodes.size(). Bit s = 1 means socket s is external (ExtSrc).
+    // Used for FusedVariantKey — encodes topology, not just count.
+    std::vector<uint32_t>   external_socket_masks;
 
     // Filled by Stage 4 (emit_chain_shader). Empty for singleton/oversized chains (falls back to per-node).
     std::string           glsl;

@@ -16,11 +16,11 @@ All of `src/engine/graphfusion/`:
 ## Local Contracts
 - **Namespace**: `te::fusion` for planner/reg/dag helpers; `te::FusedGraphCompiler` for the entry class.
 - **Bit-identity contract**: fused output must equal the unfused per-pass output for each node. Tests in `tests/test_fused_*.cpp` enforce this; do not land a fusion change that breaks `test_fused_real_nodes.cpp`.
-- **Register budget**: `RegisterAllocator::DEFAULT_BUDGET`; `FusedGraphCompiler::DEFAULT_REG_BUDGET = 48`. If a planned group exceeds budget, `FusionPlan::needs_split` becomes true and the emitter splits at `FusionGroup::split_point`.
+- **Register budget**: `RegisterAllocator::DEFAULT_BUDGET`; `FusedGraphCompiler::DEFAULT_REG_BUDGET = 48`. If a planned group exceeds budget, `FusionPlan::needs_split` becomes true and the planner splits the path. Splitting enforces the consumer constraint: no intermediate node in a group may have a successor in the active path outside that group. This ensures all intermediate values consumed by downstream passes/groups are written to VRAM.
 - **Inputs**: only `GraphIR` + `NodeLibrary` + `active_node_id`. Do not reach into `Engine` or `PassPlan` from here — fusion is a pure transform that the engine *consumes*.
 - **Active path**: only nodes on the `ActivePathTracer` result are candidates for fusion. Off-path nodes (bake targets, dead branches) are never fused.
 - **GLSL contract**: emitted code calls node functions following the `shader_assets/nodes/README.md` signature contract (`vec4 node_<name>(vec2 uv, ...)`). No `sampler2D` / `imageLoad` inside emitted node calls.
-- **FusedVariantKey contract**: the cache key must include everything that affects generated GLSL. Currently: `node_type_ids`, `param_socket_masks`, `input_counts`, `feature_flags`, **`external_inputs`**. If you add a new GLSL-affecting field (connection topology, uniform bindings, etc.), add it to `FusedVariantKey`, `hash()`, `operator==`, `write_sidecar_()`, and `sidecar_matches_()` — then bump `epoch`.
+- **FusedVariantKey contract**: the cache key must include everything that affects generated GLSL. Currently: `node_type_ids`, `param_socket_masks`, `input_counts`, `feature_flags`, **`external_socket_masks`**. If you add a new GLSL-affecting field (connection topology, uniform bindings, etc.), add it to `FusedVariantKey`, `hash()`, `operator==`, `write_sidecar_()`, and `sidecar_matches_()` — then bump `epoch`.
 
 ## Work Guidance
 - When adding a node that should fuse: confirm `NodeType::pass_kind == Compute` and that its GLSL is pure (no side effects, no texture fetches inside the node fn). Read-only samplers like `image` are NOT fusion candidates.

@@ -22,7 +22,6 @@ FusedVariantKey make_chain(std::vector<std::string> ids,
 } // namespace
 
 // Order matters: [perlin, invert, grayscale] != [grayscale, invert, perlin].
-// This is the entire point of a FusedVariantKey over a per-node key.
 TEST(FusedVariantKey, OrderMatters) {
     auto a = make_chain({"perlin", "invert", "grayscale"}, {0,0,0}, {0,1,1});
     auto b = make_chain({"grayscale", "invert", "perlin"}, {0,0,0}, {0,1,1});
@@ -34,7 +33,7 @@ TEST(FusedVariantKey, OrderMatters) {
 TEST(FusedVariantKey, IdenticalChainSameKey) {
     auto a = make_chain({"perlin", "invert"}, {0, 0}, {0, 1});
     a.feature_flags = 0;
-    a.epoch = 6;
+    a.epoch = 7;
     auto b = a;
     EXPECT_EQ(a, b);
     EXPECT_EQ(a.hash(), b.hash());
@@ -62,46 +61,48 @@ TEST(FusedVariantKey, HashDeterministic) {
     const uint64_t h1 = k.hash();
     const uint64_t h2 = k.hash();
     EXPECT_EQ(h1, h2);
-    // Std hash specialization agrees with hash().
     std::hash<FusedVariantKey> hasher;
     EXPECT_EQ(hasher(k), static_cast<size_t>(h1));
 }
 
-// Epoch distinctness: FusedVariantKey::epoch=6 differs from
-// ShaderVariantKey::epoch=4. If these two hashes ever shared a
-// directory (unlikely today, possible in a future consolidation),
-// the epoch makes them occupy disjoint hash namespaces.
+// Epoch distinctness: FusedVariantKey::epoch=7 differs from
+// ShaderVariantKey::epoch=4.
 TEST(FusedVariantKey, EpochDistinctFromPerNode) {
-    // Build a FusedVariantKey and a ShaderVariantKey with the same
-    // string-id "perlin", zero everywhere else, and check that the
-    // resulting hashes are different.
     FusedVariantKey fk;
     fk.node_type_ids = {"perlin"};
     fk.param_socket_masks = {0};
     fk.input_counts = {0};
-    fk.epoch = 6;
+    fk.epoch = 7;
 
     ShaderVariantKey sk;
     sk.node_type_id = "perlin";
     sk.input_count = 0;
-    // ShaderVariantKey::epoch = 4 is mixed into sk.hash().
 
-    // FNV-1a mixes the epoch at the END for both keys; if they used
-    // the same epoch they'd risk identical hashes for the same input.
-    // We don't assert the actual hashes (that would be brittle); we
-    // assert that the per-node key with a single perlin input doesn't
-    // collide with the fused key for a one-node chain.
     EXPECT_NE(fk.hash(), static_cast<uint64_t>(std::hash<ShaderVariantKey>{}(sk)));
 }
 
-// Different external_inputs on the SAME node sequence → different key.
-// This is the cache-collision fix: two graphs with the same node types
-// but different connection topologies must not share a cache entry.
-TEST(FusedVariantKey, DifferentExternalInputsDifferentKey) {
+// Different external_socket_mask on the SAME node sequence → different key.
+TEST(FusedVariantKey, DifferentSocketMaskDifferentKey) {
     auto a = make_chain({"worley", "levels", "blend"}, {0, 0, 0}, {0, 1, 3});
-    a.external_inputs = 0;
+    a.external_socket_masks = {0, 0, 0};
+    a.epoch = 7;
     auto b = make_chain({"worley", "levels", "blend"}, {0, 0, 0}, {0, 1, 3});
-    b.external_inputs = 2;
+    b.external_socket_masks = {0, 0, 0b100}; // blend socket 2
+    b.epoch = 7;
+    EXPECT_NE(a, b);
+    EXPECT_NE(a.hash(), b.hash());
+}
+
+// Same count, different socket → different key (the real fix).
+// Two chains with [worley, levels, blend] where both have 1 external
+// input but on different sockets must produce different keys.
+TEST(FusedVariantKey, SameCountDifferentSocketDifferentKey) {
+    auto a = make_chain({"worley", "levels", "blend"}, {0, 0, 0}, {0, 1, 3});
+    a.external_socket_masks = {0, 0, 0b100}; // blend socket 2 (B)
+    a.epoch = 7;
+    auto b = make_chain({"worley", "levels", "blend"}, {0, 0, 0}, {0, 1, 3});
+    b.external_socket_masks = {0, 0, 0b010}; // blend socket 1 (A)
+    b.epoch = 7;
     EXPECT_NE(a, b);
     EXPECT_NE(a.hash(), b.hash());
 }
