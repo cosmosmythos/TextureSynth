@@ -5,7 +5,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform texture2D u_sampled[];
-layout(set = 0, binding = 1, rgba16_sfloat) writeonly uniform image2D u_storage[];
+layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
 
 layout(set = 0, binding = 2) uniform sampler samp_repeat;
 layout(set = 0, binding = 3) uniform sampler samp_clamp;

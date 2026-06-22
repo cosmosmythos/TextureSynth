@@ -188,6 +188,16 @@ NB_MODULE(texturesynth_core, m) {
         .value("ID",       ChannelFormat::ID)
         .value("Metadata", ChannelFormat::Metadata);
 
+    nb::enum_<BitDepth>(m, "BitDepth")
+        .value("F8",  BitDepth::F8)
+        .value("F16", BitDepth::F16)
+        .value("F32", BitDepth::F32);
+
+    nb::enum_<DepthMode>(m, "DepthMode")
+        .value("Auto",       DepthMode::Auto)
+        .value("MatchInput", DepthMode::MatchInput)
+        .value("Absolute",   DepthMode::Absolute);
+
     nb::class_<Graph>(m, "Graph")
         .def(nb::init<>())
         .def_rw("output_node", &Graph::output_node)
@@ -195,7 +205,8 @@ NB_MODULE(texturesynth_core, m) {
              [](Graph& g, uint64_t id, const std::string& type,
                 ChannelFormat format_override,
                 const std::string& debug_name,
-                bool muted, bool bypassed) {
+                bool muted, bool bypassed,
+                DepthMode depth_mode, BitDepth absolute_depth) {
                  NodeInstance ni;
                  ni.id              = id;
                  ni.type_id         = type;
@@ -203,13 +214,17 @@ NB_MODULE(texturesynth_core, m) {
                  ni.debug_name      = debug_name;
                  ni.muted           = muted;
                  ni.bypassed        = bypassed;
+                 ni.depth_mode      = depth_mode;
+                 ni.absolute_depth  = absolute_depth;
                  g.nodes.push_back(std::move(ni));
              },
              "id"_a, "type"_a,
              "format_override"_a = ChannelFormat::RGBA,
              "debug_name"_a = std::string(),
              "muted"_a = false,
-             "bypassed"_a = false)
+             "bypassed"_a = false,
+             "depth_mode"_a = DepthMode::Auto,
+             "absolute_depth"_a = BitDepth::F16)
         .def("add_connection",
              [](Graph& g, uint64_t src_node, uint32_t src_sock,
                           uint64_t dst_node, uint32_t dst_sock) {
@@ -420,6 +435,8 @@ NB_MODULE(texturesynth_core, m) {
         })
         .def("set_precision", &Engine::set_precision)
         .def("precision", &Engine::precision)
+        .def("set_graph_default_depth", &Engine::set_graph_default_depth)
+        .def("graph_default_depth", &Engine::graph_default_depth)
         .def("set_resolution", [](Engine& e, uint32_t w, uint32_t h) {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::Idle);

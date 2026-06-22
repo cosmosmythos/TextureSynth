@@ -18,6 +18,47 @@ CHANNEL_MODE_ITEMS = [
     ('RGBA', "RGBA", ""),
 ]
 
+DEPTH_MODE_ITEMS = [
+    ('AUTO',       "Auto",        "Inherit graph default bit depth (sidebar)"),
+    ('MATCH_INPUT', "Match Input", "Use upstream node's bit depth"),
+    ('ABSOLUTE',   "Absolute",    "Force a specific bit depth"),
+]
+
+ABSOLUTE_DEPTH_ITEMS = [
+    ('F8',  "8-bit",  "8-bit unorm"),
+    ('F16', "16f",    "16-bit half-float"),
+    ('F32', "32f",    "32-bit float"),
+]
+
+_DEPTH_STR_TO_ENUM = {
+    'F8':  None,  # filled lazily from cpp module
+    'F16': None,
+    'F32': None,
+}
+
+
+def _resolve_depth_enum(depth_str):
+    """Map the absolute_depth string ('F8'/'F16'/'F32') to the cpp BitDepth enum."""
+    try:
+        from ..core import cpp_module
+        BitDepth = cpp_module.BitDepth
+        return {'F8': BitDepth.F8, 'F16': BitDepth.F16, 'F32': BitDepth.F32}.get(depth_str, BitDepth.F16)
+    except Exception:
+        return None
+
+
+def _resolve_depth_mode_enum(mode_str):
+    try:
+        from ..core import cpp_module
+        DepthMode = cpp_module.DepthMode
+        return {
+            'AUTO':        DepthMode.Auto,
+            'MATCH_INPUT': DepthMode.MatchInput,
+            'ABSOLUTE':    DepthMode.Absolute,
+        }.get(mode_str, DepthMode.Auto)
+    except Exception:
+        return None
+
 
 def _on_format_override_change(self, context):
     try:
@@ -55,6 +96,22 @@ class TextureSynthNode(bpy.types.Node):
         description="Override the texture format",
         items=FORMAT_OVERRIDE_ITEMS,
         default='DEFAULT',
+        update=_on_format_override_change,
+    )
+
+    depth_mode: bpy.props.EnumProperty(
+        name="Depth",
+        description="How this node's bit depth is chosen (Substance Designer-style)",
+        items=DEPTH_MODE_ITEMS,
+        default='AUTO',
+        update=_on_format_override_change,
+    )
+
+    absolute_depth: bpy.props.EnumProperty(
+        name="Bit Depth",
+        description="Forced bit depth when Depth Mode is Absolute",
+        items=ABSOLUTE_DEPTH_ITEMS,
+        default='F16',
         update=_on_format_override_change,
     )
 
@@ -132,7 +189,22 @@ class TextureSynthNode(bpy.types.Node):
             return getter()
         return _get_channel_format().RGBA
 
+    def get_depth_mode(self):
+        """Return DepthMode enum value for engine (Auto if not supported)."""
+        if not getattr(self, 'supports_format_override', False):
+            return None
+        return _resolve_depth_mode_enum(getattr(self, 'depth_mode', 'AUTO'))
+
+    def get_absolute_depth(self):
+        """Return BitDepth enum value for engine (F16 default)."""
+        return _resolve_depth_enum(getattr(self, 'absolute_depth', 'F16'))
+
     def draw_format_override_ui(self, layout):
-        """Draw format override only for nodes where it is meaningful."""
-        if getattr(self, 'supports_format_override', False):
-            layout.prop(self, 'format_override', text="")
+        """Draw format override + depth controls for supported nodes."""
+        if not getattr(self, 'supports_format_override', False):
+            return
+        layout.prop(self, 'format_override', text="")
+        col = layout.column(align=True)
+        col.prop(self, 'depth_mode', text="")
+        if getattr(self, 'depth_mode', 'AUTO') == 'ABSOLUTE':
+            col.prop(self, 'absolute_depth', text="")

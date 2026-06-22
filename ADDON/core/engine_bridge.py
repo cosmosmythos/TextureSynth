@@ -581,6 +581,27 @@ def upload_node_image(node):
         return False
 
 
+def _apply_sidebar_precision(engine):
+    """Read sidebar 'Precision' and set graph default depth on the engine.
+
+    Uses set_graph_default_depth (the SD-style API). Falls back to the
+    legacy set_precision(int) if the cpp module predates this build.
+    """
+    precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
+    depth_map = {'R8': 0, 'R16': 1, 'R32': 2}
+    legacy_mode = depth_map.get(precision_str, 1)
+    if hasattr(engine, 'set_graph_default_depth'):
+        try:
+            from . import cpp_module
+            BitDepth = cpp_module.BitDepth
+            bd = {0: BitDepth.F8, 1: BitDepth.F16, 2: BitDepth.F32}.get(legacy_mode, BitDepth.F16)
+            engine.set_graph_default_depth(bd)
+            return
+        except Exception:
+            pass
+    engine.set_precision(legacy_mode)
+
+
 def submit_graph():
     global _last_active_fingerprint, _submitted_generation
     global _last_applied_generation, _last_pushed_param_hash
@@ -594,13 +615,7 @@ def submit_graph():
     res = _get_resolution()
     engine.set_resolution(res, res)
 
-    precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
-    if precision_str == 'R8':
-        engine.set_precision(0)
-    elif precision_str == 'R16':
-        engine.set_precision(1)
-    else:
-        engine.set_precision(2)
+    _apply_sidebar_precision(engine)
 
     graph, pc, _ = _build_graph_and_params(tree)
     if graph is None:
@@ -665,9 +680,7 @@ def update_params_only(force_submit: bool = False):
 
     res = _get_resolution()
     engine.set_resolution(res, res)
-    precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
-    engine.set_precision(0 if precision_str == 'R8'
-                         else 1 if precision_str == 'R16' else 2)
+    _apply_sidebar_precision(engine)
 
     fp = _active_subgraph_fingerprint(tree)
     if fp != _last_active_fingerprint:
