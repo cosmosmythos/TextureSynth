@@ -21,7 +21,7 @@ def _next_default_name(node):
 class TEXTURESYNTH_OT_output_target_add(Operator):
     bl_idname = "texturesynth.output_target_add"
     bl_label  = "Add Bake Target"
-    bl_description = "Add a new input socket representing a bake target to the Output node"
+    bl_description = "Add a bake target socket"
 
     def execute(self, context):
         node = context.active_node
@@ -35,7 +35,7 @@ class TEXTURESYNTH_OT_output_target_add(Operator):
 class TEXTURESYNTH_OT_output_target_remove(Operator):
     bl_idname = "texturesynth.output_target_remove"
     bl_label  = "Remove Last Bake Target"
-    bl_description = "Remove the last input socket from the Output node"
+    bl_description = "Remove last bake target"
 
     @classmethod
     def poll(cls, context):

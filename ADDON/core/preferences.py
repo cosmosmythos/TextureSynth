@@ -8,10 +8,10 @@ from . import logging as _tslog
 from ..utils.rna import register_class, unregister_class
 
 _LOG_LEVELS = [
-    ("ERROR",   "Errors only",        "Errors only. C++ warnings, info, and Python debug/info are silenced.", 0),
-    ("WARNING", "Errors + Warnings",  "Default. Errors and warnings only.",                                     1),
-    ("INFO",    "Info",               "Adds high-level events (e.g. submitted graph generation=N).",            2),
-    ("DEBUG",   "Debug",              "Full firehose. Switch to this and reproduce the issue to gather logs.",  3),
+    ("ERROR",   "Errors only",        "",                          0),
+    ("WARNING", "Errors + Warnings",  "Default",                   1),
+    ("INFO",    "Info",               "Adds submission events",    2),
+    ("DEBUG",   "Debug",              "Verbose — use for debugging", 3),
 ]
 
 
@@ -24,15 +24,15 @@ class TextureSynthPreferences(AddonPreferences):
 
     log_level: EnumProperty(
         name="Log level",
-        description="Minimum event severity to print. More-severe messages are also printed.",
+        description="Minimum severity to print",
         items=_LOG_LEVELS,
         default="WARNING",
         update=_on_log_level_change,
     )
 
     log_tracebacks: BoolProperty(
-        name="Log exception tracebacks",
-        description="Attach Python tracebacks to error logs (useful for bug reports).",
+        name="Log tracebacks",
+        description="Include tracebacks in error logs",
         default=False,
     )
 

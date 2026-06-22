@@ -19,15 +19,15 @@ CHANNEL_MODE_ITEMS = [
 ]
 
 DEPTH_MODE_ITEMS = [
-    ('AUTO',       "Auto",        "Inherit graph default bit depth (sidebar)"),
-    ('MATCH_INPUT', "Match Input", "Use upstream node's bit depth"),
-    ('ABSOLUTE',   "Absolute",    "Force a specific bit depth"),
+    ('AUTO',       "Auto",        "Use graph default"),
+    ('MATCH_INPUT', "Match Input", "Match input bit depth"),
+    ('ABSOLUTE',   "Absolute",    "Use specific bit depth"),
 ]
 
 ABSOLUTE_DEPTH_ITEMS = [
-    ('F8',  "8-bit",  "8-bit unorm"),
-    ('F16', "16f",    "16-bit half-float"),
-    ('F32', "32f",    "32-bit float"),
+    ('F8',  "8-bit",  ""),
+    ('F16', "16f",    ""),
+    ('F32', "32f",    ""),
 ]
 
 _DEPTH_STR_TO_ENUM = {
@@ -79,21 +79,21 @@ class TextureSynthNode(bpy.types.Node):
 
     ts_uuid: bpy.props.StringProperty(
         name="TextureSynth UUID",
-        description="Stable internal node identity used by the TextureSynth engine",
+        description="Internal ID (auto-generated)",
         default="",
         options={'HIDDEN'},
     )
 
     ts_compile_error: bpy.props.StringProperty(
         name="Compile Error",
-        description="Last shader compilation error for this node",
+        description="Last compile error (read-only)",
         default="",
         options={'HIDDEN'},
     )
 
     format_override: bpy.props.EnumProperty(
         name="Format",
-        description="Override the texture format",
+        description="Override output format",
         items=FORMAT_OVERRIDE_ITEMS,
         default='DEFAULT',
         update=_on_format_override_change,
@@ -101,7 +101,7 @@ class TextureSynthNode(bpy.types.Node):
 
     depth_mode: bpy.props.EnumProperty(
         name="Depth",
-        description="How this node's bit depth is chosen (Substance Designer-style)",
+        description="How bit depth is chosen",
         items=DEPTH_MODE_ITEMS,
         default='AUTO',
         update=_on_format_override_change,
@@ -109,7 +109,7 @@ class TextureSynthNode(bpy.types.Node):
 
     absolute_depth: bpy.props.EnumProperty(
         name="Bit Depth",
-        description="Forced bit depth when Depth Mode is Absolute",
+        description="Bit depth when mode is Absolute",
         items=ABSOLUTE_DEPTH_ITEMS,
         default='F16',
         update=_on_format_override_change,
