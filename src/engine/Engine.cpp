@@ -403,6 +403,11 @@ uint64_t Engine::set_graph(const Graph& graph) {
         return 0;
     }
 
+    // SD-style depth inheritance: stamp the graph default (from sidebar)
+    // and resolve each node's depth before fusion compiles.
+    ir_result.ir.graph_default_depth = graph_default_depth_;
+    resolve_node_depths(ir_result.ir);
+
     auto compile_result = FusedGraphCompiler::compile(ir_result.ir, node_lib_, ir_result.ir.output_node);
     if (!compile_result.success) {
         set_error_(EngineErrorCode::GraphCompile, compile_result.error,

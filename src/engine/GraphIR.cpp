@@ -219,6 +219,8 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         vn.id       = n.id;
         vn.type_id  = n.type_id;
         vn.format_override = n.format_override;
+        vn.depth_mode      = n.depth_mode;
+        vn.absolute_depth  = n.absolute_depth;
         // Prefer user-supplied debug_name (Phase 1d); fall back to "type_id_id"
         vn.debug_name = n.debug_name.empty()
                       ? (n.type_id + "_" + std::to_string(n.id))
@@ -282,6 +284,39 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
 
     result.success = true;
     return result;
+}
+
+
+// SD-style depth inheritance resolution. Walks eval_order so MatchInput
+// can read the upstream node's already-resolved depth. Called by the
+// engine after it stamps graph_default_depth onto the IR.
+void resolve_node_depths(GraphIR& ir) {
+    for (NodeId nid : ir.eval_order) {
+        auto it = ir.node_index.find(nid);
+        if (it == ir.node_index.end()) continue;
+        ValidatedNode& vn = ir.nodes[it->second];
+        switch (vn.depth_mode) {
+            case DepthMode::Absolute:
+                vn.resolved_depth = vn.absolute_depth;
+                break;
+            case DepthMode::MatchInput: {
+                BitDepth picked = ir.graph_default_depth;
+                for (const auto& c : ir.connections) {
+                    if (c.dst_node != nid) continue;
+                    if (auto* src = ir.find(c.src_node)) {
+                        picked = src->resolved_depth;
+                    }
+                    break;
+                }
+                vn.resolved_depth = picked;
+                break;
+            }
+            case DepthMode::Auto:
+            default:
+                vn.resolved_depth = ir.graph_default_depth;
+                break;
+        }
+    }
 }
 
 

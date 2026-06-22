@@ -139,9 +139,9 @@ public:
     int total_param_floats() const { return total_param_floats_; }
 
     void set_precision(int mode) {
-        if (mode == 0)      texture_format_ = VK_FORMAT_R8G8B8A8_UNORM;
-        else if (mode == 1) texture_format_ = VK_FORMAT_R16G16B16A16_SFLOAT;
-        else                texture_format_ = VK_FORMAT_R32G32B32A32_SFLOAT;
+        if (mode == 0) { texture_format_ = VK_FORMAT_R8G8B8A8_UNORM;  graph_default_depth_ = BitDepth::F8;  }
+        else if (mode == 1) { texture_format_ = VK_FORMAT_R16G16B16A16_SFLOAT; graph_default_depth_ = BitDepth::F16; }
+        else { texture_format_ = VK_FORMAT_R32G32B32A32_SFLOAT; graph_default_depth_ = BitDepth::F32; }
     }
     int precision() const {
         if (texture_format_ == VK_FORMAT_R8G8B8A8_UNORM)      return 0;
@@ -149,6 +149,15 @@ public:
         return 2;
     }
     VkFormat texture_format() const { return texture_format_; }
+
+    // SD-style graph default depth. Sidebar "Precision" maps here; nodes
+    // with depth_mode == Auto inherit this during GraphIR resolution.
+    void set_graph_default_depth(BitDepth d) {
+        graph_default_depth_ = d;
+        // Keep texture_format_ in sync for legacy code paths.
+        texture_format_ = storage_format_to_vk(StorageFormat{ChannelFormat::RGBA, d});
+    }
+    BitDepth graph_default_depth() const noexcept { return graph_default_depth_; }
 
     void set_resolution(uint32_t w, uint32_t h) {
         if (output_w_ == w && output_h_ == h) return;
@@ -375,6 +384,7 @@ private:
     VkSampler sampler_clamp_  = VK_NULL_HANDLE;
     VkSampler sampler_mirror_ = VK_NULL_HANDLE;
     VkFormat  texture_format_ = VK_FORMAT_R32G32B32A32_SFLOAT;
+    BitDepth  graph_default_depth_ = BitDepth::F16;
 
     std::atomic<bool> any_pass_dirty_{true};
 

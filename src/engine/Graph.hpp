@@ -43,16 +43,44 @@ struct ResourceUUIDHash {
 // GraphCompiler can bounds-check without pulling in Engine.hpp.
 constexpr uint32_t MAX_NODE_PARAMS = 8192;
 enum class SocketType { Float, Vec4, Sampler2D };
-enum class ChannelFormat { Mono, UV, RGB, RGBA, ID, Metadata };
 
+// Channel count -- what gets stored. Orthogonal to BitDepth.
+// ID/Metadata are special-purpose and ignore BitDepth (see storage_format_to_vk).
+enum class ChannelFormat : uint8_t { Mono, UV, RGB, RGBA, ID, Metadata };
 
+// Bit depth -- how precise each channel is. The second axis of the format
+// system (Substance Designer model). F8=unorm, F16/F32=float.
+enum class BitDepth : uint8_t { F8, F16, F32 };
+
+// How a node's bit depth is chosen -- inheritance mode (SD-style).
+enum class DepthMode : uint8_t {
+    Auto,        // graph default depth (from sidebar)
+    MatchInput,  // upstream node's resolved depth
+    Absolute,    // node.absolute_depth
+};
+
+// Full storage format descriptor. Channels and depth are independent axes;
+// the full cross-product (Mono@F32, RGB@F8, etc.) is legal.
+struct StorageFormat {
+    ChannelFormat channels = ChannelFormat::RGBA;
+    BitDepth      depth    = BitDepth::F16;
+
+    bool operator==(const StorageFormat&) const = default;
+};
+
+// Resolve a StorageFormat to a concrete VkFormat. ID -> R32_UINT, Metadata -> RGBA32F.
+VkFormat storage_format_to_vk(StorageFormat fmt);
+// Bytes per pixel for budget checks.
+uint32_t storage_format_bytes(StorageFormat fmt);
+// GLSL storage image layout qualifier matching storage_format_to_vk exactly
+// (e.g. "r8", "r16_sfloat", "rgba32f"). Eliminates the old bug where the
+// shader declared r32f but the image was allocated as R16_SFLOAT.
+std::string storage_format_glsl_qualifier(StorageFormat fmt);
+
+// Deprecated shim -- calls storage_format_to_vk at fixed F16 depth.
+// New code should pass StorageFormat. Kept during incremental migration.
 inline VkFormat channel_to_vk_format(ChannelFormat fmt) {
-    if (fmt == ChannelFormat::Mono)      return VK_FORMAT_R16_SFLOAT;
-    if (fmt == ChannelFormat::UV)        return VK_FORMAT_R16G16_SFLOAT;
-    if (fmt == ChannelFormat::RGB)       return VK_FORMAT_R16G16B16A16_SFLOAT;
-    if (fmt == ChannelFormat::RGBA)      return VK_FORMAT_R16G16B16A16_SFLOAT;
-    if (fmt == ChannelFormat::ID)        return VK_FORMAT_R32_UINT;
-    return VK_FORMAT_R16G16B16A16_SFLOAT;
+    return storage_format_to_vk(StorageFormat{fmt, BitDepth::F16});
 }
 
 
@@ -139,6 +167,10 @@ struct NodeInstance {
     //              "turned off" without removing the node.
     bool muted    = false;
     bool bypassed = false;
+    // SD-style depth inheritance. Appended last to preserve aggregate-init
+    // ordering for existing test/code sites using {id, type, fmt, name, m, b}.
+    DepthMode depth_mode   = DepthMode::Auto;
+    BitDepth  absolute_depth = BitDepth::F16;
 };
 
 
