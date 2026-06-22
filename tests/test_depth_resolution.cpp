@@ -322,11 +322,12 @@ TEST(DepthResolution, MixedDepthsAcrossGraph) {
 
     g.connections.push_back({1, 0, 4, 0});
     g.connections.push_back({2, 0, 4, 1});
+    g.connections.push_back({3, 0, 4, 1});  // connect s3 so it's reachable
     g.output_node = 4;
 
     auto ir = resolve(g, BitDepth::F16);
     EXPECT_EQ(find_node(ir, 1)->resolved_depth, BitDepth::F16);  // Auto
     EXPECT_EQ(find_node(ir, 2)->resolved_depth, BitDepth::F8);   // Absolute
-    EXPECT_EQ(find_node(ir, 3)->resolved_depth, BitDepth::F32);  // Absolute (not connected to output)
+    EXPECT_EQ(find_node(ir, 3)->resolved_depth, BitDepth::F32);  // Absolute
     EXPECT_EQ(find_node(ir, 4)->resolved_depth, BitDepth::F16);  // Auto
 }
