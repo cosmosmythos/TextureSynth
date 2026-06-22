@@ -11,20 +11,23 @@
 namespace te {
 
 // Build a ShaderVariantKey for a node pass.
-// Keyed by: (node_type, input_count, param_socket_mask, format_override).
+// Keyed by: (node_type, input_count, param_socket_mask, format_override, depth).
 //
 // feature_flags layout (32 bits):
 //   bits  0..2  : ChannelFormat enum (Mono=0, UV=1, RGB=2, RGBA=3, ID=4, Metadata=5)
-//   bits  3..   : reserved for future flags (use_mask, hq, etc. — none defined yet)
+//   bits  3..4  : BitDepth enum (F8=0, F16=1, F32=2) — affects storage layout qualifier
+//   bits  5..   : reserved for future flags
 //
-// Why format_override is here: nodes with different output formats emit different
-// GLSL (e.g. Perlin-mono returns vec4(n,n,n,1), Perlin-UV returns vec4(grad*0.5+0.5,0,1)).
-// Keying on format means each variant gets its own .spv in ShaderCache, and the
-// driver can specialize the math (no uniform branching).
+// Why format_override+depth are here: nodes with different output formats emit
+// different GLSL (e.g. Perlin-mono returns vec4(n,n,n,1), Perlin-UV returns
+// vec4(grad*0.5+0.5,0,1)). The depth changes the imageStore layout qualifier
+// (rgba32f vs rgba16f vs rgba8). Keying on both means each variant gets its
+// own .spv in ShaderCache with the right storage format baked in.
 static ShaderVariantKey build_variant_key(const NodeType& type,
                                            uint32_t input_count,
                                            uint32_t param_socket_count,
-                                           ChannelFormat format) {
+                                           ChannelFormat format,
+                                           BitDepth depth) {
 
     ShaderVariantKey key;
     key.node_type_id   = type.id;
@@ -40,10 +43,9 @@ static ShaderVariantKey build_variant_key(const NodeType& type,
     }
     key.param_socket_mask = mask;
 
-    // Pack format_override into the low 3 bits of feature_flags.
-    // Cast through uint32_t so the static_cast below is well-defined.
-    const uint32_t fmt_bits = static_cast<uint32_t>(format) & 0x7u;
-    key.feature_flags = fmt_bits;
+    const uint32_t fmt_bits   = static_cast<uint32_t>(format) & 0x7u;
+    const uint32_t depth_bits = static_cast<uint32_t>(depth) & 0x3u;
+    key.feature_flags = fmt_bits | (depth_bits << 3);
 
     return key;
 }
@@ -71,10 +73,12 @@ std::string emit_node_shader(const ValidatedNode& vn,
 
     // ── Bindless set 0 (forever-bound) ─────────────────────────────
     s << "layout(set = 0, binding = 0) uniform texture2D u_sampled[];\n";
-    const char* storage_fmt = "rgba32f";
-    if (format == ChannelFormat::Mono)      storage_fmt = "r32f";
-    else if (format == ChannelFormat::UV)   storage_fmt = "rg32f";
-    s << "layout(set = 0, binding = 1, " << storage_fmt << ") writeonly uniform image2D u_storage[];\n";
+    // Storage layout qualifier MUST match the VkFormat used by ResourceManager
+    // to allocate this node's image (Vulkan validation requires exact match).
+    // The resolved depth comes from SD-style inheritance (Auto/MatchInput/Absolute).
+    const StorageFormat node_sf{format, vn.resolved_depth};
+    s << "layout(set = 0, binding = 1, " << storage_format_glsl_qualifier(node_sf)
+      << ") writeonly uniform image2D u_storage[];\n";
     s << "layout(set = 0, binding = 2) uniform sampler samp_repeat;\n";
     s << "layout(set = 0, binding = 3) uniform sampler samp_clamp;\n";
     s << "layout(set = 0, binding = 4) uniform sampler samp_mirror;\n";
@@ -310,10 +314,12 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     
         if (pass.kind == PassKind::Compute) {
             // Build variant key BEFORE emitting GLSL — cache lookup uses this.
-            // format_override flows from ValidatedNode (set from NodeInstance
-            // by validate_graph) into the cache key so each format gets its
-            // own .spv. See build_variant_key for the encoding.
-            pass.variant_key = build_variant_key(*type, total_slots, param_socket_count, inst->format_override);
+            // format_override + resolved_depth flow from ValidatedNode (set
+            // from NodeInstance by validate_graph, depth resolved by
+            // resolve_node_depths) into the cache key so each variant gets
+            // its own .spv. See build_variant_key for the encoding.
+            pass.variant_key = build_variant_key(*type, total_slots, param_socket_count,
+                                                 inst->format_override, inst->resolved_depth);
             pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots, inst->format_override, pass.input_resources);
         }
         pass.input_socket_count = total_slots;

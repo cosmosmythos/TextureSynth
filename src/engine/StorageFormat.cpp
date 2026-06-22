@@ -74,7 +74,10 @@ uint32_t storage_format_bytes(StorageFormat fmt) {
 }
 
 std::string storage_format_glsl_qualifier(StorageFormat fmt) {
-    // Must match storage_format_to_vk exactly (Vulkan validation requires this).
+    // GLSL image2D format qualifiers — NOT the same spelling as VkFormat names.
+    // VkFormat uses _SFLOAT suffix (R16G16B16A16_SFLOAT); GLSL uses just 'f'
+    // (rgba16f). The mapping below must produce the Vulkan-spec image format
+    // qualifier matching storage_format_to_vk (validation layer enforces this).
     switch (fmt.channels) {
         case ChannelFormat::ID:       return "r32ui";
         case ChannelFormat::Metadata: return "rgba32f";
@@ -89,9 +92,9 @@ std::string storage_format_glsl_qualifier(StorageFormat fmt) {
             }
         case BitDepth::F16:
             switch (fmt.channels) {
-                case ChannelFormat::Mono: return "r16_sfloat";
-                case ChannelFormat::UV:   return "rg16_sfloat";
-                default:                  return "rgba16_sfloat";
+                case ChannelFormat::Mono: return "r16f";
+                case ChannelFormat::UV:   return "rg16f";
+                default:                  return "rgba16f";
             }
         case BitDepth::F32:
             switch (fmt.channels) {
@@ -100,7 +103,7 @@ std::string storage_format_glsl_qualifier(StorageFormat fmt) {
                 default:                  return "rgba32f";
             }
     }
-    return "rgba16_sfloat";
+    return "rgba16f";
 }
 
 } // namespace te

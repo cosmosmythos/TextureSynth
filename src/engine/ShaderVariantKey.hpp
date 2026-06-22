@@ -58,8 +58,9 @@ struct ShaderVariantKey {
         for (uint32_t i = 0; i < specialization_count && i < 8; ++i) {
             mix(specialization[i]);
         }
-        mix(uint64_t{4}); // epoch: 1=initial, 2=legacy, 3=format_override,
-                          //          4=specialization fields present
+        mix(uint64_t{5}); // epoch: 1=initial, 2=legacy, 3=format_override,
+                          //          4=specialization fields present,
+                          //          5=resolved_depth in storage layout qualifier
         return h;
     }
 };

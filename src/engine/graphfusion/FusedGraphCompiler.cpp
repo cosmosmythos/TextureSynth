@@ -13,10 +13,12 @@ namespace te {
 namespace {
 
 // Build a ShaderVariantKey for a single-node pass (same as GraphCompiler).
+// feature_flags: bits 0..2 = ChannelFormat, bits 3..4 = BitDepth.
 ShaderVariantKey build_variant_key(const NodeType& type,
                                    uint32_t input_count,
                                    uint32_t param_socket_count,
-                                   ChannelFormat format) {
+                                   ChannelFormat format,
+                                   BitDepth depth) {
     ShaderVariantKey key;
     key.node_type_id = type.id;
     key.input_count = input_count;
@@ -27,11 +29,16 @@ ShaderVariantKey build_variant_key(const NodeType& type,
             mask |= (1u << i);
     }
     key.param_socket_mask = mask;
-    key.feature_flags = static_cast<uint32_t>(format) & 0x7u;
+    const uint32_t fmt_bits   = static_cast<uint32_t>(format) & 0x7u;
+    const uint32_t depth_bits = static_cast<uint32_t>(depth)  & 0x3u;
+    key.feature_flags = fmt_bits | (depth_bits << 3);
     return key;
 }
 
 // Build a FusedVariantKey for a chain (fused shader cache lookup).
+// Per-node packing in feature_flags: 3 bits format_override + 2 bits depth
+// = 5 bits per node. A 32-bit word holds 6 nodes; longer chains wrap onto
+// additional implicit bits via OR-folding (matches the original design).
 FusedVariantKey build_fused_key(const Chain& chain,
                                 const GraphIR& ir,
                                 const NodeLibrary& lib) {
@@ -52,6 +59,8 @@ FusedVariantKey build_fused_key(const Chain& chain,
         if (inst) {
             feature |= (static_cast<uint32_t>(inst->format_override) & 0x7u) << shift;
             shift += 3;
+            feature |= (static_cast<uint32_t>(inst->resolved_depth) & 0x3u) << shift;
+            shift += 2;
         }
     }
     k.feature_flags = feature;
@@ -116,7 +125,8 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             pass.input_formats.push_back(inp.format);
 
         if (pass.kind == PassKind::Compute) {
-            pass.variant_key = build_variant_key(*type, total_slots, param_socket_count, inst->format_override);
+            pass.variant_key = build_variant_key(*type, total_slots, param_socket_count,
+                                                 inst->format_override, inst->resolved_depth);
             pass.shader_glsl = ""; // per-node shader not emitted here; chain shader replaces it
         }
         pass.input_socket_count = total_slots;

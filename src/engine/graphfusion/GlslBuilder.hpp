@@ -146,10 +146,8 @@ private:
     bool main_started_ = false;
 };
 
-inline std::string compute_header(ChannelFormat fmt = ChannelFormat::RGBA) {
-    const char* storage_fmt = "rgba32f";
-    if (fmt == ChannelFormat::Mono)      storage_fmt = "r32f";
-    else if (fmt == ChannelFormat::UV)   storage_fmt = "rg32f";
+inline std::string compute_header(StorageFormat sf) {
+    std::string storage_fmt = storage_format_glsl_qualifier(sf);
     return "#version 460\n"
 R"(
 #extension GL_EXT_nonuniform_qualifier : require
@@ -191,11 +189,18 @@ vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
 )";
 }
 
+// Deprecated shim: preserves old behavior (F32 qualifier regardless of depth).
+// New callers should pass StorageFormat explicitly so shader and image formats match.
+inline std::string compute_header(ChannelFormat fmt = ChannelFormat::RGBA) {
+    return compute_header(StorageFormat{fmt, BitDepth::F32});
+}
+
 inline std::string format_helpers() {
     return R"(
 vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
 vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
 vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+vec4 _fmt_rgba(vec4 v) { return v; }
 vec4 _fmt_id(vec4 v) { return v; }
 vec4 _fmt_metadata(vec4 v) { return v; }
 )";

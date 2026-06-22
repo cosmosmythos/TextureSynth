@@ -96,7 +96,7 @@ Deploy only the files you changed — no blanket `Copy-Item -Recurse -Force` of 
 ### Still off-limits (NEVER touch in the install folder)
 
 - `blender_manifest.toml` — edit in `ADDON/` only.
-- `wheels/` and any `.pyd` / `.so` binaries — GitHub CI ships these, never copy manually.
+- `wheels/` and any `.pyd` / `.so` binaries — **NEVER copy a locally-built .pyd to the install folder.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable. Local .pyd copies bypass CI validation and cause silent breakage.
 - `core/` C++ binding sources — rebuild via `build_fast.bat`, do not hand-edit.
 
 ### Trigger

@@ -67,15 +67,18 @@ FusedResult emit_fused_subgraph(
 
     const ConnByDst conns = index_connections(ir);
 
-    ChannelFormat tail_fmt = ChannelFormat::RGBA;
+    StorageFormat tail_sf{ChannelFormat::RGBA, BitDepth::F16};
     {
         NodeId tail_id = path.nodes.back();
         const auto* tail_inst = ir.find(tail_id);
-        if (tail_inst) tail_fmt = tail_inst->format_override;
+        if (tail_inst) {
+            tail_sf.channels = tail_inst->format_override;
+            tail_sf.depth    = tail_inst->resolved_depth;
+        }
     }
 
     glsl::GlslBuilder builder;
-    builder.add_header(glsl::compute_header(tail_fmt));
+    builder.add_header(glsl::compute_header(tail_sf));
     builder.add_function(glsl::format_helpers());
 
     std::unordered_set<std::string> emitted_funcs;

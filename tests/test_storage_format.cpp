@@ -48,14 +48,18 @@ TEST(StorageFormat, BytesPerPixel) {
 
 // GLSL qualifier MUST match VkFormat exactly -- this is the root-cause fix
 // for the old bug where shader declared "r32f" but image was R16_SFLOAT.
+// Note: GLSL uses 'f' suffix (rgba16f), not VkFormat's _SFLOAT spelling.
 TEST(StorageFormat, GlslQualifierMatchesVkFormat) {
-    // Sample a few critical combos -- the ones that were broken before.
-    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::Mono, BitDepth::F16}), "r16_sfloat");
+    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::Mono, BitDepth::F16}), "r16f");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::Mono, BitDepth::F32}), "r32f");
-    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::UV,   BitDepth::F16}), "rg16_sfloat");
+    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::UV,   BitDepth::F16}), "rg16f");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGBA, BitDepth::F8}),  "rgba8");
+    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGBA, BitDepth::F16}), "rgba16f");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGBA, BitDepth::F32}), "rgba32f");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::ID,   BitDepth::F32}), "r32ui");
+    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::Mono, BitDepth::F8}), "r8");
+    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::UV,   BitDepth::F8}), "rg8");
+    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGB,  BitDepth::F16}), "rgba16f");
 }
 
 // Deprecated shim still works for migration period.

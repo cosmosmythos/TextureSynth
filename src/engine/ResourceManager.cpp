@@ -12,18 +12,25 @@ namespace te {
 constexpr uint32_t RETIRE_FRAMES = 4; // MAX_FRAMES_IN_FLIGHT + safety
 
 
-static VkFormat resolve_node_format(ChannelFormat override_format,
-                                    const NodeLibrary& lib,
-                                    const std::string& type_id,
-                                    VkFormat default_format) {
-	if (override_format != ChannelFormat::RGBA) {
-		return channel_to_vk_format(override_format);
-	}
-	auto* type = lib.find(type_id);
-	if (type && !type->outputs.empty()) {
-		return channel_to_vk_format(type->outputs[0].format);
-	}
-	return default_format;
+// Resolve a node's StorageFormat from its validated state.
+// Channels: from format_override, else from the specific output socket's
+//           declared format in the node manifest, else RGBA.
+// Depth:    from vn.resolved_depth (set by resolve_node_depths via SD-style
+//           inheritance -- Auto/MatchInput/Absolute).
+static StorageFormat resolve_node_storage(const ValidatedNode& vn,
+                                          const NodeLibrary& lib,
+                                          uint32_t output_index = 0) {
+    ChannelFormat ch = vn.format_override;
+    auto* type = lib.find(vn.type_id);
+    if (type && output_index < type->outputs.size()
+        && type->outputs[output_index].format != ChannelFormat::RGBA) {
+        ch = type->outputs[output_index].format;
+    } else if (ch == ChannelFormat::RGBA) {
+        if (type && !type->outputs.empty()) {
+            ch = type->outputs[0].format;
+        }
+    }
+    return StorageFormat{ch, vn.resolved_depth};
 }
 
 
@@ -151,8 +158,8 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         for (uint32_t output_id = 0; output_id < num_outputs; ++output_id) {
             ResourceUUID rid{vn.id, output_id};
             if (active_resources && !active_resources->count(rid)) continue;
-            VkFormat fmt = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
-            total += (size_t)width * height * pixel_bytes_(fmt);
+            total += (size_t)width * height
+                   * storage_format_bytes(resolve_node_storage(vn, lib, output_id));
         }
     }
     if (total > budget_bytes_) {
@@ -180,12 +187,8 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         for (uint32_t output_id = 0; output_id < num_outputs; ++output_id) {
             ResourceUUID rid{vn.id, output_id};
             if (active_resources && !active_resources->count(rid)) continue;
-            VkFormat fmt = default_format;
-            if (output_id < type->outputs.size()) {
-                fmt = resolve_node_format(vn.format_override, lib, vn.type_id, default_format);
-                if (type->outputs[output_id].format != ChannelFormat::RGBA)
-                    fmt = channel_to_vk_format(type->outputs[output_id].format);
-            }
+            const StorageFormat sf = resolve_node_storage(vn, lib, output_id);
+            const VkFormat fmt = storage_format_to_vk(sf);
             uint32_t cc = 0;
             if (color_classes) {
                 auto cit = color_classes->find(rid);
@@ -401,10 +404,9 @@ bool ResourceManager::allocate_for_preview(VulkanContext& ctx,
     const auto* vn = ir.find(output_rid.node_id);
     const auto* type = vn ? lib.find(vn->type_id) : nullptr;
     VkFormat fmt = default_format;
-    if (type && !type->outputs.empty()) {
-        fmt = resolve_node_format(vn->format_override, lib, vn->type_id, default_format);
-        if (type->outputs[0].format != ChannelFormat::RGBA)
-            fmt = channel_to_vk_format(type->outputs[0].format);
+    if (vn) {
+        const StorageFormat sf = resolve_node_storage(*vn, lib, output_rid.output_index);
+        fmt = storage_format_to_vk(sf);
     }
 
     NodeResource r;

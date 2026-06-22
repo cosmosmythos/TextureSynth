@@ -5,7 +5,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform texture2D u_sampled[];
-layout(set = 0, binding = 1, rgba32f) writeonly uniform image2D u_storage[];
+layout(set = 0, binding = 1, rgba16_sfloat) writeonly uniform image2D u_storage[];
 
 layout(set = 0, binding = 2) uniform sampler samp_repeat;
 layout(set = 0, binding = 3) uniform sampler samp_clamp;
@@ -43,6 +43,7 @@ vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
 vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
 vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
 vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+vec4 _fmt_rgba(vec4 v) { return v; }
 vec4 _fmt_id(vec4 v) { return v; }
 vec4 _fmt_metadata(vec4 v) { return v; }
 
