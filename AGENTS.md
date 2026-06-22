@@ -80,16 +80,15 @@ A complete Blender 4.2+ extension exists at `ADDON/` in the repo root.
 ## 4. Installed Extension Folder: Standing Deploy Exception
 **Install root:** `%APPDATA%\Blender Foundation\Blender\5.0\extensions\user_default\texturesynth\`
 
-After editing non-C++ files in the repo, **deploy to the install folder automatically** so the user can manually test in Blender fast. No need to ask each time.
+After editing `.py` files in `ADDON/`, **copy only the changed `.py` files** to the install folder automatically so the user can manually test in Blender fast. No need to ask each time.
 
 ### What auto-deploys (overwrite install copy from repo source)
 
 | Repo source (edit here) | Install destination (copy here) |
 |---|---|
 | `ADDON/**/*.py` | `<install>/**/*.py` (mirror path under install root) |
-| `shader_assets/glsl/**` | `<install>/shader_assets/glsl/**` |
-| `shader_assets/nodes/*.glsl` | `<install>/shader_assets/nodes/*.glsl` |
-| `shader_assets/nodes/*.node.json` | `<install>/shader_assets/nodes/*.node.json` |
+
+**Only `.py` files.** Do NOT deploy `.pyd`, `.so`, `.glsl`, `.node.json`, `.toml`, or any other file type.
 
 Deploy only the files you changed — no blanket `Copy-Item -Recurse -Force` of whole folders.
 
@@ -98,16 +97,17 @@ Deploy only the files you changed — no blanket `Copy-Item -Recurse -Force` of 
 - `blender_manifest.toml` — edit in `ADDON/` only.
 - `wheels/` and any `.pyd` / `.so` binaries — **NEVER copy a locally-built .pyd to the install folder.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable. Local .pyd copies bypass CI validation and cause silent breakage.
 - `core/` C++ binding sources — rebuild via `build_fast.bat`, do not hand-edit.
+- `shader_assets/` — GLSL and JSON node manifests live in the repo; the engine loads them at init. Do not copy them to the install folder.
 
 ### Trigger
 
-Run the deploy when a non-C++ edit to `ADDON/`, `shader_assets/glsl/`, or `shader_assets/nodes/` is committed. State what was copied in the reply.
+Run the deploy when a `.py` edit to `ADDON/` is made. State what was copied in the reply.
 
-**Implementation:** the `blender-addon` OpenCode skill (`.opencode/skills/blender-addon/`) owns the deploy script and authoritative allow/deny lists. Invoke it via:
-```bash
-bash .opencode/skills/blender-addon/deploy.sh <repo-relative-files...>
+**Implementation:** on Windows, use PowerShell:
+```powershell
+Copy-Item "ADDON\<path>.py" "$env:APPDATA\Blender Foundation\Blender\5.0\extensions\user_default\texturesynth\<path>.py" -Force
 ```
-The scope/extension guards above are enforced by the script. Section 4 and the skill are kept in sync -- do not weaken one without updating the other.
+On bash-capable systems, the `blender-addon` OpenCode skill (`.opencode/skills/blender-addon/`) owns the deploy script. Section 4 and the skill are kept in sync — do not weaken one without updating the other.
 
 ---
 

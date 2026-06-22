@@ -23,7 +23,7 @@ The distributable Blender extension (`id = "texturesynth"`, `blender_manifest.to
   6. `evaluation.register()` (start timer — must be last, after all node classes exist)
   Unregister is the strict reverse.
 - **Never create `src/texturesynth_addon/` or `src/blender_addon/`** (root §3). This `ADDON/` is the only addon source.
-- **Installed extension folder is off-limits** (root §4): do not write to `%APPDATA%\Blender Foundation\...\extensions\user_default\texturesynth\`. Edit here; user deploys manually.
+- **Installed extension folder**: edit `.py` files in `ADDON/` here; the agent auto-deploys changed `.py` files to the install folder (root §4).
 - **Stable IDs**: `engine_bridge.py` uses `stable_id()` so graph identity survives Blender node reordering/invalidation. Do not use Blender's unstable pointer/index as the engine `NodeId`.
 - **Specialized node contract** (`nodes/specialized/__init__.py`): each module may export `SV_TYPE`, `NODE_CLASS`, `SOCKET_CLASSES`, `PROPERTY_GROUPS`. PropertyGroups MUST register before classes that reference them (root §5 gotcha). The factory skips any `sv_type` in `specialized_sv_types()`.
 - **Mute rewiring** (root §5 gotcha): `resolve_muted_source()` must search ALL inputs, not just `input[0]`, because control inputs (mask/gain) sit at socket 0.
