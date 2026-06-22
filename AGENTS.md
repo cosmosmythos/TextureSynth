@@ -262,6 +262,7 @@ TextureSynth is a node-based Vulkan procedural-texture engine with a Python/Blen
 | [`ADDON/AGENTS.md`](ADDON/AGENTS.md) | Blender 4.3+ extension (`ADDON/`): register order, nodes/operators/panels, engine bridge | `cpp_module` loads `.pyd` from wheel; never create `src/*_addon/` |
 | [`shader_assets/AGENTS.md`](shader_assets/AGENTS.md) | Node manifests (`*.node.json`), GLSL node fns, common GLSL | Every node GLSL follows the `vec4 node_<name>(vec2 uv, ...)` signature contract |
 | [`tests/AGENTS.md`](tests/AGENTS.md) | C++ gtest suite + Python pytest suite against the binding | C++ tests need `-DBUILD_TESTS:BOOL=ON`; Python tests skip if Vulkan init fails |
+| [`DEV_LOG/AGENTS.md`](DEV_LOG/AGENTS.md) | User's dev journal: roadmaps, feature plans, architecture notes | Read-only for agents; no verification |
 
 Hierarchy:
 ```
@@ -272,7 +273,8 @@ AGENTS.md  (this file — global rules: cache, style, gotchas, DOX)
 │       └── src/engine/register_allocation/AGENTS.md
 ├── ADDON/AGENTS.md
 ├── shader_assets/AGENTS.md
-└── tests/AGENTS.md
+├── tests/AGENTS.md
+└── DEV_LOG/AGENTS.md
 ```
 
 Cross-cutting artifacts that live at repo root (no dedicated doc — covered by root rules):

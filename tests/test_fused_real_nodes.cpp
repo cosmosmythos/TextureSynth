@@ -507,8 +507,11 @@ TEST_F(FusedRealNodesPixel, ColorConst_Blend_ConstantColor) {
 
     // Set color_const params: mode=0, r=0.5, g=0.5, b=0.5, a=1.0
     engine.update_node_params_by_id(1, {0.0f, 0.5f, 0.5f, 0.5f, 1.0f});
-    // Set blend params: mode=0 (mix)
-    engine.update_node_params_by_id(2, {0.0f});
+    // Set blend params: mode=0 (mix), mask=0 (passthrough A).
+    // mask must be explicit: before the seed_param_ssbo_defaults_ fix,
+    // mask was wrongly seeded to 0.0 by memset; now it's correctly
+    // seeded to 1.0 (manifest default). mask=0 forces passthrough of A.
+    engine.update_node_params_by_id(2, {0.0f, 0.0f});
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     engine.poll_pending_compiles();
 

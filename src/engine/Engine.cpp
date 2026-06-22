@@ -440,38 +440,8 @@ uint64_t Engine::set_graph(const Graph& graph) {
     param_base_slot_     = std::move(compile_result.param_base_slot);
     total_param_floats_  = compile_result.total_param_floats;
 
-    for (uint32_t i = 0; i < PARAM_RING; ++i) {
-        if (param_mapped_[i]) {
-            std::memset(param_mapped_[i], 0, MAX_NODE_PARAMS * sizeof(float));
-            vmaFlushAllocation(ctx_.allocator(), param_alloc_[i], 0, VK_WHOLE_SIZE);
-        }
-    }
-    // Seed param SSBOs with manifest defaults so nodes render correctly
-    for (uint32_t ring = 0; ring < PARAM_RING; ++ring) {
-        auto* dst = static_cast<float*>(param_mapped_[ring]);
-        if (!dst) continue;
-
-        for (const auto& vn : current_ir_.nodes) {
-            auto bit = param_base_slot_.find(vn.id);
-            if (bit == param_base_slot_.end()) continue;
-
-            const auto* type = node_lib_.find(vn.type_id);
-            if (!type) continue;
-
-            const int base = bit->second;
-            for (size_t i = 0; i < type->params.size(); ++i) {
-                const int slot = base + static_cast<int>(i);
-                if (slot >= 0 && slot < static_cast<int>(MAX_NODE_PARAMS)) {
-                    float v = type->params[i].default_value;
-                    if (!std::isfinite(v)) v = 0.0f;
-                    dst[slot] = v;
-                }
-            }
-        }
-
-        vmaFlushAllocation(ctx_.allocator(), param_alloc_[ring], 0, VK_WHOLE_SIZE);
-    }
-    param_write_idx_ = 0;
+    // Seed param SSBOs with manifest defaults (params AND float-input defaults).
+    seed_param_ssbo_defaults_();
 
     const uint64_t gen = ++compile_generation_;
 

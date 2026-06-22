@@ -86,16 +86,17 @@ class TS_OT_connect_blend(bpy.types.Operator):
                 break
 
         if existing_link and to_socket:
-            # INSERT: a → blend → b (break the original link)
+            # INSERT: a → blend.A → b (break the original link)
+            # Blend socket order: [0]=Mask, [1]=A, [2]=B.
             t.links.remove(existing_link)
-            t.links.new(oa, blend.inputs[0])
+            t.links.new(oa, blend.inputs[1])
             t.links.new(blend.outputs[0], to_socket)
         else:
-            # MERGE: a + b → blend → Output
-            t.links.new(oa, blend.inputs[0])
+            # MERGE: a → blend.A, b → blend.B, blend → Output
+            t.links.new(oa, blend.inputs[1])
             ob = _first_output(b)
             if ob:
-                t.links.new(ob, blend.inputs[1])
+                t.links.new(ob, blend.inputs[2])
             out = next((n for n in t.nodes if n.bl_idname == 'TS_Output_Node'), None)
             if out:
                 isock = out.inputs[0]

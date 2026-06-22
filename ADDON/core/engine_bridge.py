@@ -503,8 +503,9 @@ def _params_signature(tree):
         if hasattr(node, 'get_named_parameters'):
             try:
                 kv = node.get_named_parameters()
-                parts.append((nid, tuple(sorted(kv.items()))))
-                continue
+                if kv is not None:
+                    parts.append((nid, tuple(sorted(kv.items()))))
+                    continue
             except Exception:
                 pass
         if hasattr(node, 'get_parameters'):
