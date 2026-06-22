@@ -264,13 +264,21 @@ def _build_graph_and_params(tree):
         if getattr(node, 'sv_type', None) is None:
             continue
         fmt_override = node.get_format_override() if hasattr(node, 'get_format_override') else None
-        
+        depth_mode = node.get_depth_mode() if hasattr(node, 'get_depth_mode') else None
+        abs_depth = node.get_absolute_depth() if hasattr(node, 'get_absolute_depth') else None
+        depth_kwargs = {}
+        if depth_mode is not None:
+            depth_kwargs['depth_mode'] = depth_mode
+        if abs_depth is not None:
+            depth_kwargs['absolute_depth'] = abs_depth
+
         # Pass name to engine for logging. Mute rewires connections in the engine.
         is_muted = bool(getattr(node, 'mute', False))
         graph.add_node(
             nid, node.sv_type, fmt_override, node.name,
             muted=is_muted,
             bypassed=False,
+            **depth_kwargs,
         )
 
     node_params = []
