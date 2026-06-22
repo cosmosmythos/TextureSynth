@@ -1,0 +1,56 @@
+[DIAG] submit() called gen=1 any_pass_dirty=1 has_presented=0 initialized=1
+[DIAG] PRE-COPY ring=0 dirty=1 blend_mode=0.000000 blend_mask=0.000000
+[DIAG] POST-COPY ring=1 blend_mode=0.000000 blend_mask=0.000000
+[DIAG] DISPATCH ORDER: 3 passes, 1 chains
+[DIAG]   pass[0] node=1 chain=0
+[DIAG]   pass[1] node=2 chain=0
+[DIAG]   pass[2] node=3 chain=0
+[DIAG] CHAIN dirty cid=0 tail_i=2 tail_has_final=1 final_node=3 final_out=0
+[DIAG] SSBO ring=1 base=0 [0]=8.000000 [1]=5.000000 [2]=2.000000 [3]=0.500000 [4]=0.000000 [5]=0.000000 [6]=43.000000 [7]=8.000000 [8]=5.000000 [9]=2.000000 [10]=0.500000 [11]=0.000000 [12]=99.000000 [13]=0.000000 [14]=0.000000 [15]=0.000000 [16]=0.000000 [17]=0.000000 [18]=0.000000 [19]=0.000000
+[DIAG] AFTER_DISPATCH final_pass_was_dirty=1 dispatch_count=1 output_w=512 output_h=512
+[DIAG] FINAL_BLIT final_res=1 was_dirty=1 output_w=512 output_h=512
+[DIAG] submit() dispatched ticket=1
+[DIAG] poll() ticket=1 gen=1 w=512 h=512 pixel[0]=0.22998 pixel[1]=0.145264 pixel[2]=0.229736 pixel[3]=0.215698
+[DIAG] stash_last_presented: w=512 h=512 pixel[0]=0.22998 size=1048576
+[DIAG] submit() called gen=1 any_pass_dirty=1 has_presented=1 initialized=1
+[DIAG] PRE-COPY ring=1 dirty=1 blend_mode=0.000000 blend_mask=1.000000
+[DIAG] POST-COPY ring=2 blend_mode=0.000000 blend_mask=1.000000
+[DIAG] DISPATCH ORDER: 3 passes, 1 chains
+[DIAG]   pass[0] node=1 chain=0
+[DIAG]   pass[1] node=2 chain=0
+[DIAG]   pass[2] node=3 chain=0
+[DIAG] CHAIN dirty cid=0 tail_i=2 tail_has_final=1 final_node=3 final_out=0
+[DIAG] SSBO ring=2 base=0 [0]=8.000000 [1]=5.000000 [2]=2.000000 [3]=0.500000 [4]=0.000000 [5]=0.000000 [6]=43.000000 [7]=8.000000 [8]=5.000000 [9]=2.000000 [10]=0.500000 [11]=0.000000 [12]=99.000000 [13]=0.000000 [14]=1.000000 [15]=0.000000 [16]=0.000000 [17]=0.000000 [18]=0.000000 [19]=0.000000
+[DIAG] AFTER_DISPATCH final_pass_was_dirty=1 dispatch_count=1 output_w=512 output_h=512
+[DIAG] FINAL_BLIT final_res=1 was_dirty=1 output_w=512 output_h=512
+[DIAG] submit() dispatched ticket=2
+[DIAG] poll() ticket=2 gen=1 w=512 h=512 pixel[0]=0.22998 pixel[1]=0.145264 pixel[2]=0.229736 pixel[3]=0.215698
+[DIAG] stash_last_presented: w=512 h=512 pixel[0]=0.22998 size=1048576
+[DIAG] submit() called gen=2 any_pass_dirty=1 has_presented=0 initialized=1
+[DIAG] PRE-COPY ring=0 dirty=1 blend_mode=0.000000 blend_mask=0.000000
+[DIAG] POST-COPY ring=1 blend_mode=0.000000 blend_mask=0.000000
+[DIAG] DISPATCH ORDER: 3 passes, 1 chains
+[DIAG]   pass[0] node=1 chain=0
+[DIAG]   pass[1] node=2 chain=0
+[DIAG]   pass[2] node=3 chain=0
+[DIAG] CHAIN dirty cid=0 tail_i=2 tail_has_final=1 final_node=3 final_out=0
+[DIAG] SSBO ring=1 base=0 [0]=8.000000 [1]=5.000000 [2]=2.000000 [3]=0.500000 [4]=0.000000 [5]=0.000000 [6]=43.000000 [7]=8.000000 [8]=5.000000 [9]=2.000000 [10]=0.500000 [11]=0.000000 [12]=99.000000 [13]=0.000000 [14]=0.000000 [15]=0.000000 [16]=0.000000 [17]=0.000000 [18]=0.000000 [19]=0.000000
+[DIAG] AFTER_DISPATCH final_pass_was_dirty=1 dispatch_count=1 output_w=512 output_h=512
+[DIAG] FINAL_BLIT final_res=1 was_dirty=1 output_w=512 output_h=512
+[DIAG] submit() dispatched ticket=3
+[DIAG] poll() ticket=3 gen=2 w=512 h=512 pixel[0]=0.22998 pixel[1]=0.145264 pixel[2]=0.229736 pixel[3]=0.215698
+[DIAG] stash_last_presented: w=512 h=512 pixel[0]=0.22998 size=1048576
+[DIAG] submit() called gen=2 any_pass_dirty=1 has_presented=1 initialized=1
+[DIAG] PRE-COPY ring=1 dirty=1 blend_mode=0.000000 blend_mask=1.000000
+[DIAG] POST-COPY ring=2 blend_mode=0.000000 blend_mask=1.000000
+[DIAG] DISPATCH ORDER: 3 passes, 1 chains
+[DIAG]   pass[0] node=1 chain=0
+[DIAG]   pass[1] node=2 chain=0
+[DIAG]   pass[2] node=3 chain=0
+[DIAG] CHAIN dirty cid=0 tail_i=2 tail_has_final=1 final_node=3 final_out=0
+[DIAG] SSBO ring=2 base=0 [0]=8.000000 [1]=5.000000 [2]=2.000000 [3]=0.500000 [4]=0.000000 [5]=0.000000 [6]=43.000000 [7]=8.000000 [8]=5.000000 [9]=2.000000 [10]=0.500000 [11]=0.000000 [12]=99.000000 [13]=0.000000 [14]=1.000000 [15]=0.000000 [16]=0.000000 [17]=0.000000 [18]=0.000000 [19]=0.000000
+[DIAG] AFTER_DISPATCH final_pass_was_dirty=1 dispatch_count=1 output_w=512 output_h=512
+[DIAG] FINAL_BLIT final_res=1 was_dirty=1 output_w=512 output_h=512
+[DIAG] submit() dispatched ticket=4
+[DIAG] poll() ticket=4 gen=2 w=512 h=512 pixel[0]=0.22998 pixel[1]=0.145264 pixel[2]=0.229736 pixel[3]=0.215698
+[DIAG] stash_last_presented: w=512 h=512 pixel[0]=0.22998 size=1048576

@@ -3,8 +3,14 @@
 #include "engine/Logging.hpp"
 #include <algorithm>
 #include <cstring>
+#include <fstream>
 
 namespace te {
+
+static void diag_file(const std::string& msg) {
+    std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
+    f << msg << "\n";
+}
 
 void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
                                     uint32_t gx, uint32_t gy, size_t chain_idx) {
@@ -64,6 +70,22 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
         ppc.out_storage_slots[t] = tail.out_storage_slots[t];
     ppc.param_ring_idx = param_write_idx_;
 
+    log_info("[DIAG] CHAIN DISPATCH ring=" + std::to_string(ppc.param_ring_idx)
+             + " base=" + std::to_string(ppc.param_base_slot));
+
+    // DIAG: dump all param SSBO values for the chain
+    {
+        auto* ring_ptr = static_cast<float*>(param_mapped_[ppc.param_ring_idx]);
+        if (ring_ptr) {
+            std::string msg = "[DIAG] SSBO ring=" + std::to_string(ppc.param_ring_idx)
+                + " base=" + std::to_string(ppc.param_base_slot);
+            for (uint32_t k = 0; k < 20; ++k) {
+                msg += " [" + std::to_string(k) + "]=" + std::to_string(ring_ptr[ppc.param_base_slot + k]);
+            }
+            diag_file(msg);
+        }
+    }
+
     // DIAG: print push constants for chains with external inputs
     {
         bool has_ext = false;
@@ -107,19 +129,61 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
 
 void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
     last_dispatch_count_ = 0;
-    if (passes_.empty()) return;
+    if (passes_.empty()) { diag_file("DIAG record_dispatch: passes_ empty, returning"); return; }
+
+    // DIAG: dump SSBO blend slots before ring copy
+    {
+        auto it3 = param_base_slot_.find(3);
+        if (it3 != param_base_slot_.end()) {
+            int base = it3->second;
+            float* src = static_cast<float*>(param_mapped_[param_write_idx_]);
+            diag_file("[DIAG] PRE-COPY ring=" + std::to_string(param_write_idx_)
+                     + " dirty=" + std::to_string(param_dirty_)
+                     + " blend_mode=" + std::to_string(src[base])
+                     + " blend_mask=" + std::to_string(src[base + 1]));
+        }
+    }
+
     if (param_dirty_) {
         const uint32_t next = (param_write_idx_ + 1) % PARAM_RING;
         std::memcpy(param_mapped_[next], param_mapped_[param_write_idx_], MAX_NODE_PARAMS * sizeof(float));
         vmaFlushAllocation(ctx_.allocator(), param_alloc_[next], 0, VK_WHOLE_SIZE);
+
+        // DIAG: verify ring copy
+        auto it3 = param_base_slot_.find(3);
+        if (it3 != param_base_slot_.end()) {
+            int base = it3->second;
+            float* dst = static_cast<float*>(param_mapped_[next]);
+            diag_file("[DIAG] POST-COPY ring=" + std::to_string(next)
+                     + " blend_mode=" + std::to_string(dst[base])
+                     + " blend_mask=" + std::to_string(dst[base + 1]));
+        }
+
         param_write_idx_ = next;
         param_dirty_ = false;
+
+        // Make host writes to param SSBO visible to compute shader reads.
+        // vmaFlushAllocation only flushes the CPU cache; a pipeline barrier
+        // is required to ensure the GPU sees the updated data.
+        {
+            VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_HOST_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            dep.memoryBarrierCount = 1;
+            dep.pMemoryBarriers    = &barrier;
+            vkCmdPipelineBarrier2(cmd, &dep);
+        }
+    } else {
+        diag_file("[DIAG] param_clean ring=" + std::to_string(param_write_idx_));
     }
 
     const uint32_t gx = (pc.resolution_x + 7) / 8;
     const uint32_t gy = (pc.resolution_y + 7) / 8;
     dirty_set_.propagate(downstream_adj_);
-    if (!dirty_set_.any()) return;
+    if (!dirty_set_.any()) { diag_file("[DIAG] early return: dirty_set_.any()=false"); return; }
 
     ts_pool_write_idx_ = param_write_idx_ % TIMESTAMP_POOL_COUNT;
     ts_query_idx_ = 1;
@@ -132,6 +196,10 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
     resolve_aliased_staleness_();
     record_barriers_(cmd, pc);
     bool final_pass_was_dirty = record_pass_dispatches_(cmd, pc, gx, gy);
+    diag_file("[DIAG] AFTER_DISPATCH final_pass_was_dirty=" + std::to_string(final_pass_was_dirty)
+             + " dispatch_count=" + std::to_string(last_dispatch_count_)
+             + " output_w=" + std::to_string(output_w_)
+             + " output_h=" + std::to_string(output_h_));
     record_final_blit_(cmd, pc, final_pass_was_dirty);
 }
 
@@ -208,13 +276,13 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
     {
         std::string msg = "[DIAG] DISPATCH ORDER: " + std::to_string(passes_.size())
             + " passes, " + std::to_string(chain_execs_.size()) + " chains";
-        log_info(msg);
+        diag_file(msg.c_str());
         for (size_t i = 0; i < passes_.size(); ++i) {
             const auto& pe = passes_[i];
             bool is_chain = (i < chain_id_of_pass_.size() && chain_id_of_pass_[i] != UINT32_MAX);
             uint32_t cid = is_chain ? chain_id_of_pass_[i] : UINT32_MAX;
-            log_info("[DIAG]   pass[" + std::to_string(i) + "] node=" + std::to_string(pe.node_id)
-                     + (is_chain ? (" chain=" + std::to_string(cid)) : " [solo]"));
+            diag_file(("[DIAG]   pass[" + std::to_string(i) + "] node=" + std::to_string(pe.node_id)
+                     + (is_chain ? (" chain=" + std::to_string(cid)) : " [solo]")).c_str());
         }
     }
 
@@ -226,17 +294,25 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
             ChainId cid = (ChainId)chain_id_of_pass_[i];
             if (!chain_dispatched[cid]) {
                 chain_dispatched[cid] = 1;
-                if (dirty_set_.is_chain_dirty(cid)) {
+                bool chain_dirty = dirty_set_.is_chain_dirty(cid);
+                if (chain_dirty) {
                     const size_t tail_i = chain_execs_[cid].tail_pass_index;
+                    bool tail_has_final = false;
                     if (tail_i < passes_.size()) {
                         const auto& tail_pe = passes_[tail_i];
-                        if (std::find(tail_pe.output_resources.begin(),
-                                      tail_pe.output_resources.end(),
-                                      final_output_resource_) != tail_pe.output_resources.end()) {
-                            final_pass_was_dirty = true;
-                        }
+                        tail_has_final = (std::find(tail_pe.output_resources.begin(),
+                                          tail_pe.output_resources.end(),
+                                          final_output_resource_) != tail_pe.output_resources.end());
                     }
+                    diag_file("[DIAG] CHAIN dirty cid=" + std::to_string(cid)
+                             + " tail_i=" + std::to_string(tail_i)
+                             + " tail_has_final=" + std::to_string(tail_has_final)
+                             + " final_node=" + std::to_string(final_output_resource_.node_id)
+                             + " final_out=" + std::to_string(final_output_resource_.output_index));
+                    if (tail_has_final) final_pass_was_dirty = true;
                     record_chain_dispatch_(cmd, pc, gx, gy, cid);
+                } else {
+                    diag_file("[DIAG] CHAIN clean cid=" + std::to_string(cid));
                 }
             }
             continue;
@@ -328,6 +404,10 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
 void Engine::record_final_blit_(VkCommandBuffer cmd, const PushConstants& pc,
                                 bool final_pass_was_dirty) {
     auto* final_res = resources_.get(final_output_resource_);
+    diag_file("[DIAG] FINAL_BLIT final_res=" + std::to_string(final_res != nullptr)
+             + " was_dirty=" + std::to_string(final_pass_was_dirty)
+             + " output_w=" + std::to_string(output_w_)
+             + " output_h=" + std::to_string(output_h_));
     if (!final_res || !final_pass_was_dirty) return;
 
     transition(cmd, final_res->image,

@@ -5,6 +5,7 @@
 #include "engine/Logging.hpp"
 #include <climits>
 #include <cstring>
+#include <fstream>
 #include <mutex>
 
 namespace te {
@@ -232,9 +233,20 @@ uint64_t AsyncReadback::publish_synthetic(const std::vector<float>& pixels, uint
 }
 
 uint64_t AsyncReadback::submit(VulkanContext& ctx, Engine& engine, const PushConstants& pc, uint64_t generation) {
+    {
+        std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
+        f << "[DIAG] submit() called gen=" << generation
+          << " any_pass_dirty=" << engine.any_pass_dirty()
+          << " has_presented=" << engine.has_presented_frame()
+          << " initialized=" << initialized_ << "\n";
+    }
     if (!initialized_) return 0;  // shut down or never initialised
     // ─── Short-circuit when nothing changed ───────────────────────────
     if (!engine.any_pass_dirty() && engine.has_presented_frame()) {
+        {
+            std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
+            f << "[DIAG] SHORT-CIRCUIT republish_last_frame\n";
+        }
         return engine.republish_last_frame(generation);
     }
 
@@ -327,6 +339,10 @@ uint64_t AsyncReadback::submit(VulkanContext& ctx, Engine& engine, const PushCon
     vmaSetCurrentFrameIndex(ctx.allocator(), static_cast<uint32_t>(slot->ticket));
 
     engine.mark_all_clean();
+    {
+        std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
+        f << "[DIAG] submit() dispatched ticket=" << slot->ticket << "\n";
+    }
     return slot->ticket;
 }
 
@@ -337,6 +353,10 @@ bool AsyncReadback::poll(VulkanContext& ctx,
     if (!initialized_) return false;  // shut down or never initialised
     // Synthetic (CPU-cached) frame has highest priority
     if (synthetic_ready_) {
+        {
+            std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
+            f << "[DIAG] poll() SYNTHETIC w=" << synthetic_w_ << " h=" << synthetic_h_ << "\n";
+        }
         out_pixels     = std::move(synthetic_pixels_);
         out_w          = synthetic_w_;
         out_h          = synthetic_h_;
@@ -364,7 +384,11 @@ bool AsyncReadback::poll(VulkanContext& ctx,
         if (vkGetFenceStatus(ctx.device(), s.fence) != VK_SUCCESS) continue;
         if (!newest || s.ticket > newest->ticket) newest = &s;
     }
-    if (!newest) return false;
+    if (!newest) {
+        std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
+        f << "[DIAG] poll() no finished slot\n";
+        return false;
+    }
 
     // Free older finished slots (we're skipping their pixels — they're stale).
     for (auto& s : slots_) {
@@ -385,6 +409,17 @@ bool AsyncReadback::poll(VulkanContext& ctx,
     out_w          = newest->job_w;
     out_h          = newest->job_h;
     out_generation = newest->job_generation;
+
+    {
+        std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
+        f << "[DIAG] poll() ticket=" << newest->ticket
+          << " gen=" << newest->job_generation
+          << " w=" << newest->job_w << " h=" << newest->job_h
+          << " pixel[0]=" << out_pixels[0]
+          << " pixel[1]=" << out_pixels[1]
+          << " pixel[2]=" << out_pixels[2]
+          << " pixel[3]=" << out_pixels[3] << "\n";
+    }
 
     newest->state  = SlotState::Free;
     newest->ticket = 0;

@@ -18,7 +18,7 @@ description: Use when deploying non-C++ edits (Python addon code in ADDON/, or G
 ## When NOT to use me
 - Editing C++ in `src/` or `core/` -- those need `build_fast.bat`, not a file copy
 - Touching `blender_manifest.toml` -- edit in `ADDON/` only; never deploy the manifest
-- Producing `.pyd`/`.so` binaries -- GitHub CI ships these, never copy manually
+- Producing `.pyd`/`.so` binaries -- GitHub CI ships these, never copy manually. **When C++ changes are needed: ask user for approval first, then commit and push.**
 - Editing `wheels/` -- off-limits
 
 ## Install location

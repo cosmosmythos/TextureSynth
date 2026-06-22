@@ -3,6 +3,12 @@
 **Read before ANY build/clean/install/test, or before writing a technical explanation.**
 Skipping the cache rules wastes bandwidth and rebuild time. Skipping the explanation rules makes answers unusable.
 
+> **🔴 CRITICAL: NEVER DEPLOY .pyd/.so BINARIES**
+> Do NOT copy, build, or place `.pyd`/`.so` files into the Blender install folder, `wheels/`, or anywhere else for testing.
+> GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, **ask user for approval before committing**, then commit and push — let CI produce the distributable.
+> Local `.pyd` copies bypass CI validation and cause silent breakage.
+> If you build a `.pyd` locally, **leave it in `build/Release/`** and ask user for approval to commit+push.
+
 ## Skill Usage
 
 Invoke relevant or requested skills BEFORE any response or action. Even a 1% chance a skill might apply means that you should invoke the skill to check. If an invoked skill turns out to be wrong for the situation, you don't need to use it.
@@ -95,7 +101,7 @@ Deploy only the files you changed — no blanket `Copy-Item -Recurse -Force` of 
 ### Still off-limits (NEVER touch in the install folder)
 
 - `blender_manifest.toml` — edit in `ADDON/` only.
-- `wheels/` and any `.pyd` / `.so` binaries — **NEVER copy a locally-built .pyd to the install folder.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable. Local .pyd copies bypass CI validation and cause silent breakage.
+- `wheels/` and any `.pyd` / `.so` binaries — **NEVER copy a locally-built .pyd to the install folder.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable. Local .pyd copies bypass CI validation and cause silent breakage. **When C++ changes are needed: ask user for approval first, then commit and push.**
 - `core/` C++ binding sources — rebuild via `build_fast.bat`, do not hand-edit.
 - `shader_assets/` — GLSL and JSON node manifests live in the repo; the engine loads them at init. Do not copy them to the install folder.
 
@@ -134,7 +140,7 @@ On bash-capable systems, the `blender-addon` OpenCode skill (`.opencode/skills/b
 
 ## 6. Workflow Rules
 
-**🚫 NEVER deploy .pyd/.so binaries manually.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable.
+**🚫 NEVER deploy .pyd/.so binaries manually.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable. **When C++ changes are needed: ask user for approval first, then commit and push.**
 
 **🔍 Before Writing Code:**
 1. `ls` the directory (know what exists).

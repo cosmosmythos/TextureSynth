@@ -13,6 +13,7 @@ All C++20 source for TextureSynth. Three build targets defined in the root `CMak
 - `src/viewer/third_party/renderdoc_app.h` — vendored header; NOT linked to renderdoc.dll (loaded at runtime via `GetModuleHandleA`).
 
 ## Local Contracts
+- **🔴 NEVER deploy .pyd/.so binaries.** When C++ changes are needed, **ask user for approval first, then commit and push**. Do NOT build locally and copy the `.pyd` anywhere. Leave built `.pyd` in `build/Release/` only.
 - **Layering (must hold):**
   `engine` (no deps downward) ← `bindings` (depends on `engine`) ← `viewer` (depends on `engine` + glfw + imgui).
   `bindings` and `viewer` MUST NOT be linked into `engine`. `bindings.cpp` is the only place Python types cross the boundary.

@@ -36,6 +36,9 @@ add_executable(engine_tests
     test_image_upload.cpp
     test_noise_nodes.cpp
     test_simplex_debug.cpp
+    test_fused_blend_glsl.cpp
+    test_blend_cross_chain.cpp
+    test_blend_py_repro.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE
