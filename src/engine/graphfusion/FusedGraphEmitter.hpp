@@ -12,6 +12,7 @@ struct FusedResult {
     std::string error;
     uint32_t                external_inputs = 0;     // total count (for runtime slot limits)
     std::vector<uint32_t>   external_socket_masks;   // per-node bitmask for cache key
+    std::vector<uint32_t>   internal_producer_indices; // flat per-socket local_index for cache key
 
     [[nodiscard]] constexpr bool ok() const noexcept { return error.empty(); }
 };

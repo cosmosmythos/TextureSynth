@@ -41,5 +41,11 @@ shader_assets/**/README.md
 # ImGui persists UI layout to this file.
 imgui.ini
 
+# Stray diagnostic dumps (must never be committed).
+diag_engine.txt
+
+# ctest drops a Testing/ dir at CWD when run with --test-dir; never commit it.
+/Testing/
+
 tuxalin/
 vendor/GLSL/

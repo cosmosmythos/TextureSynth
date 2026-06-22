@@ -2,8 +2,8 @@
 
 ## Purpose
 Two independent test suites:
-1. **C++ gtest** (`engine_tests` target) — exercises the `engine` lib directly (no Python). Covers Vulkan context, graph validation, full pipeline, async readback, dirty set, aliasing, mask/mute nodes, timestamps, combine/separate RGBA, image upload, noise nodes, simplex debug, the full fusion path, and the cross-group chain preview repro (`test_repro_blend_preview.cpp`).
-2. **Python pytest** (`tests/python/`) — exercises the `texturesynth_core` nanobind binding the way the Blender addon uses it.
+1. **C++ gtest** (`engine_tests` target) — exercises the `engine` lib directly (no Python). Covers Vulkan context, graph validation (incl. inclusive-IR contract), full pipeline, async readback, dirty set, aliasing, mask/mute nodes, timestamps, combine/separate RGBA, image upload, noise node smoke tests, the full fusion path, and the cross-group chain preview repro (`test_repro_blend_preview.cpp`).
+2. **Python pytest** (`tests/python/`) — exercises the `texturesynth_core` nanobind binding the way the Blender addon uses it. Includes durable regression guards: `test_claim_verification.py` (inclusive IR, param SSBO seeding, mask modulation), `test_fused_wiring_key.py` (swapped A/B internal wiring must produce different output), and `test_addon_preview_root.py` (addon preview-node selection, mocked bpy).
 
 ## Ownership
 - Root `tests/*.cpp` + `tests/*.hpp` — gtest sources and shared asset helpers.
@@ -23,7 +23,7 @@ Two independent test suites:
 
 ## Work Guidance
 - Prefer adding to an existing test file when the topic fits (e.g. noise behavior → `test_noise_nodes.cpp`) rather than spawning a new file.
-- Keep heavy/large debug binaries out of the suite — `test_simplex_debug.cpp` (~63k) and `test_full_pipeline.cpp` are already at the upper end.
+- Keep heavy/large debug binaries out of the suite — `test_full_pipeline.cpp` is at the upper end. Historical one-off debug dumps (e.g. the old `test_simplex_debug.cpp` tiling investigation, `test_tiling_math.cpp`, `test_blend_ssbodump.cpp`) have been removed; do not reintroduce them. Tiling correctness is verified in `shader_assets/glsl/noise_common.glsl` (GLSL-spec `mod()`), not re-tested here.
 - Cache dirs: Python uses `tests/python/cache/shader` (gitignored). Do not point tests at `build/_deps/` (root §2 cache trap).
 
 ## Verification

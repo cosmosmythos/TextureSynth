@@ -124,7 +124,7 @@ FusedVariantKey make_fused_key(std::vector<std::string> ids,
     k.node_type_ids = std::move(ids);
     k.param_socket_masks.resize(k.node_type_ids.size(), 0);
     k.input_counts.resize(k.node_type_ids.size(), 1);
-    k.epoch = 7;
+    k.epoch = 8;
 
     uint32_t feature = 0;
     uint32_t shift = 0;

@@ -90,19 +90,30 @@ struct FusedVariantKey {
                                                     // not just HOW MANY — fixes cache
                                                     // collision when same count maps to
                                                     // different sockets.
-    uint64_t                 epoch         = 7;   // distinct from ShaderVariantKey::epoch=4
+    std::vector<uint32_t>    internal_producer_indices; // flat, node-major, socket 0..n-1 per node,
+                                                        // in node_type_ids order. Length = sum of
+                                                        // input_counts. Value = producer's
+                                                        // local_index in chain.nodes; UINT32_MAX =
+                                                        // socket is not an internal RegSrc (external
+                                                        // or const). Captures WHICH in-chain producer
+                                                        // feeds WHICH internal socket — fixes cache
+                                                        // collision when two graphs share node types
+                                                        // but swap internal A/B wiring.
+    uint64_t                 epoch         = 8;   // distinct from ShaderVariantKey::epoch=5
                                                   // so the two hash families can't collide
                                                   // if they ever share a directory.
                                                   // epoch 6: added external_inputs (insufficient)
-                                                  // epoch 7: external_inputs → external_socket_masks
+                                                  // epoch 7: external_inputs -> external_socket_masks
+                                                  // epoch 8: added internal_producer_indices
 
     bool operator==(const FusedVariantKey& o) const noexcept {
-        return node_type_ids          == o.node_type_ids
-            && param_socket_masks     == o.param_socket_masks
-            && input_counts           == o.input_counts
-            && feature_flags          == o.feature_flags
-            && external_socket_masks  == o.external_socket_masks
-            && epoch                  == o.epoch;
+        return node_type_ids             == o.node_type_ids
+            && param_socket_masks        == o.param_socket_masks
+            && input_counts              == o.input_counts
+            && feature_flags             == o.feature_flags
+            && external_socket_masks     == o.external_socket_masks
+            && internal_producer_indices == o.internal_producer_indices
+            && epoch                     == o.epoch;
     }
 
     uint64_t hash() const noexcept {
@@ -112,6 +123,7 @@ struct FusedVariantKey {
         for (uint32_t m : param_socket_masks)        mix(m);
         for (uint32_t n : input_counts)              mix(n);
         for (uint32_t m : external_socket_masks)     mix(m);
+        for (uint32_t i : internal_producer_indices) mix(i);
         mix(feature_flags);
         mix(epoch);
         return h;

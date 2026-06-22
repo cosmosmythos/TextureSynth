@@ -35,7 +35,7 @@ Loaded by `NodeRegistryLoader` (C++) at `Engine::init(nodes_dir, glsl_dir)`. The
 
 ## Verification
 - Engine loads manifests at init; a missing/malformed manifest surfaces as `EngineError` with the offending node id.
-- `tests/test_node_library.py` (Python) and `tests/test_noise_nodes.cpp`, `test_simplex_debug.cpp` (C++) exercise specific nodes.
+- `tests/test_node_library.py` (Python) and `tests/test_noise_nodes.cpp` (C++) exercise specific nodes.
 - Standalone GLSL sanity: files under `glslViewer_tests/` can be run in glslViewer (not automated by CI).
 
 ## Child DOX Index

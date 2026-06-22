@@ -7,8 +7,6 @@
 namespace te {
 
 void Engine::assign_bindless_slots_(PassExec& pe) {
-    log_info("[DIAG] assign_bindless_slots node=" + std::to_string(pe.node_id)
-             + " inputs=" + std::to_string(pe.input_resources.size()));
     pe.output_count = static_cast<uint32_t>(pe.output_resources.size());
     for (uint32_t t = 0; t < pe.output_count && t < MAX_PASS_OUTPUTS; ++t) {
         const ResourceUUID& rid = pe.output_resources[t];
@@ -70,22 +68,6 @@ void Engine::assign_bindless_slots_(PassExec& pe) {
     }
     for (uint32_t i = pe.input_count; i < MAX_PASS_INPUTS; ++i)
         pe.in_sampled_slots[i] = dummy_slot_;
-
-    // DIAG: print all assigned slots
-    {
-        std::string msg = "[DIAG]   node=" + std::to_string(pe.node_id) + " in_sampled_slots=[";
-        for (uint32_t i = 0; i < pe.input_count && i < MAX_PASS_INPUTS; ++i) {
-            msg += std::to_string(pe.in_sampled_slots[i]);
-            if (i + 1 < pe.input_count) msg += ", ";
-        }
-        msg += "] input_resources=[";
-        for (uint32_t i = 0; i < pe.input_count && i < pe.input_resources.size(); ++i) {
-            msg += std::to_string(pe.input_resources[i].node_id);
-            if (i + 1 < pe.input_count) msg += ", ";
-        }
-        msg += "]";
-        log_info(msg);
-    }
 }
 
 
@@ -321,22 +303,6 @@ void Engine::populate_chains_(const PassPlan& plan) {
                 }
                 ++as_socket_idx;
             }
-        }
-
-        // DIAG: print chain info
-        if (ext_slot > 0) {
-            std::string msg = "[DIAG] chain " + std::to_string(ci) + " nodes=[";
-            for (size_t ni = 0; ni < ch.nodes.size(); ++ni) {
-                msg += std::to_string(ch.nodes[ni]);
-                if (ni + 1 < ch.nodes.size()) msg += ", ";
-            }
-            msg += "] ext_slot_count=" + std::to_string(ext_slot) + " chain_in_sampled=[";
-            for (uint32_t k = 0; k < ext_slot; ++k) {
-                msg += std::to_string(ce.chain_in_sampled_slots[k]);
-                if (k + 1 < ext_slot) msg += ", ";
-            }
-            msg += "]";
-            log_info(msg);
         }
 
         if (!ch.glsl.empty() && !ch.bypassed) {

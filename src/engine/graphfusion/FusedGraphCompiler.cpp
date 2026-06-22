@@ -7,7 +7,6 @@
 #include "engine/Logging.hpp"
 #include <unordered_map>
 #include <unordered_set>
-#include <fstream>
 
 namespace te {
 
@@ -66,6 +65,7 @@ FusedVariantKey build_fused_key(const Chain& chain,
     }
     k.feature_flags = feature;
     k.external_socket_masks = chain.external_socket_masks;
+    k.internal_producer_indices = chain.internal_producer_indices;
     return k;
 }
 
@@ -244,14 +244,8 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         if (fused.ok()) {
             chain.glsl = std::move(fused.source);
             chain.external_socket_masks = std::move(fused.external_socket_masks);
+            chain.internal_producer_indices = std::move(fused.internal_producer_indices);
             chain.variant_key = build_fused_key(chain, ir, lib);
-            {
-                std::ofstream diag("diag_engine.txt", std::ios::app);
-                diag << "=== FUSED GLSL chain nodes=[";
-                for (auto n : group.nodes) diag << n << ",";
-                diag << "] param_base_slot=" << chain.param_base_slot << " ===\n";
-                diag << chain.glsl << "\n=== END FUSED GLSL ===\n";
-            }
         } else {
             log_warn("FusedGraphCompiler: group [" +
                      [&]{ std::string s; for (auto n : group.nodes) s += std::to_string(n) + ","; return s; }() +

@@ -51,6 +51,11 @@ struct Chain {
     // Used for FusedVariantKey — encodes topology, not just count.
     std::vector<uint32_t>   external_socket_masks;
 
+    // Stage 4.2: per-socket internal-producer local_index (flat, node-major).
+    // Length = sum of input_counts. UINT32_MAX = not an internal RegSrc.
+    // Used for FusedVariantKey — encodes WHICH in-chain producer feeds WHICH socket.
+    std::vector<uint32_t>   internal_producer_indices;
+
     // Filled by Stage 4 (emit_chain_shader). Empty for singleton/oversized chains (falls back to per-node).
     std::string           glsl;
 

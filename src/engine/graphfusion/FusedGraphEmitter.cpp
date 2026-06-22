@@ -143,14 +143,22 @@ FusedResult emit_fused_subgraph(
 
         emits.push_back(std::move(ne));
 
-        // Build per-node external-socket mask for cache key.
-        // Bit s = 1 means socket s of this node is an external input (ExtSrc).
+        // Build per-node external-socket mask + per-socket internal-producer index.
+        // Both feed the FusedVariantKey so swapped internal wiring can't collide.
         {
             const auto& ne_ref = emits.back();
             uint32_t mask = 0;
-            for (uint32_t s = 0; s < ne_ref.input_srcs.size() && s < 32; ++s) {
-                if (std::holds_alternative<ExtSrc>(ne_ref.input_srcs[s]))
-                    mask |= (1u << s);
+            for (uint32_t s = 0; s < ne_ref.input_srcs.size(); ++s) {
+                const auto& src = ne_ref.input_srcs[s];
+                if (std::holds_alternative<ExtSrc>(src)) {
+                    if (s < 32) mask |= (1u << s);
+                    result.internal_producer_indices.push_back(UINT32_MAX);
+                } else if (std::holds_alternative<RegSrc>(src)) {
+                    result.internal_producer_indices.push_back(
+                        static_cast<uint32_t>(std::get<RegSrc>(src).local_index));
+                } else {
+                    result.internal_producer_indices.push_back(UINT32_MAX);
+                }
             }
             result.external_socket_masks.push_back(mask);
         }

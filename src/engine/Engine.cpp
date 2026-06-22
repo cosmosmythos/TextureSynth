@@ -9,7 +9,6 @@
 #include <cstring>
 #include <cmath>
 #include <climits>
-#include <fstream>
 #include <thread>
 #include <unordered_set>
 
@@ -802,16 +801,7 @@ void Engine::mark_node_dirty(NodeId node_id) {
 
 
 uint64_t Engine::republish_last_frame(uint64_t generation) {
-    if (last_presented_pixels_.empty()) {
-        std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
-        f << "[DIAG] republish_last_frame: EMPTY pixels, returning 0\n";
-        return 0;
-    }
-    {
-        std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
-        f << "[DIAG] republish_last_frame: w=" << last_presented_w_ << " h=" << last_presented_h_
-          << " pixel[0]=" << last_presented_pixels_[0] << "\n";
-    }
+    if (last_presented_pixels_.empty()) return 0;
     return async_.publish_synthetic(last_presented_pixels_,
                                      last_presented_w_,
                                      last_presented_h_,
@@ -821,11 +811,6 @@ uint64_t Engine::republish_last_frame(uint64_t generation) {
 
 void Engine::stash_last_presented(const std::vector<float>& pixels,
                                   uint32_t w, uint32_t h, uint64_t /*generation*/) {
-    {
-        std::ofstream f("C:/Users/User/Documents/0/TEXTURESYNTH/diag_engine.txt", std::ios::app);
-        f << "[DIAG] stash_last_presented: w=" << w << " h=" << h
-          << " pixel[0]=" << pixels[0] << " size=" << pixels.size() << "\n";
-    }
     last_presented_pixels_ = pixels;
     last_presented_w_ = w;
     last_presented_h_ = h;

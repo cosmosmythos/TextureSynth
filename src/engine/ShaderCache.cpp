@@ -55,12 +55,13 @@ void ShaderCache::write_spv_(const std::string& p, const std::vector<uint32_t>& 
 
 void ShaderCache::write_sidecar_(uint64_t hash, const FusedVariantKey& key) const {
     nlohmann::json j;
-    j["node_type_ids"]          = key.node_type_ids;
-    j["param_socket_masks"]     = key.param_socket_masks;
-    j["input_counts"]           = key.input_counts;
-    j["feature_flags"]          = key.feature_flags;
-    j["external_socket_masks"]  = key.external_socket_masks;
-    j["epoch"]                  = key.epoch;
+    j["node_type_ids"]             = key.node_type_ids;
+    j["param_socket_masks"]        = key.param_socket_masks;
+    j["input_counts"]              = key.input_counts;
+    j["feature_flags"]             = key.feature_flags;
+    j["external_socket_masks"]     = key.external_socket_masks;
+    j["internal_producer_indices"] = key.internal_producer_indices;
+    j["epoch"]                     = key.epoch;
     std::ofstream f(path_for_sidecar_(hash), std::ios::trunc);
     if (!f) { log_warn("shader cache: sidecar write failed"); return; }
     f << j.dump();
@@ -74,12 +75,16 @@ bool ShaderCache::sidecar_matches_(uint64_t hash, const FusedVariantKey& key) co
     catch (const nlohmann::json::parse_error&) { return false; }
     try {
         FusedVariantKey stored;
-        stored.node_type_ids          = j.at("node_type_ids").get<std::vector<std::string>>();
-        stored.param_socket_masks     = j.at("param_socket_masks").get<std::vector<uint32_t>>();
-        stored.input_counts           = j.at("input_counts").get<std::vector<uint32_t>>();
-        stored.feature_flags          = j.at("feature_flags").get<uint32_t>();
-        stored.external_socket_masks  = j.at("external_socket_masks").get<std::vector<uint32_t>>();
-        stored.epoch                  = j.at("epoch").get<uint64_t>();
+        stored.node_type_ids             = j.at("node_type_ids").get<std::vector<std::string>>();
+        stored.param_socket_masks        = j.at("param_socket_masks").get<std::vector<uint32_t>>();
+        stored.input_counts              = j.at("input_counts").get<std::vector<uint32_t>>();
+        stored.feature_flags             = j.at("feature_flags").get<uint32_t>();
+        stored.external_socket_masks     = j.at("external_socket_masks").get<std::vector<uint32_t>>();
+        // internal_producer_indices was added at epoch 8; missing on older sidecars,
+        // but those fail the epoch check below anyway. Default-empty is safe.
+        stored.internal_producer_indices = j.value("internal_producer_indices",
+                                                   std::vector<uint32_t>{});
+        stored.epoch                     = j.at("epoch").get<uint64_t>();
         return stored == key;
     } catch (const nlohmann::json::exception&) {
         return false;

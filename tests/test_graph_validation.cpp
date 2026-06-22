@@ -205,7 +205,11 @@ TEST(GraphValidation, EvalOrderIsTopological) {
     EXPECT_LT(idx_of(20), idx_of(40));
 }
 
-TEST(GraphValidation, PrunesUnreachableNodes) {
+// validate_graph keeps ALL non-muted nodes in the IR, even those unreachable
+// from output_node, so set_active_node can redirect output to any node without
+// a full recompile. This mirrors the inclusive-IR contract verified in Python
+// (tests/python/test_claim_verification.py::test_unreachable_node_survives_in_param_layout).
+TEST(GraphValidation, RetainsAllNonMutedNodesInclusive) {
     auto lib = make_library();
     Graph g;
     g.nodes.push_back({1, "source"});
@@ -217,10 +221,10 @@ TEST(GraphValidation, PrunesUnreachableNodes) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
 
-    EXPECT_EQ(r.ir.nodes.size(), 2u);
+    EXPECT_EQ(r.ir.nodes.size(), 3u);
     EXPECT_NE(r.ir.find(1), nullptr);
     EXPECT_NE(r.ir.find(2), nullptr);
-    EXPECT_EQ(r.ir.find(99), nullptr);
+    EXPECT_NE(r.ir.find(99), nullptr) << "orphan node 99 pruned from IR";
 }
 
 TEST(GraphValidation, NodeIndexIsConsistent) {

@@ -30,12 +30,10 @@ add_executable(engine_tests
     test_blend_mode_param.cpp
     test_depth_resolution.cpp
     test_format_depth_keys.cpp
-    test_dump_gabor_blend.cpp
     test_repro_blend_preview.cpp
     test_research_register_pressure.cpp
     test_image_upload.cpp
     test_noise_nodes.cpp
-    test_simplex_debug.cpp
     test_fused_blend_glsl.cpp
     test_blend_cross_chain.cpp
     test_blend_py_repro.cpp
