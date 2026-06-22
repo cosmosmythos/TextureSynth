@@ -251,16 +251,14 @@ def _build_graph_and_params(tree):
     if output_src_id is None:
         return None, None, None
 
-    # Add nodes to graph, skipping Output node which is a marker.
-    for nid in order:
-        nname = id_to_name.get(nid)
-        if nname is None:
-            continue
+    # Add ALL nodes to the graph (not just the active subgraph) so that
+    # set_active_node can switch to any node without recompiling the graph.
+    for nname, nid in name_to_id.items():
         node = _node_by_name(tree, nname)
         if node is None:
             continue
         if node.bl_idname == 'TS_Output_Node':
-            continue        
+            continue
         if getattr(node, 'sv_type', None) is None:
             continue
         fmt_override = node.get_format_override() if hasattr(node, 'get_format_override') else None
@@ -272,7 +270,6 @@ def _build_graph_and_params(tree):
         if abs_depth is not None:
             depth_kwargs['absolute_depth'] = abs_depth
 
-        # Pass name to engine for logging. Mute rewires connections in the engine.
         is_muted = bool(getattr(node, 'mute', False))
         graph.add_node(
             nid, node.sv_type, fmt_override, node.name,
@@ -282,10 +279,7 @@ def _build_graph_and_params(tree):
         )
 
     node_params = []
-    for nid in order:
-        nname = id_to_name.get(nid)
-        if nname is None:
-            continue
+    for nname, nid in name_to_id.items():
         node = _node_by_name(tree, nname)
         if node is None:
             continue
@@ -325,8 +319,6 @@ def _build_graph_and_params(tree):
             continue
         s_id = name_to_id[s_name]
         d_id = name_to_id[d_name]
-        if s_id not in reachable_ids or d_id not in reachable_ids:
-            continue
         try:
             src_idx = list(src.outputs).index(link.from_socket)
         except ValueError:

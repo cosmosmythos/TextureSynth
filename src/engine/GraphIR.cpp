@@ -196,7 +196,6 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     std::vector<Connection> rewired_conns = graph.connections;
     for (auto& n : graph.nodes) {
         if (!n.muted) continue;
-        if (!reachable.count(n.id)) continue;  // not active — already pruned
         auto eff = resolve_muted_source(n.id, graph.nodes, graph.connections);
         for (auto& c : rewired_conns) {
             if (c.src_node != n.id) continue;
@@ -210,10 +209,11 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         }
     }
 
-    // ── 7. Populate validated nodes (active subgraph, not muted) ──
+    // ── 7. Populate validated nodes (ALL nodes, not just reachable) ──
+    // All nodes must be in the IR so that set_active_node can switch
+    // output to any node without recompiling the graph from scratch.
     GraphIR& ir = result.ir;
     for (auto& n : graph.nodes) {
-        if (!reachable.count(n.id)) continue;  // not reachable
         if (n.muted) continue;                  // rewired out
         ValidatedNode vn;
         vn.id       = n.id;
