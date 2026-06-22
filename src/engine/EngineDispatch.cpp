@@ -151,13 +151,11 @@ void Engine::record_barriers_(VkCommandBuffer cmd, const PushConstants&) {
     }
 
     if (dummy_layout_ != VK_IMAGE_LAYOUT_GENERAL) {
-        for (int i = 0; i < 6; ++i) {
-            transition(cmd, dummy_images_[i].image(),
-                       dummy_layout_, VK_IMAGE_LAYOUT_GENERAL,
-                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-        }
+        transition(cmd, dummy_image_.image(),
+                   dummy_layout_, VK_IMAGE_LAYOUT_GENERAL,
+                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
         dummy_layout_ = VK_IMAGE_LAYOUT_GENERAL;
     }
 

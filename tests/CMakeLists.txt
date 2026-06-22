@@ -27,6 +27,8 @@ add_executable(engine_tests
     test_fused_real_nodes.cpp
     test_combine_rgba.cpp
     test_storage_format.cpp
+    test_depth_resolution.cpp
+    test_format_depth_keys.cpp
     test_dump_gabor_blend.cpp
     test_repro_blend_preview.cpp
     test_research_register_pressure.cpp

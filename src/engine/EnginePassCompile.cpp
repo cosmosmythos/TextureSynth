@@ -24,7 +24,7 @@ void Engine::assign_bindless_slots_(PassExec& pe) {
                 if (auto* r = resources_.get(rid))
                     bindless_.write_storage(ctx_, slot, r->view);
                 else
-                    bindless_.write_storage(ctx_, slot, dummy_images_[3].view());
+                    bindless_.write_storage(ctx_, slot, dummy_image_.view());
             }
             pe.out_storage_slots[t] = slot;
         }
@@ -38,43 +38,38 @@ void Engine::assign_bindless_slots_(PassExec& pe) {
         const ResourceUUID rid = pe.input_resources[i];
         uint32_t slot = BindlessTable::INVALID_SLOT;
 
-        ChannelFormat fmt = ChannelFormat::RGBA;
-        if (i < pe.input_formats.size())
-            fmt = pe.input_formats[i];
-        uint32_t dummy_slot = dummy_sampled_slots_[static_cast<size_t>(fmt)];
-
         if (rid.node_id == 0) {
             auto eit = image_registry_.find(pe.node_id);
             if (eit != image_registry_.end() && eit->second) {
                 auto sit = ext_sampled_slot_.find(pe.node_id);
                 if (sit == ext_sampled_slot_.end()) {
                     slot = bindless_.alloc_sampled_slot();
-                    if (slot == BindlessTable::INVALID_SLOT) slot = dummy_slot;
+                    if (slot == BindlessTable::INVALID_SLOT) slot = dummy_slot_;
                     else {
                         ext_sampled_slot_[pe.node_id] = slot;
                         bindless_.write_sampled(ctx_, slot, eit->second->view(),
                                                 VK_IMAGE_LAYOUT_GENERAL);
                     }
                 } else slot = sit->second;
-            } else slot = dummy_slot;
+            } else slot = dummy_slot_;
         } else {
             auto sit = res_sampled_slot_.find(rid);
             if (sit == res_sampled_slot_.end()) {
                 slot = bindless_.alloc_sampled_slot();
-                if (slot == BindlessTable::INVALID_SLOT) slot = dummy_slot;
+                if (slot == BindlessTable::INVALID_SLOT) slot = dummy_slot_;
                 else {
                     res_sampled_slot_[rid] = slot;
                     if (auto* r = resources_.get(rid))
                         bindless_.write_sampled(ctx_, slot, r->view, VK_IMAGE_LAYOUT_GENERAL);
                     else
-                        bindless_.write_sampled(ctx_, slot, dummy_images_[static_cast<size_t>(fmt)].view(), VK_IMAGE_LAYOUT_GENERAL);
+                        bindless_.write_sampled(ctx_, slot, dummy_image_.view(), VK_IMAGE_LAYOUT_GENERAL);
                 }
             } else slot = sit->second;
         }
         pe.in_sampled_slots[i] = slot;
     }
     for (uint32_t i = pe.input_count; i < MAX_PASS_INPUTS; ++i)
-        pe.in_sampled_slots[i] = dummy_sampled_slots_[static_cast<size_t>(ChannelFormat::RGBA)];
+        pe.in_sampled_slots[i] = dummy_slot_;
 
     // DIAG: print all assigned slots
     {

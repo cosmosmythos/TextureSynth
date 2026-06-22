@@ -306,12 +306,12 @@ private:
     std::vector<PendingUpload> pending_uploads_;
     std::unordered_map<uint64_t, bool> images_needing_acquire_;
 
-    std::array<Image, 6>    dummy_images_;
-    std::array<uint32_t, 6> dummy_sampled_slots_{
-        BindlessTable::INVALID_SLOT, BindlessTable::INVALID_SLOT,
-        BindlessTable::INVALID_SLOT, BindlessTable::INVALID_SLOT,
-        BindlessTable::INVALID_SLOT, BindlessTable::INVALID_SLOT
-    };
+    // Single RGBA32F dummy image (1x1, value (0,0,0,1)) bound to bindless
+    // sampled slot 0. Used for unconnected inputs and slot padding. Reads
+    // are formatless (texture2D / texelFetch), so one dummy serves all
+    // channel/depth combinations -- Vulkan auto-converts on read.
+    Image    dummy_image_;
+    uint32_t dummy_slot_ = BindlessTable::INVALID_SLOT;
 
     ResourceManager resources_;
 

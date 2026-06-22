@@ -143,12 +143,10 @@ bool Engine::init(VkSurfaceKHR surface,
         goto rollback;
     }
 
-    // Write all 6 per-format dummy views to bindless slots 0-5.
-    for (int i = 0; i < 6; ++i) {
-        dummy_sampled_slots_[i] = static_cast<uint32_t>(i);
-        bindless_.write_sampled(ctx_, dummy_sampled_slots_[i],
-                                dummy_images_[i].view(), VK_IMAGE_LAYOUT_GENERAL);
-    }
+    // Bind the single dummy image to bindless sampled slot 0.
+    dummy_slot_ = 0;
+    bindless_.write_sampled(ctx_, dummy_slot_,
+                            dummy_image_.view(), VK_IMAGE_LAYOUT_GENERAL);
 
     // Stage 8: per-pass GPU timestamp pools.
     if (!create_timestamp_pools_()) {
@@ -178,20 +176,15 @@ rollback:
 
 
 bool Engine::ensure_dummy_images_() {
-    const VkClearColorValue clears[6] = {
-        {1.0f, 0, 0, 1},       // Mono (index 0) — white so unconnected alpha=1
-        {0.5f, 0.5f, 0, 1},    // UV (index 1) — center
-        {0, 0, 0, 1},          // RGB (index 2) — black
-        {0, 0, 0, 1},          // RGBA (index 3) — black
-        {0, 0, 0, 0},          // ID (index 4) — zero
-        {0, 0, 0, 0},          // Metadata (index 5) — zero
-    };
+    // Single RGBA32F 1x1 dummy at value (0,0,0,1). texelFetch on a sampled
+    // image view performs automatic format conversion per the Vulkan spec
+    // (Data Format Conversion chapter), so one RGBA32F dummy safely serves
+    // all channel/depth expectations.
+    const VkClearColorValue clear = {0.0f, 0.0f, 0.0f, 1.0f};
 
-    for (int i = 0; i < 6; ++i) {
-        if (!dummy_images_[i].create(ctx_, 1, 1)) {
-            log_error("dummy image " + std::to_string(i) + " create failed");
-            return true; // non-fatal; image will contain garbage
-        }
+    if (!dummy_image_.create(ctx_, 1, 1)) {
+        log_error("dummy image create failed");
+        return true; // non-fatal; image will contain garbage
     }
 
     VkCommandPool tmp_pool = VK_NULL_HANDLE;
@@ -214,7 +207,7 @@ bool Engine::ensure_dummy_images_() {
           vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr); return true; }
 
     VkImageSubresourceRange sr{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    for (int i = 0; i < 6; ++i) {
+    {
         VkImageMemoryBarrier2 ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         ib.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         ib.srcAccessMask = 0;
@@ -222,15 +215,15 @@ bool Engine::ensure_dummy_images_() {
         ib.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         ib.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
         ib.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-        ib.image         = dummy_images_[i].image();
+        ib.image         = dummy_image_.image();
         ib.subresourceRange = sr;
         VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         di.imageMemoryBarrierCount = 1;
         di.pImageMemoryBarriers    = &ib;
         vkCmdPipelineBarrier2(tmp_cmd, &di);
 
-        vkCmdClearColorImage(tmp_cmd, dummy_images_[i].image(),
-                             VK_IMAGE_LAYOUT_GENERAL, &clears[i], 1, &sr);
+        vkCmdClearColorImage(tmp_cmd, dummy_image_.image(),
+                             VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &sr);
     }
 
     if (vkEndCommandBuffer(tmp_cmd) != VK_SUCCESS)
@@ -249,7 +242,7 @@ bool Engine::ensure_dummy_images_() {
     vkFreeCommandBuffers(ctx_.device(), tmp_pool, 1, &tmp_cmd);
     vkDestroyCommandPool(ctx_.device(), tmp_pool, nullptr);
 
-    log_info("6 per-format dummy images created (1x1)");
+    log_info("dummy image created (1x1 RGBA32F)");
     return true;
 }
 
@@ -300,7 +293,7 @@ void Engine::shutdown_internal_() {
     chain_execs_.clear();
     chain_id_of_pass_.clear();
 
-    for (auto& s : dummy_sampled_slots_) s = BindlessTable::INVALID_SLOT;
+    dummy_slot_ = BindlessTable::INVALID_SLOT;
     // Release external image slots.
     for (auto& kv : ext_sampled_slot_) bindless_.free_sampled_slot(kv.second);
     ext_sampled_slot_.clear();
@@ -324,7 +317,7 @@ void Engine::shutdown_internal_() {
     for (auto& kv : image_registry_) if (kv.second) kv.second->destroy(ctx_);
     image_registry_.clear();
 
-    for (auto& di : dummy_images_) di.destroy(ctx_);
+    dummy_image_.destroy(ctx_);
     uploader_.shutdown(ctx_);
     async_.shutdown(ctx_);
     for (auto& r : retired_images_) if (r.img) r.img->destroy(ctx_);
@@ -936,10 +929,7 @@ bool Engine::release_image(uint64_t node_id) {
         if (pe.node_id != node_id) continue;
         for (uint32_t i = 0; i < pe.input_count && i < MAX_PASS_INPUTS; ++i) {
             if (pe.input_resources[i].node_id == 0) {
-                ChannelFormat fmt = ChannelFormat::RGBA;
-                if (i < pe.input_formats.size())
-                    fmt = pe.input_formats[i];
-                pe.in_sampled_slots[i] = dummy_sampled_slots_[static_cast<size_t>(fmt)];
+                pe.in_sampled_slots[i] = dummy_slot_;
             }
         }
     }
