@@ -20,5 +20,5 @@ def unregister_class(cls):
     try:
         bpy.utils.unregister_class(cls)
     except (ValueError, RuntimeError):
-        # Tolerate class registered by stale imports but no longer active.
+        # Tolerate class registered by stale imports but no longer active
         pass
