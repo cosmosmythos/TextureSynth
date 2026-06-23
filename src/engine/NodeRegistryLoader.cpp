@@ -115,7 +115,18 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                 socket.name   = s.at("name").get<std::string>();
                 socket.type   = parse_socket_type(s.value("type", "vec4"));
                 socket.format = parse_channel_format(s.value("format", "rgba"));
-                socket.default_value = s.value("default", 0.0f);
+                // "default" may be a scalar (broadcast to all 4) or a 4-array.
+                if (s.contains("default")) {
+                    const auto& d = s.at("default");
+                    if (d.is_array()) {
+                        for (int k = 0; k < 4; ++k)
+                            socket.default_vec4[k] = d.at(k).get<float>();
+                    } else {
+                        float v = d.get<float>();
+                        socket.default_vec4 = {v, v, v, v};
+                    }
+                    socket.default_value = socket.default_vec4[0];
+                }
                 n.inputs.push_back(std::move(socket));
             }
             for (auto& s : m.value("outputs", json::array())) {

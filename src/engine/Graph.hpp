@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <array>
 
 
 namespace te {
@@ -88,7 +89,10 @@ struct Socket {
     std::string name;   // "color", "height"
     SocketType type = SocketType::Vec4;
     ChannelFormat format = ChannelFormat::RGBA;
+    // Float inputs: default_value is the only slot used (SSBO seed).
+    // Vec4 inputs: default_vec4 is baked into GLSL when unconnected.
     float default_value = 0.0f;  // for SocketType::Float inputs
+    std::array<float, 4> default_vec4 = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 

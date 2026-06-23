@@ -46,6 +46,9 @@ The user is a **3D texture artist/developer**. Every architecture/design answer 
 - If user says "I still don't get it", "I can't picture this" etc., use simple flowchart/diagrams.
 - **Plan mode**: Use this style for analysis (do not edit files).
 - **Build mode**: Apply style AND make file changes without surrounding commentary.
+- **No third-party software names in code.** Source files (`.py`, `.glsl`, `.json`, `.cpp`, `.hpp`) must NOT reference Nuke, Substance Designer, Photoshop, Houdini, Krita, Unity, Unreal, etc. Describe the *math* (formula, inputs, behavior), not which app inspired it. Conversations and DOX docs may reference them for context; code and code comments may not.
+- **Code is not a tutorial.** The codebase is for developers who already understand the objective. Do NOT write long docstrings, "what this does" explanations, or block comments restating behavior. Prefer `None` or empty tooltips. Keep comments to a line, or none — let clear naming carry it.
+- **glslViewer_tests is a frozen mirror.** Do not hand-edit copies there while actively developing a node. Edit the canonical source in `shader_assets/glsl/` (and `shader_assets/nodes/`); mirror to `glslViewer_tests/` once, at the end, when the node is final.
 
 ---
 

@@ -1,6 +1,7 @@
 #include "engine/graphfusion/FusedGraphEmitter.hpp"
 #include "engine/graphfusion/GlslBuilder.hpp"
 #include "engine/PushConstants.hpp"
+#include <array>
 #include <optional>
 #include <sstream>
 #include <unordered_map>
@@ -13,7 +14,7 @@ namespace {
 
 struct ExtSrc { uint32_t slot; };
 struct RegSrc { size_t local_index; uint32_t output_socket = 0; };
-struct ConstSrc { float value = 0.0f; };
+struct ConstSrc { std::array<float, 4> value = {0.0f, 0.0f, 0.0f, 0.0f}; };
 using InputSrc = std::variant<ExtSrc, RegSrc, ConstSrc>;
 
 struct NodeEmit {
@@ -131,10 +132,12 @@ FusedResult emit_fused_subgraph(
                 ne.input_srcs.push_back(ExtSrc{next_ext++});
             } else {
                 // Truly unconnected: bake default as GLSL constant.
+                // Vec4 -> default_vec4 baked as vec4(r,g,b,a).
+                // Float -> payload unused (SSBO read at runtime), value goes to [0] for symmetry.
                 if (s < type->inputs.size() && type->inputs[s].type == SocketType::Vec4) {
-                    ne.input_srcs.push_back(ConstSrc{type->inputs[s].default_value});
+                    ne.input_srcs.push_back(ConstSrc{type->inputs[s].default_vec4});
                 } else if (s < type->inputs.size() && type->inputs[s].type == SocketType::Float) {
-                    ne.input_srcs.push_back(ConstSrc{type->inputs[s].default_value});
+                    ne.input_srcs.push_back(ConstSrc{{type->inputs[s].default_value, 0.0f, 0.0f, 0.0f}});
                 } else {
                     ne.input_srcs.push_back(ExtSrc{next_ext++});
                 }
@@ -233,7 +236,10 @@ FusedResult emit_fused_subgraph(
                     args.push_back("node_params[pc.param_ring_idx].v[pc.param_base_slot + " +
                                    std::to_string(ssbo_idx) + "]");
                 } else {
-                    args.push_back("vec4(" + std::to_string(c.value) + ")");
+                    args.push_back("vec4(" + std::to_string(c.value[0]) + ", "
+                                   + std::to_string(c.value[1]) + ", "
+                                   + std::to_string(c.value[2]) + ", "
+                                   + std::to_string(c.value[3]) + ")");
                 }
             } else {
                 auto ext = std::get<ExtSrc>(ne.input_srcs[s]);

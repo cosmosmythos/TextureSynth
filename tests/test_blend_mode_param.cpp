@@ -138,8 +138,8 @@ TEST(BlendModeParamGLSL, DumpChainEmission) {
 // color_const with mode=0 outputs vec4(r,r,r,1) (grayscale).
 // We use non-extreme colors so Mix and HardLight actually diverge.
 // With white/black and mask=1.0, Mix gives black (100% b) and HardLight also
-// gives black — mathematically identical. So we use gray tones instead.
-TEST_F(BlendModeParam, Mode0_Mix_Vs_Mode15_HardLight_Differ) {
+// gives black -- mathematically identical. So we use gray tones instead.
+TEST_F(BlendModeParam, Mode0_Mix_Vs_Mode14_HardLight_Differ) {
     Graph g;
     g.nodes.push_back({1, "color_const"});
     g.nodes.push_back({2, "blend"});
@@ -168,8 +168,8 @@ TEST_F(BlendModeParam, Mode0_Mix_Vs_Mode15_HardLight_Differ) {
     ASSERT_TRUE(wait_for_readback_gen(engine, gen, px_mix, w, h));
     ASSERT_FALSE(px_mix.empty());
 
-    // Now change ONLY the mode: 0 -> 15 (HardLight)
-    engine.update_node_params_by_id(2, {15.0f, 0.5f});
+    // Now change ONLY the mode: 0 -> 14 (HardLight). Mode ints must match blend.py.
+    engine.update_node_params_by_id(2, {14.0f, 0.5f});
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     engine.poll_pending_compiles();
 
@@ -177,7 +177,7 @@ TEST_F(BlendModeParam, Mode0_Mix_Vs_Mode15_HardLight_Differ) {
     ASSERT_TRUE(wait_for_readback_gen(engine, gen, px_hardlight, w, h));
 
     double diff = mean_abs_diff(px_mix, px_hardlight);
-    std::cout << "[Mode0_Mix vs Mode15_HardLight] mean_abs_diff = " << diff << std::endl;
+    std::cout << "[Mode0_Mix vs Mode14_HardLight] mean_abs_diff = " << diff << std::endl;
     std::cout << "  Mix center R: " << px_mix[px_mix.size()/2] << std::endl;
     std::cout << "  HardLight center R: " << px_hardlight[px_hardlight.size()/2] << std::endl;
 
@@ -214,13 +214,13 @@ TEST_F(BlendModeParam, Mask0_ForcesPassthrough_RegardlessOfMode) {
     uint32_t w=0, h=0;
     ASSERT_TRUE(wait_for_readback_gen(engine, gen, px1, w, h));
 
-    engine.update_node_params_by_id(2, {15.0f, 0.0f});  // mode=15, mask still 0
+    engine.update_node_params_by_id(2, {14.0f, 0.0f});  // mode=14 (HardLight), mask still 0
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     engine.poll_pending_compiles();
     std::vector<float> px2;
     ASSERT_TRUE(wait_for_readback_gen(engine, gen, px2, w, h));
 
     double diff = mean_abs_diff(px1, px2);
-    std::cout << "[mask=0, mode 0 vs 15] mean_abs_diff = " << diff << " (should be ~0)" << std::endl;
+    std::cout << "[mask=0, mode 0 vs 14] mean_abs_diff = " << diff << " (should be ~0)" << std::endl;
     EXPECT_NEAR(diff, 0.0, 0.01) << "mask=0 should force passthrough regardless of mode";
 }

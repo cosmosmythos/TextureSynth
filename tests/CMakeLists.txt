@@ -37,6 +37,7 @@ add_executable(engine_tests
     test_fused_blend_glsl.cpp
     test_blend_cross_chain.cpp
     test_blend_py_repro.cpp
+    test_channel_defaults.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE

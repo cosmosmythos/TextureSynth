@@ -153,7 +153,7 @@ std::string emit_node_shader(const ValidatedNode& vn,
       << "    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));\n";
 
     // Load non-sampler vec4/float inputs via bindless texelFetch, indexed by socket position.
-    // Unconnected Vec4 inputs: baked as vec4(default_value) — no dummy texture.
+    // Unconnected Vec4 inputs: baked as vec4(default_vec4) — no dummy texture.
     // Unconnected Float inputs: direct SSBO read — no sentinel branch.
     uint32_t float_input_idx = 0;
     for (uint32_t i = 0; i < inputs_n; ++i) {
@@ -176,7 +176,9 @@ std::string emit_node_shader(const ValidatedNode& vn,
                 s << "    vec4 in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
                   << i << "])], coord, 0);\n";
             } else {
-                s << "    vec4 in" << i << " = vec4(" << sock.default_value << ");\n";
+                s << "    vec4 in" << i << " = vec4("
+                  << sock.default_vec4[0] << ", " << sock.default_vec4[1] << ", "
+                  << sock.default_vec4[2] << ", " << sock.default_vec4[3] << ");\n";
             }
         }
     }

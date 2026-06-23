@@ -1,5 +1,6 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/array.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/unordered_map.h>
@@ -253,7 +254,8 @@ NB_MODULE(texturesynth_core, m) {
         .def_rw("name",           &Socket::name)
         .def_rw("type",           &Socket::type)
         .def_rw("format",         &Socket::format)
-        .def_rw("default_value",  &Socket::default_value);
+        .def_rw("default_value",  &Socket::default_value)
+        .def_rw("default_vec4",   &Socket::default_vec4);
 
     nb::class_<NodeParam>(m, "NodeParam")
         .def_rw("name",           &NodeParam::name)

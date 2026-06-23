@@ -1,27 +1,28 @@
-"""Blend node — enum dropdown of all Photoshop modes."""
+"""Blend node — 2-input combiner. A = foreground, B = background."""
 import bpy
 from ..base import TextureSynthNode
 from ._common import update_param
 
 SV_TYPE = "blend"
 
-# IMPORTANT: order MUST match blend.glsl mode integers
+# order MUST match blend.glsl mode integers.
 BLEND_MODES = [
-    ('MIX',          "Mix",           ""), ('ADD',          "Add",           ""),
-    ('MULTIPLY',     "Multiply",      ""), ('SCREEN',       "Screen",        ""),
-    ('OVERLAY',      "Overlay",       ""), ('DIFFERENCE',   "Difference",    ""),
-    ('DARKEN',       "Darken",        ""), ('LIGHTEN',      "Lighten",       ""),
-    ('COLOR_BURN',   "Color Burn",    ""), ('COLOR_DODGE',  "Color Dodge",   ""),
-    ('LINEAR_BURN',  "Linear Burn",   ""), ('LINEAR_DODGE', "Linear Dodge",  ""),
-    ('LINEAR_LIGHT', "Linear Light",  ""), ('VIVID_LIGHT',  "Vivid Light",   ""),
-    ('PIN_LIGHT',    "Pin Light",     ""), ('HARD_LIGHT',   "Hard Light",    ""),
-    ('SOFT_LIGHT',   "Soft Light",    ""), ('HARD_MIX',     "Hard Mix",      ""),
-    ('EXCLUSION',    "Exclusion",     ""), ('SUBTRACT',     "Subtract",      ""),
-    ('AVERAGE',      "Average",       ""), ('NEGATION',     "Negation",      ""),
-    ('REFLECT',      "Reflect",       ""), ('GLOW',         "Glow",          ""),
-    ('HARMONY',      "Harmony",       ""), ('HUE',          "Hue",           ""),
-    ('SATURATION',   "Saturation",    ""), ('COLOR',        "Color",         ""),
-    ('LUMINOSITY',   "Luminosity",    ""),
+    ('MIX',          "Mix",          ""),
+    ('ADD',          "Add",          ""),
+    ('SUBTRACT',     "Subtract",     ""),
+    ('MULTIPLY',     "Multiply",     ""),
+    ('MIN',          "Min (Darken)", ""),
+    ('MAX',          "Max (Lighten)",""),
+    ('AVERAGE',      "Average",      ""),
+    ('COLOR_BURN',   "Color Burn",   ""),
+    ('OVERLAY',      "Overlay",      ""),
+    ('SCREEN',       "Screen",       ""),
+    ('COLOR_DODGE',  "Color Dodge",  ""),
+    ('SOFT_LIGHT',   "Soft Light",   ""),
+    ('HARD_LIGHT',   "Hard Light",   ""),
+    ('DIVIDE',       "Divide",       ""),
+    ('DIFFERENCE',   "Difference",   ""),
+    ('EXCLUSION',    "Exclusion",    ""),
 ]
 _MODE_INDEX = {k: i for i, (k, _, _) in enumerate(BLEND_MODES)}
 
@@ -47,8 +48,8 @@ class TS_Blend_Node(TextureSynthNode):
     def init(self, context):
         super().init(context)
         self.inputs.new('TS_DefaultSocketType', "Mask")
-        self.inputs.new('TS_DefaultSocketType', "A")
-        self.inputs.new('TS_DefaultSocketType', "B")
+        self.inputs.new('TS_DefaultSocketType', "A")  # foreground (top, mask=1)
+        self.inputs.new('TS_DefaultSocketType', "B")  # background (base, mask=0)
         self.outputs.new('TS_DefaultSocketType', "")
 
     def draw_buttons(self, context, layout):

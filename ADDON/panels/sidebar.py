@@ -63,7 +63,7 @@ def _register_extra():
     )
     bpy.types.Scene.texturesynth_precision = bpy.props.EnumProperty(
         name="Default Precision",
-        description="Graph-level default bit depth (Nodes can override)",
+        description="Default precision. Per-node settings take priority.",
         items=[
             ('R32', "32-bit Float", ""),
             ('R16', "16-bit Half-Float", ""),

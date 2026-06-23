@@ -1,19 +1,19 @@
 {
     "id": "blend",
     "display_name": "Blend",
-    "includes": ["color_common", "blend_common"],
+    "includes": ["blend_common"],
     "inputs": [
         { "name": "mask", "type": "float", "default": 1.0 },
-        { "name": "a", "type": "vec4" },
-        { "name": "b", "type": "vec4" }
+        { "name": "a", "type": "vec4", "default": [0, 0, 0, 1] },
+        { "name": "b", "type": "vec4", "default": [0, 0, 0, 1] }
     ],
     "outputs": [
         { "name": "color", "type": "vec4" }
     ],
     "params": [
         { "name": "mode", "display_name": "Blend Mode",
-          "description": "See blend.py for the enum mapping.",
-          "default": 0.0, "min": 0.0, "max": 28.0, "step": 1.0, "integer": true }
+          "description": "Combiner mode. A = Foreground (shown at mask=1), B = Background (shown at mask=0). See blend.py for the enum mapping.",
+          "default": 0.0, "min": 0.0, "max": 15.0, "step": 1.0, "integer": true }
     ],
     "shader": "blend.glsl",
     "entry": "node_blend"

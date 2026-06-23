@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "texturesynth"
-version = "1.0.0"
+version = "1.1.0"
 name = "TextureSynth"
 tagline = "Procedural Texture Generator"
 maintainer = "cosmosmythos"
