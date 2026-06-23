@@ -46,8 +46,7 @@ constexpr uint32_t MAX_NODE_PARAMS = 8192;
 enum class SocketType { Float, Vec4, Sampler2D };
 
 // Channel count -- what gets stored. Orthogonal to BitDepth.
-// ID/Metadata are special-purpose and ignore BitDepth (see storage_format_to_vk).
-enum class ChannelFormat : uint8_t { Mono, UV, RGB, RGBA, ID, Metadata };
+enum class ChannelFormat : uint8_t { Mono, UV, RGB, RGBA };
 
 // Bit depth -- how precise each channel is. The second axis of the format
 // system (Substance Designer model). F8=unorm, F16/F32=float.
@@ -135,16 +134,6 @@ struct NodeType {
     // Feature flags this node respects (from .node.json "variant_flags").
     // Empty = no compile-time variants. Populated by NodeRegistryLoader.
     std::vector<std::string> variant_flags;
-
-    // True if this node's glsl_function returns the canonical noise/gradient
-    // vec4(noise, grad.x, grad.y, 1) that the format post-process knows how
-    // to fold into the requested output format. Set by NodeRegistryLoader
-    // from the .node.json "format_sensitive" key. Only noise generators
-    // (perlin, simplex, value, gabor, worley, white_noise) opt in; combiners
-    // (blend, grayscale, invert, ...) and constant sources (color_const,
-    // image) produce final colors and must NOT set this, or the Mono path
-    // would collapse their output to a single channel.
-    bool is_format_sensitive = false;
 
     // Stage 2: how this node participates in chain fusion. Set by
     // NodeRegistryLoader from the .node.json "pass_kind" key (defaults to

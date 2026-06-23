@@ -60,17 +60,33 @@ bool wait_for_readback_gen(Engine& engine, uint64_t gen,
 }
 
 // Print RGBA at the center pixel + per-channel min/max across the image.
+// Also prints first 6 pixel coords where A != 1, to localize the alpha anomaly.
 void dump_rgba(const std::vector<float>& px, uint32_t w, uint32_t h, const char* label) {
     if (px.empty()) { std::cout << "[" << label << "] empty\n"; return; }
     std::cout << "[" << label << "] dims=" << w << "x" << h
               << " pixels=" << (px.size() / 4) << "\n";
     size_t center = ((h / 2) * w + (w / 2)) * 4;
     float rmin = 1e9, rmax = -1e9, gmin = 1e9, gmax = -1e9, bmin = 1e9, bmax = -1e9, amin = 1e9, amax = -1e9;
+    int a_not_one = 0, r_below_max = 0;
     for (size_t i = 0; i + 3 < px.size(); i += 4) {
         rmin = std::min(rmin, px[i]); rmax = std::max(rmax, px[i]);
         gmin = std::min(gmin, px[i+1]); gmax = std::max(gmax, px[i+1]);
         bmin = std::min(bmin, px[i+2]); bmax = std::max(bmax, px[i+2]);
         amin = std::min(amin, px[i+3]); amax = std::max(amax, px[i+3]);
+        if (a_not_one < 6 && std::fabs(px[i+3] - 1.0f) > 1e-4f) {
+            size_t p = i / 4;
+            std::cout << "    A!=1 @ (" << (p % w) << "," << (p / w)
+                      << ") RGBA=(" << px[i] << "," << px[i+1] << ","
+                      << px[i+2] << "," << px[i+3] << ")\n";
+            ++a_not_one;
+        }
+        if (r_below_max < 6 && rmax - px[i] > 1e-4f) {
+            size_t p = i / 4;
+            std::cout << "    R<rmax @ (" << (p % w) << "," << (p / w)
+                      << ") RGBA=(" << px[i] << "," << px[i+1] << ","
+                      << px[i+2] << "," << px[i+3] << ")\n";
+            ++r_below_max;
+        }
     }
     std::cout << "[" << label << "] center RGBA = ("
               << px[center] << ", " << px[center+1] << ", "
@@ -267,6 +283,125 @@ TEST_F(ChannelDefaults, T5_MonoAB_MaskSliderConnectDisconnect) {
         ASSERT_TRUE(render_step("T5.3b slider mask=0.0 AFTER disconnect (expect full B)", g, [&]{
             engine.update_node_params_by_id(2, {8.0f, 5.0f, 2.0f, 0.5f, 0.0f, 99.0f});
             engine.update_node_params_by_id(3, {0.0f, 0.0f});
+        }));
+    }
+
+    SUCCEED();
+}
+
+// T6: Color in A, mask=slider only (no noise mask). mode=Mix.
+// Expected: output = mix(B_default=(0,0,0,1), A=color, f).
+//   mask=1.0 -> A only = color
+//   mask=0.0 -> B only = (0,0,0,1)
+// Bug symptom: mask value leaks into G,B of output. If present here, root cause is engine,
+// not the noise-as-mask texture.
+TEST_F(ChannelDefaults, T6_ColorInA_MaskSliderOnly) {
+    auto render_step = [&](const char* label, Graph& g,
+                           std::function<void()> after_params) -> bool {
+        uint64_t gen = engine.set_graph(g);
+        if (gen == 0u) { std::cout << "[" << label << "] set_graph FAILED\n"; return false; }
+        if (!wait_for_pipeline(engine)) { std::cout << "[" << label << "] no pipeline\n"; return false; }
+        after_params();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        engine.poll_pending_compiles();
+        std::vector<float> px; uint32_t w=0, h=0;
+        if (!wait_for_readback_gen(engine, gen, px, w, h)) {
+            std::cout << "[" << label << "] readback FAILED\n"; return false;
+        }
+        dump_rgba(px, w, h, label);
+        return true;
+    };
+
+    auto make_graph = []() {
+        Graph g;
+        g.nodes.push_back({1, "color_const"});   // A source
+        g.nodes.push_back({2, "blend"});
+        g.connections.push_back({1, 0, 2, 1});   // color -> blend.a
+        g.output_node = 2;
+        return g;
+    };
+
+    // A = red (1,0,0,1), B = empty default (0,0,0,1).
+    // mask=1.0 -> expect (1,0,0,1). mask=0.0 -> expect (0,0,0,1).
+    {
+        Graph g = make_graph();
+        ASSERT_TRUE(render_step("T6.1 color=red, mask=1.0 (expect 1,0,0,1)", g, [&]{
+            // color_const: mode=1 (RGBA), r=1, g=0, b=0, a=1.
+            engine.update_node_params_by_id(1, {1.0f, 1.0f, 0.0f, 0.0f, 1.0f});
+            // blend: mode=0 (Mix), mask=1.0.
+            engine.update_node_params_by_id(2, {0.0f, 1.0f});
+        }));
+    }
+    {
+        Graph g = make_graph();
+        ASSERT_TRUE(render_step("T6.2 color=red, mask=0.0 (expect 0,0,0,1)", g, [&]{
+            engine.update_node_params_by_id(1, {1.0f, 1.0f, 0.0f, 0.0f, 1.0f});
+            engine.update_node_params_by_id(2, {0.0f, 0.0f});
+        }));
+    }
+    // Sweep mask 0.0 -> 0.5 -> 1.0 to see if mask value copies into G,B.
+    {
+        Graph g = make_graph();
+        ASSERT_TRUE(render_step("T6.3 color=red, mask=0.5 (expect 0.5,0,0,1)", g, [&]{
+            engine.update_node_params_by_id(1, {1.0f, 1.0f, 0.0f, 0.0f, 1.0f});
+            engine.update_node_params_by_id(2, {0.0f, 0.5f});
+        }));
+    }
+
+    SUCCEED();
+}
+
+// T7: Color node with format_override=Mono, AS OUTPUT (no Blend).
+// The Mono format post-process runs unconditionally: vec4(r,g,b,a) → vec4(r,0,0,1).
+// Question: does the Color node image actually hold (R,0,0,1) in VRAM, or does
+// its R16_SFLOAT allocation leak stale G/B/A from a prior write?
+TEST_F(ChannelDefaults, T7_ColorNode_MonoOverride_DirectReadback) {
+    auto render_step = [&](const char* label, Graph& g,
+                           std::function<void()> after_params) -> bool {
+        uint64_t gen = engine.set_graph(g);
+        if (gen == 0u) { std::cout << "[" << label << "] set_graph FAILED\n"; return false; }
+        if (!wait_for_pipeline(engine)) { std::cout << "[" << label << "] no pipeline\n"; return false; }
+        after_params();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        engine.poll_pending_compiles();
+        std::vector<float> px; uint32_t w=0, h=0;
+        if (!wait_for_readback_gen(engine, gen, px, w, h)) {
+            std::cout << "[" << label << "] readback FAILED\n"; return false;
+        }
+        dump_rgba(px, w, h, label);
+        return true;
+    };
+
+    // First render: Color=RGBA mode, red. Outputs (1,0,0,1) into RGBA image.
+    {
+        Graph g;
+        g.nodes.push_back({1, "color_const"});
+        g.output_node = 1;
+        ASSERT_TRUE(render_step("T7.1 Color RGBA red (expect 1,0,0,1)", g, [&]{
+            engine.update_node_params_by_id(1, {1.0f, 1.0f, 0.0f, 0.0f, 1.0f});
+        }));
+    }
+    // Second render: Color=Mono override, still RGBA-mode, red.
+    // Mono format post-process: shader writes vec4(r,0,0,1) = (1,0,0,1).
+    // Image is R16_SFLOAT (Mono). imageStore to R16 image: G,B,A channels dropped.
+    // Question: does texelFetch-style readback of a Mono image return (R,0,0,1) or
+    // does it pull stale data from a prior RGBA render into the same memory?
+    {
+        Graph g;
+        g.nodes.push_back({1, "color_const", ChannelFormat::Mono});
+        g.output_node = 1;
+        ASSERT_TRUE(render_step("T7.2 Color Mono override red (expect 1,0,0,1 if clean)", g, [&]{
+            engine.update_node_params_by_id(1, {1.0f, 1.0f, 0.0f, 0.0f, 1.0f});
+        }));
+    }
+    // T7.3: Color=Mono, GRAY mode (mode=0). Shader writes vec4(r,r,r,1)=(0.5,0.5,0.5,1).
+    // Mono image keeps only R. Readback should be (0.5,0,0,1) -- NOT (0.5,0.5,0.5,1).
+    {
+        Graph g;
+        g.nodes.push_back({1, "color_const", ChannelFormat::Mono});
+        g.output_node = 1;
+        ASSERT_TRUE(render_step("T7.3 Color Mono gray 0.5 (expect 0.5,0,0,1)", g, [&]{
+            engine.update_node_params_by_id(1, {0.0f, 0.5f, 0.5f, 0.5f, 1.0f});
         }));
     }
 

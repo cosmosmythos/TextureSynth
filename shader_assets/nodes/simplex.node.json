@@ -17,6 +17,5 @@
         { "name": "seed", "display_name": "Seed", "default": 0.0, "min": 0.0, "max": 65535.0, "step": 1.0, "integer": true }
     ],
     "shader": "simplex.glsl",
-    "entry": "node_simplex",
-    "format_sensitive": true
+    "entry": "node_simplex"
 }

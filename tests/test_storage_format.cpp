@@ -23,16 +23,6 @@ TEST(StorageFormat, VkFormatMatrix) {
     EXPECT_EQ(storage_format_to_vk({ChannelFormat::RGBA, BitDepth::F32}), VK_FORMAT_R32G32B32A32_SFLOAT);
 }
 
-// ID and Metadata are special -- ignore depth.
-TEST(StorageFormat, SpecialFormatsIgnoreDepth) {
-    EXPECT_EQ(storage_format_to_vk({ChannelFormat::ID, BitDepth::F8}),  VK_FORMAT_R32_UINT);
-    EXPECT_EQ(storage_format_to_vk({ChannelFormat::ID, BitDepth::F16}), VK_FORMAT_R32_UINT);
-    EXPECT_EQ(storage_format_to_vk({ChannelFormat::ID, BitDepth::F32}), VK_FORMAT_R32_UINT);
-    EXPECT_EQ(storage_format_to_vk({ChannelFormat::Metadata, BitDepth::F8}),  VK_FORMAT_R32G32B32A32_SFLOAT);
-    EXPECT_EQ(storage_format_to_vk({ChannelFormat::Metadata, BitDepth::F16}), VK_FORMAT_R32G32B32A32_SFLOAT);
-    EXPECT_EQ(storage_format_to_vk({ChannelFormat::Metadata, BitDepth::F32}), VK_FORMAT_R32G32B32A32_SFLOAT);
-}
-
 // Bytes per pixel drives the VRAM budget check.
 TEST(StorageFormat, BytesPerPixel) {
     EXPECT_EQ(storage_format_bytes({ChannelFormat::Mono, BitDepth::F8}),  1u);
@@ -42,8 +32,6 @@ TEST(StorageFormat, BytesPerPixel) {
     EXPECT_EQ(storage_format_bytes({ChannelFormat::RGBA, BitDepth::F8}),  4u);
     EXPECT_EQ(storage_format_bytes({ChannelFormat::RGBA, BitDepth::F16}), 8u);
     EXPECT_EQ(storage_format_bytes({ChannelFormat::RGBA, BitDepth::F32}), 16u);
-    EXPECT_EQ(storage_format_bytes({ChannelFormat::ID,   BitDepth::F32}), 4u);
-    EXPECT_EQ(storage_format_bytes({ChannelFormat::Metadata, BitDepth::F32}), 16u);
 }
 
 // GLSL qualifier MUST match VkFormat exactly -- this is the root-cause fix
@@ -56,7 +44,6 @@ TEST(StorageFormat, GlslQualifierMatchesVkFormat) {
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGBA, BitDepth::F8}),  "rgba8");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGBA, BitDepth::F16}), "rgba16f");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGBA, BitDepth::F32}), "rgba32f");
-    EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::ID,   BitDepth::F32}), "r32ui");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::Mono, BitDepth::F8}), "r8");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::UV,   BitDepth::F8}), "rg8");
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGB,  BitDepth::F16}), "rgba16f");
@@ -66,7 +53,6 @@ TEST(StorageFormat, GlslQualifierMatchesVkFormat) {
 TEST(StorageFormat, DeprecatedShimMatchesF16) {
     EXPECT_EQ(channel_to_vk_format(ChannelFormat::Mono), VK_FORMAT_R16_SFLOAT);
     EXPECT_EQ(channel_to_vk_format(ChannelFormat::UV),   VK_FORMAT_R16G16_SFLOAT);
-    EXPECT_EQ(channel_to_vk_format(ChannelFormat::ID),   VK_FORMAT_R32_UINT);
 }
 
 TEST(StorageFormat, Equality) {

@@ -64,10 +64,10 @@ TEST(FormatDepthKeys, SameFormatSameDepthSameKey) {
     EXPECT_EQ(a.hash(), b.hash());
 }
 
-TEST(FormatDepthKeys, AllSixFormatDepthCombosProduceDistinctKeys) {
+TEST(FormatDepthKeys, AllFormatDepthCombosProduceDistinctKeys) {
     std::set<uint64_t> hashes;
     ChannelFormat fmts[] = {ChannelFormat::Mono, ChannelFormat::UV, ChannelFormat::RGB,
-                            ChannelFormat::RGBA, ChannelFormat::ID, ChannelFormat::Metadata};
+                            ChannelFormat::RGBA};
     BitDepth depths[] = {BitDepth::F8, BitDepth::F16, BitDepth::F32};
 
     for (auto f : fmts) {
@@ -76,9 +76,8 @@ TEST(FormatDepthKeys, AllSixFormatDepthCombosProduceDistinctKeys) {
             hashes.insert(k.hash());
         }
     }
-    // 6 formats × 3 depths = 18 unique keys (ID/Metadata ignore depth but
-    // the depth bits still differ in feature_flags, so hashes differ).
-    EXPECT_EQ(hashes.size(), 18u);
+    // 4 formats × 3 depths = 12 unique keys.
+    EXPECT_EQ(hashes.size(), 12u);
 }
 
 TEST(FormatDepthKeys, DepthBitsPackedCorrectly) {

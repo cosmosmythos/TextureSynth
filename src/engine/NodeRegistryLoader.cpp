@@ -38,8 +38,6 @@ static ChannelFormat parse_channel_format(const std::string& s) {
     if (s == "uv")   return ChannelFormat::UV;
     if (s == "rgb")  return ChannelFormat::RGB;
     if (s == "rgba") return ChannelFormat::RGBA;
-    if (s == "id")   return ChannelFormat::ID;
-    if (s == "metadata")   return ChannelFormat::Metadata;
     return ChannelFormat::RGBA;
 }
 
@@ -141,9 +139,6 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
             for (auto& f : m.value("variant_flags", json::array())) {
                 n.variant_flags.push_back(f.get<std::string>());
             }
-
-            // Opt-in flag for the format post-process (Graph.hpp:is_format_sensitive). Only noise generators set this. Default false.
-            n.is_format_sensitive = m.value("format_sensitive", false);
 
             // Stage 2: how this node participates in chain fusion (7-kind reference: shader_assets/nodes/README.md).
             n.pass_kind = parse_pass_kind(m.value("pass_kind", "pure_pixel"));

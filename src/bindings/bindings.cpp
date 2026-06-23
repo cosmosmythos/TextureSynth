@@ -185,9 +185,7 @@ NB_MODULE(texturesynth_core, m) {
         .value("Mono",     ChannelFormat::Mono)
         .value("UV",       ChannelFormat::UV)
         .value("RGB",      ChannelFormat::RGB)
-        .value("RGBA",     ChannelFormat::RGBA)
-        .value("ID",       ChannelFormat::ID)
-        .value("Metadata", ChannelFormat::Metadata);
+        .value("RGBA",     ChannelFormat::RGBA);
 
     nb::enum_<BitDepth>(m, "BitDepth")
         .value("F8",  BitDepth::F8)

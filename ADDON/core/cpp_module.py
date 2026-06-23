@@ -1,6 +1,7 @@
 """C++ Module Loader: loads texturesynth_core C++ module and initializes engine."""
 import bpy
 import os
+import shutil
 
 from . import logging as _tslog
 
@@ -66,6 +67,8 @@ def load():
         nodes_dir  = os.path.join(addon_root, "shader_assets", "nodes")
         glsl_dir   = os.path.join(addon_root, "shader_assets", "glsl")
 
+        if os.path.isdir(cache_dir):
+            shutil.rmtree(cache_dir, ignore_errors=True)
         os.makedirs(cache_dir, exist_ok=True)
 
         ok = eng.init(enable_validation=False, cache_dir=cache_dir, nodes_dir=nodes_dir, glsl_dir=glsl_dir)

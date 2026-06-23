@@ -335,7 +335,7 @@ void Engine::record_final_blit_(VkCommandBuffer cmd, const PushConstants& pc,
                    final_res->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    output_storage_->image(),  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    1, &blit,
-                   VK_FILTER_LINEAR);
+                   VK_FILTER_NEAREST);
 
     transition(cmd, output_storage_->image(),
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,

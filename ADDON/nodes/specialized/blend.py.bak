@@ -1,0 +1,86 @@
+"""Blend node — HDR-aware 2-input combiner. Arithmetic modes are unclamped;
+contrast modes self-bound to [0,1]. Mask mixes between A and the mode result."""
+import bpy
+from ..base import TextureSynthNode
+from ._common import update_param
+
+SV_TYPE = "blend"
+
+# IMPORTANT: order MUST match blend.glsl mode integers. Tooltips describe the
+# math in artist terms; (HDR) marks modes that can exceed [0,1] / go negative.
+BLEND_MODES = [
+    # --- Base ---
+    ('MIX',          "Mix",           "Linear crossfade: A to B by Mask"),
+    # --- HDR Arithmetic (unclamped) ---
+    ('ADD',          "Add",           "A + B (HDR, may exceed 1)"),
+    ('SUBTRACT',     "Subtract",      "A - B (HDR, may go negative)"),
+    ('MULTIPLY',     "Multiply",      "A * B (darkens; HDR-safe)"),
+    ('DIVIDE',       "Divide",        "A / B (HDR complement to Multiply)"),
+    ('SCREEN',       "Screen",        "1 - (1-A)(1-B) (lightens)"),
+    ('AVERAGE',      "Average",       "(A + B) / 2"),
+    ('DIFFERENCE',   "Difference",    "|A - B|"),
+    ('EXCLUSION',    "Exclusion",     "A + B - 2AB (low-contrast Difference)"),
+    ('NEGATION',     "Negation",      "1 - |1 - A - B|"),
+    ('DARKEN',       "Darken",        "min(A, B) per channel"),
+    ('LIGHTEN',      "Lighten",       "max(A, B) per channel"),
+    # --- Contrast (self-bound to [0,1]) ---
+    ('OVERLAY',      "Overlay",       "Screen where A light, Multiply where dark"),
+    ('SOFT_LIGHT',   "Soft Light",    "Gentler Overlay (PegTop curve)"),
+    ('HARD_LIGHT',   "Hard Light",    "Overlay with B as the pivot"),
+    ('LINEAR_LIGHT', "Linear Light",  "Linear Burn / Linear Dodge by B"),
+    ('VIVID_LIGHT',  "Vivid Light",   "Color Burn / Color Dodge by B"),
+    ('PIN_LIGHT',    "Pin Light",     "Darken / Lighten by B (hard swap)"),
+    ('HARD_MIX',     "Hard Mix",      "Vivid Light thresholded to 0 or 1"),
+    ('COLOR_BURN',   "Color Burn",    "Darken A toward B (increases contrast)"),
+    ('COLOR_DODGE',  "Color Dodge",   "Lighten A toward B (increases contrast)"),
+    ('LINEAR_BURN',  "Linear Burn",   "A + B - 1 (clamped at 0)"),
+    ('REFLECT',      "Reflect",       "A^2 / (1-B) (glossy reflection look)"),
+    ('GLOW',         "Glow",          "Reflect with A and B swapped"),
+    # --- HSL ---
+    ('HUE',          "Hue",           "Hue from B, Sat+Lum from A"),
+    ('SATURATION',   "Saturation",    "Saturation from B, Hue+Lum from A"),
+    ('COLOR',        "Color",         "Hue+Sat from B, Lum from A"),
+    ('LUMINOSITY',   "Luminosity",    "Lum from B, Hue+Sat from A"),
+]
+_MODE_INDEX = {k: i for i, (k, _, _) in enumerate(BLEND_MODES)}
+
+
+class TS_Blend_Node(TextureSynthNode):
+    bl_idname = 'TS_Blend_Node'
+    bl_label  = 'Blend'
+    sv_type   = SV_TYPE
+    ts_category = 'BLEND'
+    supports_format_override = False
+
+    mode: bpy.props.EnumProperty(
+        name="Mode",
+        items=[(k, n, d) for (k, n, d) in BLEND_MODES],
+        default='MIX',
+        update=update_param,
+    )
+    mask: bpy.props.FloatProperty(
+        name="Mask", default=1.0, min=0.0, max=1.0,
+        subtype='FACTOR', update=update_param,
+    )
+
+    def init(self, context):
+        super().init(context)
+        self.inputs.new('TS_DefaultSocketType', "Mask")
+        self.inputs.new('TS_DefaultSocketType', "A")
+        self.inputs.new('TS_DefaultSocketType', "B")
+        self.outputs.new('TS_DefaultSocketType', "")
+
+    def draw_buttons(self, context, layout):
+        self.draw_error_ui(layout)
+        self.draw_format_override_ui(layout)
+        layout.prop(self, "mode", text="")
+
+    # SSBO order: [mode_param, mask_default]
+    def get_parameters(self):
+        return [float(_MODE_INDEX[self.mode]), float(self.mask)]
+
+    def get_named_parameters(self):
+        return None  # mask is a float input; use get_parameters() for full SSBO write
+
+
+NODE_CLASS = TS_Blend_Node

@@ -62,8 +62,7 @@ std::string emit_node_shader(const ValidatedNode& vn,
     std::ostringstream s;
 
     s << "#version 460\n";
-    // TS_FORMAT is consumed by the per-node format post-process (emitted
-    // only for nodes flagged is_format_sensitive). The GLSL preprocessor
+    // TS_FORMAT is consumed by the per-node format post-process. The GLSL preprocessor
     // resolves the #if/#elif chain at parse time, so each cache key gets
     // its own dead-branch-stripped .spv.
     s << "#define TS_FORMAT " << static_cast<uint32_t>(format) << "\n";
@@ -223,16 +222,12 @@ std::string emit_node_shader(const ValidatedNode& vn,
     }
     s << ");\n";
 
-    // ── Format post-process (noise-style outputs only) ──────────────
-    // For nodes that return the canonical noise/gradient vec4(noise,
-    // grad.x, grad.y, 1) we fold the channels into the requested output
-    // format. Combiners and constant sources don't opt in — their `result`
-    // is already a final color and must NOT be collapsed.
-    //
+    // ── Format post-process (unconditional) ────────────────────────
+    // Fold the node's raw output into the requested channel format.
     // The GLSL preprocessor resolves these #if branches at parse time, so
     // each ChannelFormat gets its own dead-stripped .spv in ShaderCache.
-    if (type.is_format_sensitive && !multi_output) {
-        s << "    // Format post-process (per .node.json format_sensitive)\n"
+    if (!multi_output) {
+        s << "    // Format post-process\n"
           << "#if TS_FORMAT == 0\n"        // Mono
           << "    result = vec4(result.r, 0.0, 0.0, 1.0);\n"
           << "#elif TS_FORMAT == 1\n"      // UV
@@ -241,7 +236,7 @@ std::string emit_node_shader(const ValidatedNode& vn,
           << "    result = vec4(result.r, result.g, result.b, 1.0);\n"
           << "#elif TS_FORMAT == 3\n"      // RGBA
           << "    result = vec4(result.r, result.g, result.b, result.a);\n"
-          << "#else\n"                      // ID, Metadata — pass through
+          << "#else\n"                      // passthrough
           << "    result = vec4(result.r, result.g, result.b, result.a);\n"
           << "#endif\n";
     }

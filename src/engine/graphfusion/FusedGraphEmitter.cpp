@@ -26,7 +26,6 @@ struct NodeEmit {
     uint32_t                float_input_count = 0;
     uint32_t                output_count = 1;
     ChannelFormat           format_override = ChannelFormat::RGBA;
-    bool                    is_format_sensitive = false;
 };
 
 using ConnByDst = std::unordered_map<
@@ -107,7 +106,6 @@ FusedResult emit_fused_subgraph(
             if (inp.type == SocketType::Float) ++ne.float_input_count;
         ne.output_count = static_cast<uint32_t>(type->outputs.size());
         ne.format_override = inst->format_override;
-        ne.is_format_sensitive = type->is_format_sensitive;
 
         auto it = conns.find(id);
         for (uint32_t s = 0; s < type->inputs.size(); ++s) {
@@ -278,14 +276,12 @@ FusedResult emit_fused_subgraph(
 
         // Format post-process IMMEDIATELY after each node so downstream
         // nodes in the chain see the formatted value (e.g. Mono zeroes G/B).
-        if (ne.is_format_sensitive
-            && ne.format_override != ChannelFormat::RGBA) {
+        if (ne.format_override != ChannelFormat::RGBA) {
             std::string var = (ne.output_count <= 1)
                 ? "_local_" + std::to_string(i)
                 : "_local_" + std::to_string(i) + "_0";
             static const char* fn_for[] = {
-                "_fmt_mono", "_fmt_uv", "_fmt_rgb", "_fmt_rgba",
-                "_fmt_id", "_fmt_metadata"
+                "_fmt_mono", "_fmt_uv", "_fmt_rgb", "_fmt_rgba"
             };
             size_t fi = static_cast<size_t>(ne.format_override);
             const char* fn = (fi < std::size(fn_for)) ? fn_for[fi] : "_fmt_rgba";

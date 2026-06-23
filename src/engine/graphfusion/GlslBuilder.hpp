@@ -201,8 +201,6 @@ vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
 vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
 vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
 vec4 _fmt_rgba(vec4 v) { return v; }
-vec4 _fmt_id(vec4 v) { return v; }
-vec4 _fmt_metadata(vec4 v) { return v; }
 )";
 }
 

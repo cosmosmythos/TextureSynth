@@ -4,7 +4,6 @@
 namespace te {
 
 // Lookup table for the channel x depth cross-product.
-// Indexing: [ChannelFormat][BitDepth]. Special cases (ID, Metadata) ignore depth.
 struct VkFormatEntry { VkFormat f8, f16, f32; };
 static constexpr VkFormatEntry kFormatTable[] = {
     // Mono
@@ -18,11 +17,6 @@ static constexpr VkFormatEntry kFormatTable[] = {
 };
 
 VkFormat storage_format_to_vk(StorageFormat fmt) {
-    switch (fmt.channels) {
-        case ChannelFormat::ID:       return VK_FORMAT_R32_UINT;
-        case ChannelFormat::Metadata: return VK_FORMAT_R32G32B32A32_SFLOAT;
-        default: break;
-    }
     const auto idx = static_cast<size_t>(fmt.channels);
     if (idx >= std::size(kFormatTable))
         return VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -36,12 +30,6 @@ VkFormat storage_format_to_vk(StorageFormat fmt) {
 }
 
 uint32_t storage_format_bytes(StorageFormat fmt) {
-    // Special cases first.
-    switch (fmt.channels) {
-        case ChannelFormat::ID:       return 4;  // R32_UINT
-        case ChannelFormat::Metadata: return 16; // RGBA32F
-        default: break;
-    }
     const auto idx = static_cast<size_t>(fmt.channels);
     if (idx >= std::size(kFormatTable))
         return 8;
@@ -78,11 +66,6 @@ std::string storage_format_glsl_qualifier(StorageFormat fmt) {
     // VkFormat uses _SFLOAT suffix (R16G16B16A16_SFLOAT); GLSL uses just 'f'
     // (rgba16f). The mapping below must produce the Vulkan-spec image format
     // qualifier matching storage_format_to_vk (validation layer enforces this).
-    switch (fmt.channels) {
-        case ChannelFormat::ID:       return "r32ui";
-        case ChannelFormat::Metadata: return "rgba32f";
-        default: break;
-    }
     switch (fmt.depth) {
         case BitDepth::F8:
             switch (fmt.channels) {

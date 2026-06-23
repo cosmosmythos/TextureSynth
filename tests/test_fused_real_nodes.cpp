@@ -288,7 +288,7 @@ TEST_F(FusedRealNodesGLSL, ColorConst_Blend_ConstantInput) {
 
 TEST_F(FusedRealNodesGLSL, Perlin_FormatSensitive_TailGetsFmt) {
     // Single perlin node with Mono format override.
-    // Tail is perlin (format_sensitive=true), format=Mono -> _fmt_mono applied.
+    // Tail is perlin, format=Mono -> _fmt_mono applied.
     Graph g;
     g.nodes.push_back({1, "perlin", ChannelFormat::Mono});
     g.output_node = 1;
@@ -305,8 +305,8 @@ TEST_F(FusedRealNodesGLSL, Perlin_FormatSensitive_TailGetsFmt) {
 TEST_F(FusedRealNodesGLSL, PerlinToInvert_MiddleFormatIgnored) {
     // perlin(Mono) -> invert
     // perlin is in the middle, invert is the tail.
-    // invert is NOT format-sensitive, so no format post-process assignment.
-    // Note: _fmt_mono may be DEFINED in perlin's includes but should NOT be called.
+    // invert has no format_override (RGBA default), so no format post-process on tail.
+    // perlin's Mono format post-process runs on perlin's output (middle of chain).
     Graph g;
     g.nodes.push_back({1, "perlin", ChannelFormat::Mono});
     g.nodes.push_back({2, "invert"});
@@ -317,7 +317,7 @@ TEST_F(FusedRealNodesGLSL, PerlinToInvert_MiddleFormatIgnored) {
     ASSERT_TRUE(cr.success) << cr.error;
 
     const auto& glsl = cr.pass_plan.chains[0].glsl;
-    // No format post-process assignment because invert (tail) is not format_sensitive.
+    // No format post-process on invert (tail) because its format_override is RGBA (default).
     EXPECT_EQ(glsl.find("_local_1 = _fmt_mono("), std::string::npos);
 }
 
