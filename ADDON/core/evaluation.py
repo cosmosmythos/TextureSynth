@@ -1,6 +1,4 @@
-"""Evaluation Loop: manages the event-driven updates (msgbus) and minimal timer polling.
-Drains Vulkan compilation fence signals and GPU readbacks periodically."""
-import time
+"""Event-driven update loop: msgbus subscriptions + timer that drains Vulkan compile fences and GPU readbacks."""
 import bpy
 from . import cpp_module
 from . import engine_bridge
@@ -10,11 +8,6 @@ _topology_dirty = False
 _params_dirty   = False
 _compiling      = False
 _force_render   = False
-_last_active_node_id = None
-
-# Phase 2 (Holster): proxy-scale interactive rendering.
-# Tracks the last interactive event timestamp for mouse-release detection.
-_last_interactive_time = 0.0
 
 _msgbus_owner = object()
 
@@ -25,9 +18,8 @@ def request_topology_update():
 
 
 def request_param_update():
-    global _params_dirty, _last_interactive_time
+    global _params_dirty
     _params_dirty = True
-    _last_interactive_time = time.time()
 
 
 def _find_ts_trees():
@@ -38,7 +30,7 @@ def _find_ts_trees():
 
 
 def _on_node_select_change():
-    """Callback fired on node selection change. Detects active node changes and requests re-render."""
+    """Node-select callback: detect active-node change and request re-render."""
     global _compiling, _force_render
     engine = cpp_module.get_engine()
     if engine is None or not engine.has_pipeline():
@@ -55,9 +47,8 @@ def _on_node_select_change():
             continue
         if new_id == engine_bridge._last_active_node_id:
             continue
-        
-        # Try to set active node in engine. If the graph doesn't have it yet
-        # (e.g. newly added node), request a full rebuild from the node tree.
+
+        # If the engine's cached graph doesn't have this node yet, request a full rebuild.
         if engine_bridge._check_active_node_change(tree, engine):
             gen = engine_bridge._submitted_generation
             if gen and not engine.is_generation_ready(gen):
@@ -70,8 +61,6 @@ def _on_node_select_change():
             except Exception as e:
                 _tslog.error(f"active-node dispatch exception: {e}")
         else:
-            # set_active_node failed — the engine's cached graph doesn't have this
-            # node yet. Request a full rebuild from the Blender node tree.
             request_topology_update()
 
 
@@ -93,7 +82,6 @@ def _load_post_handler(dummy):
 
 def _evaluation_timer():
     global _topology_dirty, _params_dirty, _compiling, _force_render
-    global _last_active_node_id
 
     if not cpp_module.is_loaded():
         return 1.0
@@ -101,31 +89,31 @@ def _evaluation_timer():
     if engine is None:
         return 1.0
 
-    # Poll Vulkan async compile queue.
     try:
         engine.poll_pending_compiles()
     except Exception as e:
         _tslog.error(f"poll exception: {e}")
 
-    # Sync compile errors to node UI.
+    tree = engine_bridge._find_node_tree()
+
     try:
-        tree = engine_bridge._find_node_tree()
         if tree:
             engine_bridge.sync_node_errors(tree)
     except Exception as e:
         _tslog.error(f"sync errors exception: {e}")
 
-    # Detect mute-state changes (Blender 5.0 may not fire tree.update() on mute).
+    # Blender 5.0 may not fire tree.update() on mute — poll for mute-state changes.
     try:
         if tree is not None and engine_bridge.poll_mute_state(tree):
             request_topology_update()
     except Exception as e:
         _tslog.error(f"mute poll exception: {e}")
 
-    # Poll for active-node change (msgbus on Nodes.active is unreliable in 4.2+).
+    # msgbus on Nodes.active is unreliable in 4.2+ — poll for active-node change.
     try:
         if tree is not None:
             if engine_bridge._check_active_node_change(tree, engine):
+                _tslog.debug(f"active-node changed, gen={engine_bridge._submitted_generation}")
                 gen = engine_bridge._submitted_generation
                 if gen and not engine.is_generation_ready(gen):
                     _compiling = True
@@ -134,21 +122,25 @@ def _evaluation_timer():
                     _force_render = True
                 engine_bridge.update_params_only(force_submit=True)
             else:
-                # set_active_node failed (node not in engine's subgraph).
-                # Only request rebuild if the active node actually changed.
+                # set_active_node failed (node not in engine's subgraph):
+                # only rebuild if the active node actually changed.
                 active = tree.nodes.active
                 if (active is not None
                         and hasattr(active, "stable_id")
                         and int(active.stable_id()) != engine_bridge._last_active_node_id):
+                    _tslog.debug(f"active-node not in engine, requesting rebuild "
+                                 f"(active_id={int(active.stable_id())} "
+                                 f"last_id={engine_bridge._last_active_node_id})")
                     request_topology_update()
     except Exception as e:
         _tslog.error(f"active-node poll exception: {e}")
 
-    # Detect topology changes via fingerprint (catches link changes missed by tree.update())
+    # Topology fingerprint catches link changes missed by tree.update().
     try:
         if tree is not None and engine_bridge._submitted_generation:
             fp = engine_bridge._active_subgraph_fingerprint(tree)
             if fp != engine_bridge._last_active_fingerprint:
+                _tslog.debug("fingerprint changed, requesting topology rebuild")
                 request_topology_update()
     except Exception as e:
         _tslog.error(f"topology fingerprint poll exception: {e}")
@@ -161,24 +153,31 @@ def _evaluation_timer():
             _params_dirty = False
             _force_render = True
             _compiling = not engine.is_generation_ready(generation)
-            _last_active_node_id = None
+            # Sync engine_bridge's active-node tracking so _check_active_node_change()
+            # won't trigger another request_topology_update() on the next tick, which
+            # would resubmit before compilation finishes.
+            active = tree.nodes.active if tree else None
+            if (active is not None
+                    and hasattr(active, 'stable_id')
+                    and getattr(active, 'sv_type', None) is not None):
+                engine_bridge._last_active_node_id = int(active.stable_id())
         return 0.01
 
     submitted = engine_bridge.submitted_generation()
     ready = bool(submitted and engine.is_generation_ready(submitted))
 
-    # Check if compiling is finished — force a render dispatch so the new graph
-    # produces its first frame (e.g. after set_active_node triggered async compile).
+    # Compile finished — force a render dispatch so the new graph emits its first frame
+    # (e.g. after set_active_node triggered async compile).
     if _compiling and ready:
         _compiling = False
         _force_render = True
 
-    # Render if graph is ready and params or topology changed.
     needs_dispatch = ready and (_force_render or _params_dirty)
 
     if needs_dispatch:
         try:
             state = engine_bridge.update_params_only(force_submit=True)
+            _tslog.debug(f"dispatch state={state}")
         except Exception as e:
             _tslog.error(f"dispatch exception: {e}")
             return 0.1
@@ -188,7 +187,6 @@ def _evaluation_timer():
             _params_dirty = False
         return 0.05
 
-    # Sleep less if still compiling shaders.
     if _compiling:
         return 0.05
 
@@ -214,10 +212,7 @@ def register():
 
 def unregister():
     global _topology_dirty, _params_dirty, _compiling, _force_render
-    global _last_active_node_id, _last_interactive_time
     _topology_dirty = _params_dirty = _compiling = _force_render = False
-    _last_active_node_id = None
-    _last_interactive_time = 0.0
     engine_bridge._last_active_fingerprint = None
     engine_bridge._submitted_generation = 0
     engine_bridge._last_applied_generation = 0

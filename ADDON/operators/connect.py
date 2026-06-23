@@ -2,6 +2,7 @@
 import bpy
 from mathutils import Vector
 from ..utils.node_utils import offset_node_location, frame_adjust
+from ..utils.rna import register_class, unregister_class
 
 
 # -- Helpers
@@ -163,13 +164,15 @@ classes = (TS_OT_connect_blend, TS_OT_connect_to_output)
 
 def register():
     for c in classes:
-        bpy.utils.register_class(c)
+        register_class(c)
     _register_keymaps()
 
 def unregister():
     for km, kmi in _KEYMAPS:
-        try: km.keymap_items.remove(kmi)
-        except Exception: pass
+        try:
+            km.keymap_items.remove(kmi)
+        except Exception:
+            pass
     _KEYMAPS.clear()
     for c in reversed(classes):
-        bpy.utils.unregister_class(c)
+        unregister_class(c)

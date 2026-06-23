@@ -1,6 +1,11 @@
-"""Engine Bridge: provides interface between Blender addon and texturesynth_core C++ module.
-Uses stable_id() to make graph identity independent of Blender node ordering or invalidation."""
+"""Bridge between the Blender addon and texturesynth_core. Graph identity uses stable_id()
+so it survives Blender node reordering/invalidation."""
+import json
+import os
+
 import bpy
+import numpy as np
+
 from . import cpp_module
 from . import logging as _tslog
 
@@ -43,48 +48,6 @@ def poll_mute_state(tree):
     return changed
 
 
-def _resolve_preview_root(tree):
-    """Pick the node whose upstream subgraph is the current preview.
-    Returns (root, name_to_id, id_to_name, topo_order, reachable_ids).
-    """
-    name_to_id, id_to_name = _build_id_maps(tree)
-
-    # Check if Output node has any connected inputs (is it being *used*?)
-    output_node = None
-    output_has_inputs = False
-    for n in tree.nodes:
-        if n.bl_idname == 'TS_Output_Node':
-            output_node = n
-            for sock in n.inputs:
-                if sock.is_linked:
-                    output_has_inputs = True
-                    break
-            break
-
-    # When Output exists but has no connections, ignore it and let
-    # the active node (or any TS node) drive the preview.
-    if output_node is None or not output_has_inputs:
-        active = getattr(tree.nodes, "active", None)
-        if (active is not None
-                and getattr(active, "sv_type", None) is not None
-                and active.name in name_to_id):
-            root = active
-        else:
-            # If Output has no connections, fall back to active or any TS node.
-            root = output_node if output_node else None
-            if root is None:
-                for n in tree.nodes:
-                    if getattr(n, "sv_type", None) is not None and n.name in name_to_id:
-                        root = n
-                        break
-    else:
-        root = output_node
-    if root is None:
-        return None, name_to_id, id_to_name, [], set()
-    order, reachable = _get_active_subgraph_topo_order(tree, root, name_to_id)
-    return root, name_to_id, id_to_name, order, reachable
-
-
 def _node_stable_id(node):
     """Get the UUID-derived uint64 from a TextureSynth node, falling back to name hash."""
     if hasattr(node, 'stable_id'):
@@ -108,8 +71,33 @@ def _node_by_name(tree, name):
     return tree.nodes.get(name)
 
 
+def _resolve_preview_root(tree):
+    """Pick the node whose upstream subgraph is the current preview.
+    Output node never drives the preview — the active node always does."""
+    name_to_id, id_to_name = _build_id_maps(tree)
+
+    active = getattr(tree.nodes, "active", None)
+    if (active is not None
+            and getattr(active, "sv_type", None) is not None
+            and active.name in name_to_id
+            and active.bl_idname != 'TS_Output_Node'):
+        root = active
+    else:
+        root = None
+        for n in tree.nodes:
+            if (getattr(n, "sv_type", None) is not None
+                    and n.name in name_to_id
+                    and n.bl_idname != 'TS_Output_Node'):
+                root = n
+                break
+    if root is None:
+        return None, name_to_id, id_to_name, [], set()
+    order, reachable = _get_active_subgraph_topo_order(tree, root, name_to_id)
+    return root, name_to_id, id_to_name, order, reachable
+
+
 def _get_active_subgraph_topo_order(tree, output_node, name_to_id):
-    """Get topological sort order and reachable IDs upstream from output_node."""
+    """Topological sort order and reachable IDs upstream from output_node."""
     reachable_names = set()
 
     def trace(node):
@@ -124,9 +112,7 @@ def _get_active_subgraph_topo_order(tree, output_node, name_to_id):
                     if not link.is_valid:
                         continue
                     src = link.from_node
-                    if src is None:
-                        continue
-                    if src.bl_idname == 'NodeUndefined':
+                    if src is None or src.bl_idname == 'NodeUndefined':
                         continue
                     trace(src)
 
@@ -171,6 +157,44 @@ def _get_active_subgraph_topo_order(tree, output_node, name_to_id):
     return order, reachable_ids
 
 
+def _get_node_as_socket_names(node):
+    """Resolve as_socket param names for a node: instance attr, then class attr,
+    then C++ node library, then JSON manifest."""
+    names = getattr(node, '_as_socket_names', None)
+    if names and isinstance(names, frozenset):
+        return names
+    sv = getattr(node, 'sv_type', None)
+    if sv is None:
+        return frozenset()
+    core = cpp_module.get_core()
+    if core is not None:
+        engine = cpp_module.get_engine()
+        if engine is not None:
+            try:
+                lib = engine.node_library()
+                nt = lib.all().get(sv)
+                if nt is not None:
+                    return frozenset(
+                        p.name for p in nt.params
+                        if getattr(p, 'as_socket', False)
+                    )
+            except Exception:
+                pass
+    try:
+        addon_root = os.path.dirname(os.path.dirname(__file__))
+        manifest_path = os.path.join(addon_root, 'shader_assets', 'nodes', f'{sv}.node.json')
+        if os.path.isfile(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return frozenset(
+                p['name'] for p in data.get('params', [])
+                if p.get('as_socket', False)
+            )
+    except Exception:
+        pass
+    return frozenset()
+
+
 def _build_graph_and_params(tree):
     core = cpp_module.get_core()
     if core is None:
@@ -178,10 +202,9 @@ def _build_graph_and_params(tree):
 
     graph = core.Graph()
     res = _get_resolution()
-    render_res = _get_render_resolution(res)
     pc = core.PushConstants()
-    pc.resolution_x = render_res
-    pc.resolution_y = render_res
+    pc.resolution_x = res
+    pc.resolution_y = res
     pc.seed = 42
     pc.time = 0.0
 
@@ -211,9 +234,7 @@ def _build_graph_and_params(tree):
             if link.to_node.name != output_node.name:
                 continue
             src = link.from_node
-            if src.bl_idname == 'NodeUndefined':
-                continue
-            if getattr(src, 'mute', False):
+            if src.bl_idname == 'NodeUndefined' or getattr(src, 'mute', False):
                 continue
             if src.name in name_to_id:
                 output_src_id = name_to_id[src.name]
@@ -222,8 +243,8 @@ def _build_graph_and_params(tree):
         if not getattr(root, 'mute', False):
             output_src_id = name_to_id[root.name]
 
-    # When root is muted, trace upstream through its inputs to find the first
-    # non-muted source — mirrors C++ resolve_muted_source().
+    # When root is muted, trace upstream through its inputs to find the first non-muted
+    # source — mirrors C++ resolve_muted_source().
     if output_src_id is None and root is not None:
         visited = set()
         queue = [root]
@@ -251,8 +272,8 @@ def _build_graph_and_params(tree):
     if output_src_id is None:
         return None, None, None
 
-    # Add ALL nodes to the graph (not just the active subgraph) so that
-    # set_active_node can switch to any node without recompiling the graph.
+    # Add ALL nodes (not just the active subgraph) so set_active_node can switch to
+    # any node without recompiling the graph.
     for nname, nid in name_to_id.items():
         node = _node_by_name(tree, nname)
         if node is None:
@@ -270,10 +291,9 @@ def _build_graph_and_params(tree):
         if abs_depth is not None:
             depth_kwargs['absolute_depth'] = abs_depth
 
-        is_muted = bool(getattr(node, 'mute', False))
         graph.add_node(
             nid, node.sv_type, fmt_override, node.name,
-            muted=is_muted,
+            muted=bool(getattr(node, 'mute', False)),
             bypassed=False,
             **depth_kwargs,
         )
@@ -286,8 +306,7 @@ def _build_graph_and_params(tree):
         if getattr(node, 'sv_type', None) is None:
             continue
         if hasattr(node, 'get_parameters'):
-            params = node.get_parameters()
-            node_params.extend(params)
+            node_params.extend(node.get_parameters())
 
     graph.set_output(output_src_id)
 
@@ -300,10 +319,10 @@ def _build_graph_and_params(tree):
             continue
         from_sock = sock.links[0].from_socket
         src_idx = list(src.outputs).index(from_sock) if from_sock else 0
-        graph.add_output_target(int(src.stable_id()), sock.name or "Unnamed",
-                                src_idx)
+        graph.add_output_target(int(src.stable_id()), sock.name or "Unnamed", src_idx)
 
-    # Add connections between nodes.
+    # Connections between nodes. dst_idx maps Blender's socket order onto the C++ layout:
+    # regular inputs come first ([0..reg_count)), as_socket params follow ([reg_count..)).
     for link in tree.links:
         if not link.is_valid:
             continue
@@ -323,65 +342,23 @@ def _build_graph_and_params(tree):
             src_idx = list(src.outputs).index(link.from_socket)
         except ValueError:
             continue
-        # Compute dst_idx: as_socket params occupy slots [inputs_n, inputs_n+count)
-        # matching C++ GraphCompiler ordering. Blender's socket order may differ.
         as_names = _get_node_as_socket_names(dst)
         dst_idx = 0
         for sock in dst.inputs:
             if sock == link.to_socket:
                 break
             if sock.name not in as_names:
-                dst_idx += 1  # regular input → sequential slot
-        # as_socket slots go AFTER all regular inputs
+                dst_idx += 1
         if link.to_socket.name in as_names:
             reg_count = sum(1 for s in dst.inputs if s.name not in as_names)
-            as_before = sum(1 for s in dst.inputs if s.name in as_names and
-                            list(dst.inputs).index(s) < list(dst.inputs).index(link.to_socket))
+            dst_inputs = list(dst.inputs)
+            as_before = sum(1 for s in dst_inputs
+                            if s.name in as_names
+                            and dst_inputs.index(s) < dst_inputs.index(link.to_socket))
             dst_idx = reg_count + as_before
         graph.add_connection(s_id, src_idx, d_id, dst_idx)
 
     return graph, pc, node_params
-
-
-def _get_node_as_socket_names(node):
-    """Resolve as_socket param names for a node. Checks instance attr first,
-    then class attr, then falls back to C++ node library or JSON manifest."""
-    names = getattr(node, '_as_socket_names', None)
-    if names and isinstance(names, frozenset) and names:
-        return names
-    sv = getattr(node, 'sv_type', None)
-    if sv is None:
-        return frozenset()
-    core = cpp_module.get_core()
-    if core is not None:
-        engine = cpp_module.get_engine()
-        if engine is not None:
-            try:
-                lib = engine.node_library()
-                all_types = lib.all()
-                nt = all_types.get(sv)
-                if nt is not None:
-                    return frozenset(
-                        p.name for p in nt.params
-                        if getattr(p, 'as_socket', False)
-                    )
-            except Exception:
-                pass
-    import os, json
-    try:
-        import __main__
-        addon_root = os.path.dirname(os.path.dirname(__file__))
-        manifest_path = os.path.join(addon_root, 'shader_assets', 'nodes', f'{sv}.node.json')
-        if os.path.isfile(manifest_path):
-            with open(manifest_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return frozenset(
-                p['name'] for p in data.get('params', [])
-                if p.get('as_socket', False)
-            )
-    except Exception:
-        pass
-    return frozenset()
 
 
 def _build_push_constants(tree):
@@ -390,10 +367,9 @@ def _build_push_constants(tree):
         return None, []
 
     res = _get_resolution()
-    render_res = _get_render_resolution(res)
     pc = core.PushConstants()
-    pc.resolution_x = render_res
-    pc.resolution_y = render_res
+    pc.resolution_x = res
+    pc.resolution_y = res
     pc.seed = 42
     pc.time = 0.0
 
@@ -407,13 +383,10 @@ def _build_push_constants(tree):
         if nname is None:
             continue
         node = _node_by_name(tree, nname)
-        if node is None:
-            continue
-        if getattr(node, 'sv_type', None) is None:
+        if node is None or getattr(node, 'sv_type', None) is None:
             continue
         if hasattr(node, 'get_parameters'):
-            params = node.get_parameters()
-            node_params.extend(params)
+            node_params.extend(node.get_parameters())
 
     return pc, node_params
 
@@ -425,22 +398,12 @@ def _get_resolution():
         return 1024
 
 
-def _get_proxy_scale():
-    """Get proxy scale divisor from scene property. 1 = full resolution."""
-    try:
-        scale_str = getattr(bpy.context.scene, "texturesynth_proxy_scale", '1.0')
-        scale = float(scale_str)
-        if scale <= 0:
-            return 1
-        # Convert float scale (e.g. 0.125) to divisor (e.g. 8)
-        divisor = int(round(1.0 / scale))
-        return max(1, divisor)
-    except Exception:
-        return 1
-
-
-def _get_render_resolution(res):
-    return res  # Phase 2: resolution is always full; proxy scale handled by engine dispatch
+def _redraw_image_editors():
+    """Tag every IMAGE_EDITOR area for redraw after a pixel blit."""
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                area.tag_redraw()
 
 
 def _blit_to_image(pixels, width, height):
@@ -455,15 +418,11 @@ def _blit_to_image(pixels, width, height):
         img.scale(width, height)
     img.pixels.foreach_set(pixels.flatten())
     img.update()
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == 'IMAGE_EDITOR':
-                area.tag_redraw()
+    _redraw_image_editors()
 
 
 def _invalidate_output_image():
-    """Clear the output image to see a failed render clearly."""
-    import numpy as np
+    """Clear the output image so a failed render is visible."""
     img = bpy.data.images.get("TS_Preview2D")
     if img is None:
         return
@@ -473,14 +432,11 @@ def _invalidate_output_image():
     black = np.zeros(w * h * 4, dtype=np.float32)
     img.pixels.foreach_set(black)
     img.update()
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == 'IMAGE_EDITOR':
-                area.tag_redraw()
+    _redraw_image_editors()
 
 
 def _params_signature(tree):
-    """Get a lightweight hash signature of all active parameters in the graph."""
+    """Lightweight hash signature of all active parameters in the graph."""
     root, name_to_id, id_to_name, order, _ = _resolve_preview_root(tree)
     if root is None or not order:
         return None
@@ -506,7 +462,7 @@ def _params_signature(tree):
 
 
 def _active_subgraph_fingerprint(tree):
-    """Get stable topology fingerprint of active nodes, connections, and output source."""
+    """Stable topology fingerprint of active nodes, connections, and output source."""
     root, name_to_id, id_to_name, order, reachable = _resolve_preview_root(tree)
     if root is None or not order:
         return ("no_root",)
@@ -550,32 +506,27 @@ def _active_subgraph_fingerprint(tree):
 
 
 def upload_node_image(node):
-    """Uploads the selected bpy.types.Image pixels to Vulkan via texturesynth_core."""
+    """Upload the node's selected bpy.types.Image pixels to Vulkan via texturesynth_core."""
     engine = cpp_module.get_engine()
     if engine is None:
         return False
-    
+
     nid = _node_stable_id(node)
     image = getattr(node, 'image', None)
     if image is None:
         engine.release_image(nid)
         return True
-        
+
     w, h = image.size
     if w <= 0 or h <= 0:
         engine.release_image(nid)
         return True
-        
-    import numpy as np
+
     try:
-        # Extract flat float RGBA pixels from Blender image.
         pixels = np.empty(w * h * 4, dtype=np.float32)
         image.pixels.foreach_get(pixels)
-        pixels = pixels.reshape((h, w, 4))  # Reshape for engine upload.
-        
-        # Upload pixels to Vulkan engine.
-        success = engine.upload_image(nid, pixels, w, h)
-        return success
+        pixels = pixels.reshape((h, w, 4))
+        return engine.upload_image(nid, pixels, w, h)
     except Exception as e:
         _tslog.error(f"Exception during image upload for node '{node.name}': {e}")
         engine.release_image(nid)
@@ -583,11 +534,7 @@ def upload_node_image(node):
 
 
 def _apply_sidebar_precision(engine):
-    """Read sidebar 'Precision' and set graph default depth on the engine.
-
-    Uses set_graph_default_depth (the SD-style API). Falls back to the
-    legacy set_precision(int) if the cpp module predates this build.
-    """
+    """Read sidebar 'Precision' and set graph default depth on the engine."""
     precision_str = getattr(bpy.context.scene, "texturesynth_precision", 'R16')
     depth_map = {'R8': 0, 'R16': 1, 'R32': 2}
     legacy_mode = depth_map.get(precision_str, 1)
@@ -620,7 +567,7 @@ def submit_graph():
 
     graph, pc, _ = _build_graph_and_params(tree)
     if graph is None:
-        # Return early on transient invalid state (e.g., missing Output node).
+        # Transient invalid state (e.g. missing Output node).
         _last_active_fingerprint = None
         _submitted_generation = 0
         return 0
@@ -656,7 +603,7 @@ def submit_graph():
 
 
 def update_params_only(force_submit: bool = False):
-    """Trigger async render dispatch and return status: landed, in_flight, idle, or invalid."""
+    """Trigger async render dispatch. Returns 'landed', 'in_flight', 'idle', or 'invalid'."""
     global _last_active_fingerprint, _last_applied_generation
     global _last_pushed_param_hash
 
@@ -668,12 +615,11 @@ def update_params_only(force_submit: bool = False):
     if not force_submit:
         return _poll_and_blit(engine)
 
-    # Slow path: check active node and submit render request.
     tree = _find_node_tree()
     if tree is None:
         return 'invalid'
 
-    # Active change = topology change; force full re-submit.
+    # Active-node change = topology change; force full re-submit.
     if _check_active_node_change(tree, engine):
         from .evaluation import request_topology_update
         request_topology_update()
@@ -721,9 +667,7 @@ def _check_active_node_change(tree, engine):
     if not _submitted_generation:
         return False
     active = getattr(tree.nodes, "active", None)
-    if active is None:
-        return False
-    if not hasattr(active, "stable_id"):
+    if active is None or not hasattr(active, "stable_id"):
         return False
     if getattr(active, 'sv_type', None) is None:
         return False
@@ -773,7 +717,7 @@ def submitted_generation():
 
 
 def sync_node_errors(tree):
-    """Polls the core engine for compile errors and updates node UI colors/tooltips."""
+    """Poll the core engine for compile errors and update node UI colors/tooltips."""
     engine = cpp_module.get_engine()
     if engine is None:
         return
@@ -787,7 +731,7 @@ def sync_node_errors(tree):
     for node in tree.nodes:
         if getattr(node, 'sv_type', None) is None and node.bl_idname != 'TS_Output_Node':
             continue
-        
+
         if failed_node_name and node.name == failed_node_name:
             if not getattr(node, 'use_custom_color', False):
                 node.use_custom_color = True
@@ -821,5 +765,4 @@ def _push_params_using_stable_ids(tree, engine):
                 pass
 
         if hasattr(node, 'get_parameters'):
-            params = node.get_parameters()
-            engine.update_node_params_by_id(nid, params)
+            engine.update_node_params_by_id(nid, node.get_parameters())

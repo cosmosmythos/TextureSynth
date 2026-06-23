@@ -1,4 +1,5 @@
 import bpy
+from ..utils.rna import register_class, unregister_class
 
 _CATEGORY_ORDER = ('NOISE', 'INPUT', 'FILTER', 'BLEND', 'COLOR', 'CHANNEL', 'OUTPUT')
 
@@ -63,14 +64,14 @@ def _unregister_extra():
     bpy.types.NODE_MT_add.remove(_draw_add_menu)
 
 
-# Wrap register/unregister to add/remove draw callback to NODE_MT_add.
+# Wrap register/unregister to add/remove the draw callback on NODE_MT_add.
 def register():
     for cls in classes:
-        bpy.utils.register_class(cls)
+        register_class(cls)
     _register_extra()
 
 
 def unregister():
     _unregister_extra()
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+        unregister_class(cls)

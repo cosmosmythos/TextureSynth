@@ -63,7 +63,7 @@ def load():
     # Initialize headless Vulkan context and shader directories.
     try:
         addon_root = os.path.dirname(os.path.dirname(__file__))
-        cache_dir = os.path.join(addon_root, "shader_assets", "shader_cache")        
+        cache_dir = os.path.join(addon_root, "shader_assets", "shader_cache")
         nodes_dir  = os.path.join(addon_root, "shader_assets", "nodes")
         glsl_dir   = os.path.join(addon_root, "shader_assets", "glsl")
 

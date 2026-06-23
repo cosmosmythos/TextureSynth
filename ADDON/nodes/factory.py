@@ -47,10 +47,8 @@ _FORMAT_NAME_TO_OVERRIDE = {
     'uv':      'UV',
     'rgb':     'RGB',
     'rgba':    'RGBA',
-    'id':      'ID',
     'vec4':    'DEFAULT',
     'float':   'MONO',
-    'metadata': 'DEFAULT',
     'default': 'DEFAULT',
 }
 
@@ -67,10 +65,6 @@ def _channel_format_to_override(cf):
         return 'UV'
     if cf == _cf.RGB:
         return 'RGB'
-    if cf == _cf.ID:
-        return 'ID'
-    if cf == _cf.Metadata:
-        return 'DEFAULT'
     return 'DEFAULT'
 
 
@@ -150,8 +144,24 @@ _FORMAT_OVERRIDE_SV_TYPES = {
     'perlin', 'simplex', 'worley', 'gabor', 'value', 'white',
 }
 
+# Enum-backed node params. The integer index in the items tuple is the value
+# stored in the SSBO; _ENUM_INDEX maps the string key back to that index.
+_CHANNEL_ITEMS = [
+    ('R', "R", ""),
+    ('G', "G", ""),
+    ('B', "B", ""),
+    ('A', "A", ""),
+]
+_ENUM_PARAMS = {
+    'channel_mode': CHANNEL_MODE_ITEMS,
+    'r_src': _CHANNEL_ITEMS,
+    'g_src': _CHANNEL_ITEMS,
+    'b_src': _CHANNEL_ITEMS,
+    'a_src': _CHANNEL_ITEMS,
+}
+_ENUM_INDEX = {k: {item[0]: i for i, item in enumerate(v)} for k, v in _ENUM_PARAMS.items()}
+
 _generated_classes = []
-_enum_param_indices = {}
 
 
 def _supports_format_override(type_id, node_type):
@@ -209,22 +219,6 @@ def generate_node_classes(core_module):
 
         param_names = []
 
-        # Setup Float and Int properties from parameters.
-        _CHANNEL_ITEMS = [
-            ('R', "R", ""),
-            ('G', "G", ""),
-            ('B', "B", ""),
-            ('A', "A", ""),
-        ]
-        _ENUM_PARAMS = {
-            'channel_mode': CHANNEL_MODE_ITEMS,
-            'r_src': _CHANNEL_ITEMS,
-            'g_src': _CHANNEL_ITEMS,
-            'b_src': _CHANNEL_ITEMS,
-            'a_src': _CHANNEL_ITEMS,
-        }
-        _ENUM_INDEX = {k: {item[0]: i for i, item in enumerate(v)} for k, v in _ENUM_PARAMS.items()}
-
         for param in node_type.params:
             param_names.append(param.name)
             is_int = bool(getattr(param, "is_integer", False))
@@ -236,7 +230,6 @@ def generate_node_classes(core_module):
 
             if param.name in _ENUM_PARAMS:
                 items = _ENUM_PARAMS[param.name]
-                idx_map = _ENUM_INDEX[param.name]
                 default_key = items[int(round(param.default_value))][0]
                 prop = bpy.props.EnumProperty(
                     name=label, description=desc,
@@ -244,7 +237,6 @@ def generate_node_classes(core_module):
                     default=default_key,
                     update=_update_param,
                 )
-                _enum_param_indices[param.name] = idx_map
             elif is_int:
                 prop = bpy.props.IntProperty(
                     name=label, description=desc,
@@ -270,8 +262,7 @@ def generate_node_classes(core_module):
                 )
             class_dict['__annotations__'][param.name] = prop
 
-        # Register FloatProperty for each float input so the socket draw() can render an
-        # inline slider via layout.prop(node, self.name) when the socket is unlinked.
+        # FloatProperty per float input so the socket draw() renders an inline slider when unlinked.
         for inp in node_type.inputs:
             if not _is_float_input(inp) or _socket_default(inp) is None:
                 continue
@@ -285,7 +276,7 @@ def generate_node_classes(core_module):
                 update=_update_param,
             )
 
-        # Define init function creating sockets and UUID.
+        # init: create sockets + UUID.
         def make_init(node_type_ref):
             def init_func(self, context):
                 self.ts_category = _CATEGORY_BY_SVTYPE.get(self.sv_type, 'FILTER')
@@ -342,7 +333,7 @@ def generate_node_classes(core_module):
             return init_func
         class_dict['init'] = make_init(node_type)
 
-        # Define draw_buttons function.
+        # draw_buttons.
         def make_draw_buttons(p_names, p_as_socket):
             def draw_buttons_func(self, context, layout):
                 self.draw_error_ui(layout)
@@ -355,13 +346,13 @@ def generate_node_classes(core_module):
         p_as_socket = [getattr(p, 'as_socket', False) for p in node_type.params]
         class_dict['draw_buttons'] = make_draw_buttons(param_names, p_as_socket)
 
-        # Collect float input names+defaults for SSBO layout alignment with fused emitter.
+        # Float input names+defaults for SSBO layout alignment with the fused emitter.
         float_input_specs = [(inp.name, float(_socket_default(inp)))
                              for inp in node_type.inputs
                              if _is_float_input(inp) and _socket_default(inp) is not None]
 
-        # Define get_parameters positional mapping.
-        # SSBO layout: [manifest_params..., float_input_defaults...]
+        # get_parameters positional mapping. SSBO layout: [manifest_params..., float_input_defaults...].
+        # Enum params are stored as their integer index via _ENUM_INDEX.
         def make_get_parameters(p_names, float_specs, enum_indices):
             def get_parameters_func(self):
                 result = []
@@ -375,9 +366,9 @@ def generate_node_classes(core_module):
                     result.append(float(getattr(self, name, default)))
                 return result
             return get_parameters_func
-        class_dict['get_parameters'] = make_get_parameters(param_names, float_input_specs, _enum_param_indices)
+        class_dict['get_parameters'] = make_get_parameters(param_names, float_input_specs, _ENUM_INDEX)
 
-        # get_named_parameters: returns None when float inputs exist so _push_params_using_stable_ids
+        # get_named_parameters returns None when float inputs exist, so _push_params_using_stable_ids
         # falls through to get_parameters() which writes both manifest params AND float-input slots.
         def make_get_named_parameters(p_names, has_float_inputs):
             def get_named_parameters_func(self):
@@ -396,34 +387,6 @@ def get_generated_classes():
     return _generated_classes
 
 
-def validate_named_param_contract(core_module):
-    """Verify that generated node parameters cover all manifest parameters."""
-    engine = core_module.get_engine()
-    if engine is None:
-        return
-    lib = engine.node_library().all()
-    for cls in _generated_classes:
-        sv = getattr(cls, 'sv_type', None)
-        if sv is None or sv not in lib:
-            continue
-        manifest_names = {p.name for p in lib[sv].params}
-
-        ann_keys = set(cls.__annotations__.keys())
-        emitted = ann_keys
-        try:
-            import inspect, re
-            src = inspect.getsource(cls.get_named_parameters)
-            keys_in_src = set(re.findall(r'[{,]\s*["\']([a-zA-Z_][a-zA-Z0-9_]*)["\']\s*:', src))
-            if keys_in_src:
-                emitted = keys_in_src
-        except Exception:
-            pass
-
-        missing = manifest_names - emitted
-        if missing:
-            pass
-
-
 def register():
     # Register PropertyGroups and sockets before node classes that reference them.
     for pg in specialized.specialized_property_groups():
@@ -434,9 +397,6 @@ def register():
 
     for cls in _generated_classes:
         register_class(cls)
-
-    from ..core import cpp_module
-    validate_named_param_contract(cpp_module)
 
 
 def unregister():

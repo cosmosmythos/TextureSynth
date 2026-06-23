@@ -3,7 +3,6 @@ import bpy
 from ..utils.rna import register_class, unregister_class
 
 
-# -- Format-specific socket types
 # Each format gets its own socket class with a distinct color.
 
 def _make_socket_draw(bl_idname):
@@ -91,16 +90,12 @@ class TS_IntSocket(TS_TextureSocket):
 
 TextureSynthSocket = TS_DefaultSocket
 
-
-# -- Format socket mapping
-
 FORMAT_SOCKET_MAP = {
     'DEFAULT': 'TS_DefaultSocketType',
     'MONO':    'TS_MonoSocketType',
     'UV':      'TS_UVSocketType',
     'RGB':     'TS_ColorSocketType',
     'RGBA':    'TS_ColorSocketType',
-    'ID':      'TS_IntSocketType',
 }
 
 def _get_channel_format():
@@ -115,7 +110,6 @@ FORMAT_CHANNEL_MAP = {
     'UV':      lambda: _get_channel_format().UV,
     'RGB':     lambda: _get_channel_format().RGB,
     'RGBA':    lambda: _get_channel_format().RGBA,
-    'ID':      lambda: _get_channel_format().ID,
 }
 
 
@@ -167,8 +161,6 @@ class TextureSynthTree(bpy.types.NodeTree):
             request_topology_update()
         except Exception:
             pass
-
-
 # -- Registration
 
 classes = (

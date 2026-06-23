@@ -122,7 +122,7 @@ class TEXTURESYNTH_OT_bake(Operator):
                 _create_black_image(name, w, h)
                 empty += 1
         self.report({"INFO"},
-                    f"Baked {written} target(s), + "
+                    f"Baked {written} target(s), "
                     f"{empty} empty target(s) (unlinked sockets)")
         return {"FINISHED"}
 

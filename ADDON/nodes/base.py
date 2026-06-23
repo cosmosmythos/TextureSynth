@@ -30,12 +30,6 @@ ABSOLUTE_DEPTH_ITEMS = [
     ('F32', "32f",    ""),
 ]
 
-_DEPTH_STR_TO_ENUM = {
-    'F8':  None,  # filled lazily from cpp module
-    'F16': None,
-    'F32': None,
-}
-
 
 def _resolve_depth_enum(depth_str):
     """Map the absolute_depth string ('F8'/'F16'/'F32') to the cpp BitDepth enum."""

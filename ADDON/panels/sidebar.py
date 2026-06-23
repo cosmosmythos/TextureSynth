@@ -1,6 +1,7 @@
 """Sidebar panel."""
 import bpy
 from ..core import cpp_module
+from ..utils.rna import register_class, unregister_class
 
 
 class TEXTURESYNTH_PT_sidebar(bpy.types.Panel):
@@ -30,7 +31,6 @@ class TEXTURESYNTH_PT_sidebar(bpy.types.Panel):
         col = layout.column(align=True)
         col.prop(context.scene, "texturesynth_resolution")
         col.prop(context.scene, "texturesynth_precision", text="")
-        col.prop(context.scene, "texturesynth_proxy_scale", text="")
 
         layout.operator("texturesynth.update", icon='FILE_REFRESH')
 
@@ -41,12 +41,6 @@ classes = (
 
 
 def on_precision_update(self, context):
-    from ..core.evaluation import request_topology_update
-    request_topology_update()
-
-
-def on_proxy_scale_update(self, context):
-    # Render resolution changed, trigger topology update to resize allocations.
     from ..core.evaluation import request_topology_update
     request_topology_update()
 
@@ -63,7 +57,7 @@ def _register_extra():
     )
     bpy.types.Scene.texturesynth_precision = bpy.props.EnumProperty(
         name="Default Precision",
-        description="Default precision. Per-node settings take priority.",
+        description="Graph default precision. Node settings take priority",
         items=[
             ('R32', "32-bit Float", ""),
             ('R16', "16-bit Half-Float", ""),
@@ -72,17 +66,6 @@ def _register_extra():
         default='R16',
         update=on_precision_update,
     )
-    bpy.types.Scene.texturesynth_proxy_scale = bpy.props.EnumProperty(
-        name="Proxy Scale",
-        description="",
-        items=[
-            ('1.0', "100%", ""),
-            ('0.5', "50%", ""),
-            ('0.25', "25%", ""),
-        ],
-        default='1.0',
-        update=on_proxy_scale_update,
-    )
 
 
 def _unregister_extra():
@@ -90,18 +73,16 @@ def _unregister_extra():
         del bpy.types.Scene.texturesynth_resolution
     if hasattr(bpy.types.Scene, "texturesynth_precision"):
         del bpy.types.Scene.texturesynth_precision
-    if hasattr(bpy.types.Scene, "texturesynth_proxy_scale"):
-        del bpy.types.Scene.texturesynth_proxy_scale
 
 
 # Wrap registration to also register/unregister Scene properties.
 def register():
     _register_extra()
     for cls in classes:
-        bpy.utils.register_class(cls)
+        register_class(cls)
 
 
 def unregister():
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+        unregister_class(cls)
     _unregister_extra()
