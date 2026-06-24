@@ -58,8 +58,13 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
     ppc.global           = pc;
     ppc.param_base_slot  = (uint32_t)head.param_base_slot;
     ppc.input_count      = head.input_count;
-    for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
-        ppc.in_sampled_slots[k] = ce.chain_in_sampled_slots[k];
+    for (uint32_t k = 0; k < ce.slot_source_count; ++k) {
+        const auto& src = ce.slot_sources[k];
+        uint32_t pass_idx = ce.member_pass_indices[src.member_idx];
+        ppc.in_sampled_slots[k] = passes_[pass_idx].in_sampled_slots[src.input_index];
+    }
+    for (uint32_t k = ce.slot_source_count; k < MAX_PASS_INPUTS; ++k)
+        ppc.in_sampled_slots[k] = dummy_slot_;
     for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
         ppc.out_storage_slots[t] = tail.out_storage_slots[t];
     ppc.param_ring_idx = param_write_idx_;

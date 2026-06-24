@@ -448,16 +448,17 @@ def _params_signature(tree):
         node = _node_by_name(tree, nname)
         if node is None or getattr(node, 'sv_type', None) is None:
             continue
+        content = node.get_content_signature()
         if hasattr(node, 'get_named_parameters'):
             try:
                 kv = node.get_named_parameters()
                 if kv is not None:
-                    parts.append((nid, tuple(sorted(kv.items()))))
+                    parts.append((nid, tuple(sorted(kv.items())), content))
                     continue
             except Exception:
                 pass
         if hasattr(node, 'get_parameters'):
-            parts.append((nid, tuple(node.get_parameters())))
+            parts.append((nid, tuple(node.get_parameters()), content))
     return tuple(parts)
 
 

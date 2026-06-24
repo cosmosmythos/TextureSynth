@@ -89,5 +89,11 @@ class TS_Image_Node(TextureSynthNode):
                 "u_scale":  float(self.u_scale),
                 "v_scale":  float(self.v_scale)}
 
+    def get_content_signature(self):
+        img = self.image
+        if img is None:
+            return None
+        return (img.as_pointer(), img.size[0], img.size[1])
+
 
 NODE_CLASS = TS_Image_Node

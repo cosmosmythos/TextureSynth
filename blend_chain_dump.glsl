@@ -44,8 +44,6 @@ vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
 vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
 vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
 vec4 _fmt_rgba(vec4 v) { return v; }
-vec4 _fmt_id(vec4 v) { return v; }
-vec4 _fmt_metadata(vec4 v) { return v; }
 
 
 vec4 node_color_const(vec2 uv, float mode, float r, float g, float b, float a) {
@@ -54,77 +52,77 @@ vec4 node_color_const(vec2 uv, float mode, float r, float g, float b, float a) {
 }
 
 
-#ifndef TS_BLEND_COMMON
-#define TS_BLEND_COMMON
+#ifndef TS_BLEND_COMMON
+#define TS_BLEND_COMMON
+
+// a = foreground, b = background. Each fn returns the raw mode result.
+#define TS_BLEND_VEC3(FN) vec3(FN(a.r,b.r), FN(a.g,b.g), FN(a.b,b.b))
+
+float ts_blend_add (float a, float b) { return a + b; }
+float ts_blend_sub (float a, float b) { return a - b; }
+float ts_blend_mul (float a, float b) { return (a < 0.0 && b < 0.0) ? a : a * b; }
+float ts_blend_min (float a, float b) { return min(a, b); }
+float ts_blend_max (float a, float b) { return max(a, b); }
+float ts_blend_avg (float a, float b) { return (a + b) * 0.5; }
+
+float ts_blend_color_burn(float a, float b) { return 1.0 - (1.0 - b) / max(a, 1.0 - b); }
+
+float ts_blend_overlay(float a, float b) {
+    if (a < 0.0 || b < 0.0) return a;
+    return (2.0 * b < 1.0) ? 2.0 * a * b : 1.0 - 2.0 * (1.0 - a) * (1.0 - b);
+}
+
+float ts_blend_screen(float a, float b) {
+    return (a > 0.0 && a < 1.0 && b > 0.0 && b < 1.0) ? a + b - a * b : max(a, b);
+}
+
+float ts_blend_color_dodge(float a, float b) { return b / max(1.0 - a, b); }
+
+float ts_blend_soft_light(float a, float b) {
+    return (a * b < 1.0) ? 2.0 * a * b + b * (1.0 - a * b) : 2.0 * a * b;
+}
+
+float ts_blend_hard_light(float a, float b) {
+    if (2.0 * a < 1.0) return 2.0 * a * b;
+    if (a < 1.0 && b < 1.0) return 1.0 - 2.0 * (1.0 - a) * (1.0 - b);
+    return 0.0;
+}
+
+float ts_blend_divide(float a, float b) { return (b > 0.0) ? a / b : a; }
+float ts_blend_diff (float a, float b) { return abs(a - b); }
+
+float ts_blend_exclusion(float a, float b) {
+    if (a < 0.0 || b < 0.0) return a;
+    return a + b - 2.0 * a * b;
+}
+
+#endif
 
-// a = foreground, b = background. Each fn returns the raw mode result.
-#define TS_BLEND_VEC3(FN) vec3(FN(a.r,b.r), FN(a.g,b.g), FN(a.b,b.b))
-
-float ts_blend_add (float a, float b) { return a + b; }
-float ts_blend_sub (float a, float b) { return a - b; }
-float ts_blend_mul (float a, float b) { return (a < 0.0 && b < 0.0) ? a : a * b; }
-float ts_blend_min (float a, float b) { return min(a, b); }
-float ts_blend_max (float a, float b) { return max(a, b); }
-float ts_blend_avg (float a, float b) { return (a + b) * 0.5; }
-
-float ts_blend_color_burn(float a, float b) { return 1.0 - (1.0 - b) / max(a, 1.0 - b); }
-
-float ts_blend_overlay(float a, float b) {
-    if (a < 0.0 || b < 0.0) return a;
-    return (2.0 * b < 1.0) ? 2.0 * a * b : 1.0 - 2.0 * (1.0 - a) * (1.0 - b);
-}
-
-float ts_blend_screen(float a, float b) {
-    return (a > 0.0 && a < 1.0 && b > 0.0 && b < 1.0) ? a + b - a * b : max(a, b);
-}
-
-float ts_blend_color_dodge(float a, float b) { return b / max(1.0 - a, b); }
-
-float ts_blend_soft_light(float a, float b) {
-    return (a * b < 1.0) ? 2.0 * a * b + b * (1.0 - a * b) : 2.0 * a * b;
-}
-
-float ts_blend_hard_light(float a, float b) {
-    if (2.0 * a < 1.0) return 2.0 * a * b;
-    if (a < 1.0 && b < 1.0) return 1.0 - 2.0 * (1.0 - a) * (1.0 - b);
-    return 0.0;
-}
-
-float ts_blend_divide(float a, float b) { return (b > 0.0) ? a / b : a; }
-float ts_blend_diff (float a, float b) { return abs(a - b); }
-
-float ts_blend_exclusion(float a, float b) {
-    if (a < 0.0 || b < 0.0) return a;
-    return a + b - 2.0 * a * b;
-}
-
-#endif
-
-// a = foreground, b = background. mask: 0 -> B, 1 -> mode result.
-
-vec4 node_blend(vec2 uv, float mask, vec4 a, vec4 b, float mode) {
-    int m = int(mode + 0.5);
-    float f = clamp(mask, 0.0, 1.0);
-    vec3 r = a.rgb;
-    switch (m) {
-        case 1:  r = TS_BLEND_VEC3(ts_blend_add);          break;
-        case 2:  r = TS_BLEND_VEC3(ts_blend_sub);          break;
-        case 3:  r = TS_BLEND_VEC3(ts_blend_mul);          break;
-        case 4:  r = TS_BLEND_VEC3(ts_blend_min);          break;
-        case 5:  r = TS_BLEND_VEC3(ts_blend_max);          break;
-        case 6:  r = TS_BLEND_VEC3(ts_blend_avg);          break;
-        case 7:  r = TS_BLEND_VEC3(ts_blend_color_burn);   break;
-        case 8:  r = TS_BLEND_VEC3(ts_blend_overlay);      break;
-        case 9:  r = TS_BLEND_VEC3(ts_blend_screen);       break;
-        case 10: r = TS_BLEND_VEC3(ts_blend_color_dodge);  break;
-        case 11: r = TS_BLEND_VEC3(ts_blend_soft_light);   break;
-        case 12: r = TS_BLEND_VEC3(ts_blend_hard_light);   break;
-        case 13: r = TS_BLEND_VEC3(ts_blend_divide);       break;
-        case 14: r = TS_BLEND_VEC3(ts_blend_diff);         break;
-        case 15: r = TS_BLEND_VEC3(ts_blend_exclusion);    break;
-    }
-    return vec4(mix(b.rgb, r, f), mix(b.a, a.a, f));
-}
+// a = foreground, b = background. mask: 0 -> B, 1 -> mode result.
+
+vec4 node_blend(vec2 uv, float mask, vec4 a, vec4 b, float mode) {
+    int m = int(mode + 0.5);
+    float f = clamp(mask, 0.0, 1.0);
+    vec3 r = a.rgb;
+    switch (m) {
+        case 1:  r = TS_BLEND_VEC3(ts_blend_add);          break;
+        case 2:  r = TS_BLEND_VEC3(ts_blend_sub);          break;
+        case 3:  r = TS_BLEND_VEC3(ts_blend_mul);          break;
+        case 4:  r = TS_BLEND_VEC3(ts_blend_min);          break;
+        case 5:  r = TS_BLEND_VEC3(ts_blend_max);          break;
+        case 6:  r = TS_BLEND_VEC3(ts_blend_avg);          break;
+        case 7:  r = TS_BLEND_VEC3(ts_blend_color_burn);   break;
+        case 8:  r = TS_BLEND_VEC3(ts_blend_overlay);      break;
+        case 9:  r = TS_BLEND_VEC3(ts_blend_screen);       break;
+        case 10: r = TS_BLEND_VEC3(ts_blend_color_dodge);  break;
+        case 11: r = TS_BLEND_VEC3(ts_blend_soft_light);   break;
+        case 12: r = TS_BLEND_VEC3(ts_blend_hard_light);   break;
+        case 13: r = TS_BLEND_VEC3(ts_blend_divide);       break;
+        case 14: r = TS_BLEND_VEC3(ts_blend_diff);         break;
+        case 15: r = TS_BLEND_VEC3(ts_blend_exclusion);    break;
+    }
+    return vec4(mix(b.rgb, r, f), mix(b.a, a.a, f));
+}
 
 
 

@@ -284,7 +284,9 @@ void Engine::populate_chains_(const PassPlan& plan) {
                     if (cn == src_node) { is_chain_member = true; break; }
                 }
                 if (is_chain_member) continue;
-                ce.chain_in_sampled_slots[ext_slot++] = pe.in_sampled_slots[s];
+                ce.chain_in_sampled_slots[ext_slot] = pe.in_sampled_slots[s];
+                ce.slot_sources[ext_slot] = {(uint32_t)mi, s};
+                ++ext_slot;
             }
             uint32_t as_socket_idx = 0;
             for (uint32_t p = 0; p < (uint32_t)type->params.size(); ++p) {
@@ -299,11 +301,14 @@ void Engine::populate_chains_(const PassPlan& plan) {
                         if (cn == as_src) { as_in_chain = true; break; }
                     }
                     if (as_in_chain) { ++as_socket_idx; continue; }
-                    ce.chain_in_sampled_slots[ext_slot++] = pe.in_sampled_slots[socket_idx];
+                    ce.chain_in_sampled_slots[ext_slot] = pe.in_sampled_slots[socket_idx];
+                    ce.slot_sources[ext_slot] = {(uint32_t)mi, socket_idx};
+                    ++ext_slot;
                 }
                 ++as_socket_idx;
             }
         }
+        ce.slot_source_count = ext_slot;
 
         if (!ch.glsl.empty() && !ch.bypassed) {
             std::optional<std::vector<uint32_t>> blob;

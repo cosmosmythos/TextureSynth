@@ -101,6 +101,13 @@ struct ChainExec {
     uint32_t                         tail_pass_index = 0;
     bool                             bypassed        = false;
     uint32_t                         chain_in_sampled_slots[MAX_PASS_INPUTS] = {};
+
+    struct SlotSource {
+        uint32_t member_idx;   // index into member_pass_indices
+        uint32_t input_index;  // input socket index in that pass
+    };
+    SlotSource slot_sources[MAX_PASS_INPUTS] = {};
+    uint32_t   slot_source_count = 0;
 };
 
 class Engine {

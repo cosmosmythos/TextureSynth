@@ -172,6 +172,11 @@ class TextureSynthNode(bpy.types.Node):
             meta[i] = (orig_name, new_type)
         self._ts_output_meta = meta
 
+    def get_content_signature(self):
+        """Non-slider state affecting output (image pixels, frame ticks).
+        Override on content-bearing nodes. None = slider-only."""
+        return None
+
     def get_format_override(self):
         """Return ChannelFormat enum value for engine."""
         from .tree import FORMAT_CHANNEL_MAP, _get_channel_format

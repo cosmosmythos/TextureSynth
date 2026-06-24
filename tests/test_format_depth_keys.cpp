@@ -103,15 +103,6 @@ TEST(FormatDepthKeys, UVFormatBits) {
     EXPECT_EQ(uv_f32.feature_flags, 17u);
 }
 
-TEST(FormatDepthKeys, IDFormatIgnoresDepthInFormatBits) {
-    // ID = 4, so bits 0..2 = 100 (4). Depth still packed in bits 3..4.
-    auto id_f8  = make_key("x", ChannelFormat::ID, BitDepth::F8);
-    auto id_f32 = make_key("x", ChannelFormat::ID, BitDepth::F32);
-    // Different depth → different key, even though VkFormat is always R32_UINT.
-    EXPECT_NE(id_f8, id_f32);
-    EXPECT_NE(id_f8.hash(), id_f32.hash());
-}
-
 // ── FusedVariantKey: per-node depth packing ──────────────────────
 
 namespace {

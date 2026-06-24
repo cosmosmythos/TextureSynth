@@ -351,3 +351,75 @@ TEST(ImageUpload, ReleasePendingUploadDrains) {
 
     engine.shutdown();
 }
+
+// ---------------------------------------------------------------------------
+// Test 8: Build graph BEFORE upload — chain slots must not go stale.
+//
+// Reproduces the bug where chain_in_sampled_slots[] is snapshotted with the
+// dummy (slot 0) before the image upload completes, and never updated after.
+// The per-pass pe.in_sampled_slots[] IS patched by poll_completed_uploads_(),
+// but the chain snapshot is not — so fused chain dispatch reads the dummy.
+// ---------------------------------------------------------------------------
+TEST(ImageUpload, GraphBeforeUpload_ChainSlotsNotStale) {
+    Engine engine;
+    if (!init_engine_for_image(engine))
+        GTEST_SKIP() << "Vulkan init failed: " << engine.last_error();
+
+    constexpr uint32_t W = 64, H = 64;
+    const uint64_t image_id = 1;
+    const uint64_t levels_id = 2;
+
+    // Build graph FIRST (image not uploaded yet).
+    // Image -> Levels -> Output. The fuser should put both in a chain,
+    // which means chain_in_sampled_slots[0] is set at populate_chains_()
+    // time. If the image hasn't been uploaded yet, this slot will be the dummy.
+    Graph g;
+    g.nodes.push_back({image_id, "image"});
+    g.nodes.push_back({levels_id, "levels"});
+    g.connections.push_back({image_id, 0, levels_id, 0});
+    g.output_node = levels_id;
+
+    uint64_t gen = engine.set_graph(g);
+    ASSERT_NE(gen, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine)) << "pipeline compile timed out";
+
+    // NOW upload the image — after the graph (and chain) was built.
+    // poll_completed_uploads_() will patch pe.in_sampled_slots[] but NOT
+    // chain_in_sampled_slots[] — this is the bug we're testing.
+    auto pixels = make_solid(W, H, 1.0f, 0.5f, 0.25f);
+    ASSERT_TRUE(engine.upload_image(image_id, pixels.data(), W, H));
+    wait_for_upload(engine);
+
+    engine.set_resolution(W, H);
+    PushConstants pc{};
+    pc.resolution_x = W;
+    pc.resolution_y = H;
+    pc.seed = 42;
+    pc.time = 0.0f;
+
+    uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+    ASSERT_NE(ticket, 0u) << "readback submit failed";
+
+    std::vector<float> out;
+    uint32_t ow = 0, oh = 0;
+    uint64_t out_gen = 0;
+    ASSERT_TRUE(wait_for_readback(engine, out, ow, oh, out_gen));
+    EXPECT_EQ(ow, W);
+    EXPECT_EQ(oh, H);
+    EXPECT_EQ(out.size(), W * H * 4u);
+
+    // The output MUST NOT be black. If chain_in_sampled_slots is stale
+    // (pointing to the 1x1 dummy), the shader samples the dummy and
+    // outputs black. With the fix, the shader reads the live slot from
+    // pe.in_sampled_slots and outputs the real image.
+    uint32_t cx = W / 2, cy = H / 2;
+    uint32_t ci = (cy * W + cx) * 4;
+    EXPECT_NEAR(out[ci + 0], 1.0f, 0.05f)
+        << "R channel mismatch — chain_in_sampled_slots likely stale (dummy)";
+    EXPECT_NEAR(out[ci + 1], 0.5f, 0.05f)
+        << "G channel mismatch — chain_in_sampled_slots likely stale (dummy)";
+    EXPECT_NEAR(out[ci + 2], 0.25f, 0.05f)
+        << "B channel mismatch — chain_in_sampled_slots likely stale (dummy)";
+
+    engine.shutdown();
+}
