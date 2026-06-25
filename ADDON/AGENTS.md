@@ -29,6 +29,7 @@ The distributable Blender extension (`id = "texturesynth"`, `blender_manifest.to
 - **Specialized node contract** (`nodes/specialized/__init__.py`): each module may export `SV_TYPE`, `NODE_CLASS`, `SOCKET_CLASSES`, `PROPERTY_GROUPS`. PropertyGroups MUST register before classes that reference them (root §5 gotcha). The factory skips any `sv_type` in `specialized_sv_types()`.
 - **Mute rewiring** (root §5 gotcha): `resolve_muted_source()` must search ALL inputs, not just `input[0]`, because control inputs (mask/gain) sit at socket 0.
 - **Engine lifecycle**: `cpp_module.shutdown()` before re-`load()`. One VkInstance per process.
+- **Image upload caching** (`engine_bridge.py`): `upload_node_image()` compares a cheap signature (`as_pointer, w, h, source, is_dirty`) against `_image_cache` before calling `foreach_get`. Content hash fallback only runs on `is_dirty` flip (edit saved). Cache cleared on `unregister()`. Ring-full retries queue in `_pending_image_uploads` and drain on next `submit_graph()`.
 
 ## Work Guidance
 - After edits: clean Python cache (root §6) — only under `ADDON/`.

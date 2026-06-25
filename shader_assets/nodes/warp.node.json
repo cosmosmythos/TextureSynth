@@ -1,0 +1,18 @@
+{
+    "id": "warp",
+    "display_name": "Warp",
+    "description": "Gradient-based UV displacement",
+    "includes": [],
+    "inputs": [
+        { "name": "image", "type": "sampler2D" },
+        { "name": "gradient", "type": "sampler2D" }
+    ],
+    "outputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "params": [
+        { "name": "intensity", "display_name": "Intensity", "default": 0.1, "min": 0.0, "max": 10.0, "step": 0.01 }
+    ],
+    "shader": "warp.glsl",
+    "entry": "node_warp"
+}

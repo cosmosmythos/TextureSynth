@@ -5,6 +5,7 @@
 #include "engine/graphfusion/DAG.hpp"
 #include "engine/ShaderVariantKey.hpp"
 #include "engine/Logging.hpp"
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -160,6 +161,37 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         return result;
     }
 
+    // 3b. Detect Sampler2D boundaries: nodes with Sampler2D inputs connected
+    // to in-path sources MUST be in a different chain so the source's output
+    // is materialized as a VRAM image (registers can't be sampled as textures).
+    // Force split AFTER the source node so it becomes a chain tail.
+    std::vector<size_t> split_after;
+    {
+        std::unordered_set<NodeId> pset(path.nodes.begin(), path.nodes.end());
+        for (size_t di = 0; di < path.nodes.size(); ++di) {
+            NodeId dst = path.nodes[di];
+            const auto* dn = ir.find(dst);
+            const auto* dt = dn ? lib.find(dn->type_id) : nullptr;
+            if (!dt) continue;
+            for (uint32_t s = 0; s < dt->inputs.size(); ++s) {
+                if (dt->inputs[s].type != SocketType::Sampler2D) continue;
+                for (const auto& c : ir.connections) {
+                    if (c.dst_node == dst && c.dst_socket == s && pset.count(c.src_node)) {
+                        auto sit = std::find(path.nodes.begin(), path.nodes.end(), c.src_node);
+                        if (sit != path.nodes.end()) {
+                            size_t si = static_cast<size_t>(sit - path.nodes.begin());
+                            split_after.push_back(si);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        std::sort(split_after.begin(), split_after.end());
+        split_after.erase(std::unique(split_after.begin(), split_after.end()),
+                          split_after.end());
+    }
+
     // 4. Build DAG from active path and plan fusion groups.
     // Use REAL graph edges from ir.connections, not synthetic linear
     // adjacency. The consumer-constraint check in split_path relies on
@@ -187,8 +219,45 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         per_node_costs.push_back(cost.total());
     }
 
-    fusion::FusionPlanner planner(DEFAULT_REG_BUDGET);
-    auto fusion_plan = planner.plan(dag, path.nodes, per_node_costs);
+    // If Sampler2D boundaries exist, split the active path into sub-paths
+    // and plan each independently. This ensures the source node becomes a
+    // chain tail (its output is materialized as a VRAM image) so the
+    // consumer chain can sample it as a TSTexture.
+    auto plan_chain_group = [&](ActivePath& sub_path,
+                                std::vector<uint32_t>& sub_costs) {
+        std::unordered_set<NodeId> sub_set(sub_path.nodes.begin(), sub_path.nodes.end());
+        dag::DAG<NodeId>::NodeList sub_dag_nodes(sub_path.nodes.begin(), sub_path.nodes.end());
+        dag::DAG<NodeId>::EdgeList sub_dag_edges;
+        for (const auto& c : ir.connections) {
+            if (sub_set.count(c.src_node) && sub_set.count(c.dst_node))
+                sub_dag_edges.push_back({c.src_node, c.dst_node});
+        }
+        dag::DAG<NodeId> sub_dag(std::move(sub_dag_nodes), std::move(sub_dag_edges));
+
+        fusion::FusionPlanner planner(DEFAULT_REG_BUDGET);
+        return planner.plan(sub_dag, sub_path.nodes, sub_costs);
+    };
+
+    fusion::FusionPlan<NodeId> fusion_plan;
+    if (!split_after.empty()) {
+        std::vector<size_t> bounds = {0};
+        for (size_t sa : split_after) bounds.push_back(sa + 1);
+        bounds.push_back(path.nodes.size());
+
+        for (size_t b = 0; b < bounds.size() - 1; ++b) {
+            size_t lo = bounds[b], hi = bounds[b + 1];
+            if (lo >= hi) continue;
+            ActivePath sub;
+            sub.nodes.assign(path.nodes.begin() + lo, path.nodes.begin() + hi);
+            std::vector<uint32_t> sub_costs(per_node_costs.begin() + lo,
+                                            per_node_costs.begin() + hi);
+            auto sub_plan = plan_chain_group(sub, sub_costs);
+            for (auto& g : sub_plan.groups)
+                fusion_plan.groups.push_back(std::move(g));
+        }
+    } else {
+        fusion_plan = plan_chain_group(path, per_node_costs);
+    }
 
     // 5. Emit fused GLSL for each fusion group and create Chain entries.
     // Map node_id -> pass index for chain_index_of_pass.

@@ -634,3 +634,120 @@ TEST_F(FusedRealNodesChain, ParamBaseSlotCorrectness) {
     EXPECT_EQ(cr.param_base_slot[2], 6);  // 6 perlin params + 0 float inputs
     EXPECT_EQ(cr.total_param_floats, 7);  // 6 + 1
 }
+
+// ===========================================================================
+// Part 4: Sampler2D chain-split tests
+// Nodes with Sampler2D inputs (blur, warp) must be in a separate chain
+// from their source so the source's output is materialized as a VRAM image.
+// ===========================================================================
+
+TEST_F(FusedRealNodesGLSL, PerlinToBlur_Sampler2DChainSplit) {
+    // perlin(vec4) -> blur(sampler2D input)
+    // Must produce TWO chains: [perlin] and [blur].
+    // Blur's GLSL must construct a TSTexture, NOT pass a vec4 register.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.connections.push_back({1, 0, 2, 0});  // perlin -> blur.tex (sampler2D)
+    g.output_node = 2;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    // Must produce 2 chains (split at Sampler2D boundary).
+    ASSERT_EQ(cr.pass_plan.chains.size(), 2u)
+        << "perlin->blur must split into 2 chains at Sampler2D boundary";
+
+    // First chain: [perlin], second chain: [blur].
+    bool found_perlin_chain = false, found_blur_chain = false;
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 1) found_perlin_chain = true;
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 2) found_blur_chain = true;
+    }
+    EXPECT_TRUE(found_perlin_chain) << "perlin must be in its own chain (chain tail)";
+    EXPECT_TRUE(found_blur_chain) << "blur must be in its own chain";
+
+    // Blur's chain must use TSTexture constructor for the sampler input.
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 2) {
+            EXPECT_NE(ch.glsl.find("TSTexture"), std::string::npos)
+                << "blur chain must construct TSTexture for sampler input";
+            EXPECT_NE(ch.glsl.find("node_blur"), std::string::npos)
+                << "blur chain must call node_blur";
+            // Must NOT pass a vec4 register as the sampler argument.
+            // The TSTexture constructor should be the second argument.
+            EXPECT_NE(ch.glsl.find("TSTexture("), std::string::npos)
+                << "blur must receive TSTexture, not vec4";
+            break;
+        }
+    }
+}
+
+TEST_F(FusedRealNodesChain, PerlinToBlur_TwoChains) {
+    // Verify chain membership: perlin and blur are in separate chains.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+    ASSERT_EQ(cr.pass_plan.chains.size(), 2u);
+
+    // chain_index_of_pass: perlin and blur must have different chain indices.
+    uint32_t perlin_chain = cr.pass_plan.chain_index_of_pass[0];
+    uint32_t blur_chain = cr.pass_plan.chain_index_of_pass[1];
+    EXPECT_NE(perlin_chain, UINT32_MAX);
+    EXPECT_NE(blur_chain, UINT32_MAX);
+    EXPECT_NE(perlin_chain, blur_chain)
+        << "perlin and blur must be in different chains";
+
+    // Perlin's output must be in active_resources (consumed by blur cross-chain).
+    // This ensures ResourceManager allocates an image for it.
+    ResourceUUID perlin_out{1, 0};
+    EXPECT_NE(cr.pass_plan.active_resources.find(perlin_out),
+              cr.pass_plan.active_resources.end())
+        << "perlin output must be in active_resources (consumed by blur cross-chain)";
+}
+
+TEST_F(FusedRealNodesPixel, PerlinToBlur_DiffersFromPerlin) {
+    // perlin -> blur(intensity=1.0) must produce different output than raw perlin.
+    // A Gaussian blur smooths noise, reducing high-frequency detail.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    uint64_t gen = engine.set_graph(g);
+    ASSERT_NE(gen, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    // Set blur intensity=1.0 (strong blur).
+    engine.update_node_params_by_id(2, {1.0f});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px_blur;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen, px_blur, w, h));
+    EXPECT_GT(avg_brightness(px_blur), 0.0) << "blur output is all-black";
+
+    // Compare with perlin-only output.
+    Graph g1;
+    g1.nodes.push_back({1, "perlin"});
+    g1.output_node = 1;
+    uint64_t gen1 = engine.set_graph(g1);
+    ASSERT_TRUE(wait_for_pipeline(engine));
+    std::vector<float> px_perlin;
+    uint32_t w2 = 0, h2 = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen1, px_perlin, w2, h2));
+
+    // Blur must differ from raw perlin.
+    double diff = 0;
+    for (size_t i = 0; i + 3 < px_blur.size() && i + 3 < px_perlin.size(); i += 4)
+        diff += std::abs(px_blur[i] - px_perlin[i]);
+    EXPECT_GT(diff, 0.0)
+        << "blur(intensity=1.0) output must differ from raw perlin";
+}

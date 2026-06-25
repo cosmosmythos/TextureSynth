@@ -14,9 +14,9 @@ A missing `pass_kind` defaults to `compute`. Old values (`pure_pixel`,
 `boundary`, `reduction`, `feedback`, `debug_preview`) are accepted
 backwards-compatibly and mapped to `compute`.
 
-## File map (14 manifests)
+## File map (16 manifests)
 
-All 14 manifests use the default `compute` — no explicit `pass_kind` key
+All 16 manifests use the default `compute` — no explicit `pass_kind` key
 is needed.
 
 | Manifest | Notes |
@@ -35,6 +35,8 @@ is needed.
 | `image.node.json`        | sampler-bound; per-texel |
 | `separate_rgba.node.json` | multi-output |
 | `remap.node.json`        | range remap |
+| `blur.node.json`         | Gaussian blur; sampler-bound |
+| `warp.node.json`         | gradient-based UV displacement; sampler-bound |
 
 ## GLSL function signature contract
 

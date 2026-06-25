@@ -115,7 +115,9 @@ FusedResult emit_fused_subgraph(
                     if (pr.first == s) { src = pr.second; break; }
                 }
             }
-            if (src != 0 && node_to_index.count(src)) {
+            bool is_sampler_input = (s < type->inputs.size() &&
+                                     type->inputs[s].type == SocketType::Sampler2D);
+            if (src != 0 && node_to_index.count(src) && !is_sampler_input) {
                 uint32_t out_sock = 0;
                 for (const auto& c : ir.connections) {
                     if (c.src_node == src && c.dst_node == id && c.dst_socket == s) {
