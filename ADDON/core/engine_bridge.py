@@ -17,6 +17,14 @@ _last_pushed_param_hash = None
 _last_active_node_id = None
 _last_mute_snapshot = {}  # node.name -> bool(mute)
 
+# B1: image-upload change-detection cache
+# node_stable_id -> (cheap_sig, content_hash)
+_image_cache = {}
+# B3: ring-full retry queue — node_stable_id -> (image_ref, w, h)
+_pending_image_uploads = {}
+
+_HASH_SAMPLE_TARGET = 256  # pixels to sample for content hash
+
 
 def _find_node_tree():
     """Prefer the active TextureSynth node editor tree, fallback to a usable tree."""
@@ -506,8 +514,26 @@ def _active_subgraph_fingerprint(tree):
     return (node_part, tuple(link_part), out_src)
 
 
+def _image_content_hash(image):
+    """Strided sample of image pixels → bytes hash. Catches save/reload that reset is_dirty."""
+    w, h = image.size
+    if w <= 0 or h <= 0:
+        return b""
+    # Read full pixels once, sample rows 0, mid, last
+    all_pixels = np.empty(w * h * 4, dtype=np.float32)
+    image.pixels.foreach_get(all_pixels)
+    rows = {0, h // 2, h - 1}
+    samples = []
+    for r in sorted(rows):
+        start = r * w * 4
+        count = min(w, 32) * 4  # first 32 pixels per row
+        samples.append(all_pixels[start:start + count].tobytes())
+    return b"".join(samples)
+
+
 def upload_node_image(node):
-    """Upload the node's selected bpy.types.Image pixels to Vulkan via texturesynth_core."""
+    """Upload the node's selected bpy.types.Image pixels to Vulkan via texturesynth_core.
+    Skips re-upload if the image hasn't changed (B1 cache)."""
     engine = cpp_module.get_engine()
     if engine is None:
         return False
@@ -516,21 +542,45 @@ def upload_node_image(node):
     image = getattr(node, 'image', None)
     if image is None:
         engine.release_image(nid)
+        _image_cache.pop(nid, None)
         return True
 
     w, h = image.size
     if w <= 0 or h <= 0:
         engine.release_image(nid)
+        _image_cache.pop(nid, None)
         return True
 
+    # Cheap signature: pointer, dims, source type, dirty flag
+    sig = (image.as_pointer(), w, h, image.source, bool(image.is_dirty))
+    cached = _image_cache.get(nid)
+    if cached is not None:
+        old_sig, old_hash = cached
+        if sig == old_sig:
+            return True  # no change at all
+        if sig[:4] == old_sig[:4] and sig[4] != old_sig[4]:
+            # is_dirty flipped (edit saved) — need content hash to confirm
+            ch = _image_content_hash(image)
+            if ch == old_hash:
+                _image_cache[nid] = (sig, ch)
+                return True  # pixels unchanged
+
+    # Upload
     try:
         pixels = np.empty(w * h * 4, dtype=np.float32)
         image.pixels.foreach_get(pixels)
         pixels = pixels.reshape((h, w, 4))
-        return engine.upload_image(nid, pixels, w, h)
+        ok = engine.upload_image(nid, pixels, w, h)
+        if ok:
+            _image_cache[nid] = (sig, _image_content_hash(image))
+        else:
+            # B3: ring full — queue for retry next tick
+            _pending_image_uploads[nid] = (image, w, h)
+        return ok
     except Exception as e:
         _tslog.error(f"Exception during image upload for node '{node.name}': {e}")
         engine.release_image(nid)
+        _image_cache.pop(nid, None)
         return False
 
 
@@ -572,6 +622,24 @@ def submit_graph():
         _last_active_fingerprint = None
         _submitted_generation = 0
         return 0
+
+    # B3: drain pending ring-full retries from previous ticks.
+    if _pending_image_uploads:
+        for nid, (img, rw, rh) in list(_pending_image_uploads.items()):
+            if img is None or not img.name:
+                _pending_image_uploads.pop(nid, None)
+                continue
+            cw, ch = img.size
+            if cw != rw or ch != rh:
+                _pending_image_uploads.pop(nid, None)
+                continue
+            pixels = np.empty(cw * ch * 4, dtype=np.float32)
+            img.pixels.foreach_get(pixels)
+            pixels = pixels.reshape((ch, cw, 4))
+            if engine.upload_image(nid, pixels, cw, ch):
+                _pending_image_uploads.pop(nid, None)
+                sig = (img.as_pointer(), cw, ch, img.source, bool(img.is_dirty))
+                _image_cache[nid] = (sig, _image_content_hash(img))
 
     # Pre-upload images from active image nodes.
     root, name_to_id, id_to_name, order, _ = _resolve_preview_root(tree)

@@ -219,6 +219,8 @@ def unregister():
     engine_bridge._last_pushed_param_hash = None
     engine_bridge._last_active_node_id = None
     engine_bridge._last_mute_snapshot = {}
+    engine_bridge._image_cache.clear()
+    engine_bridge._pending_image_uploads.clear()
     if bpy.app.timers.is_registered(_evaluation_timer):
         bpy.app.timers.unregister(_evaluation_timer)
     bpy.msgbus.clear_by_owner(_msgbus_owner)
