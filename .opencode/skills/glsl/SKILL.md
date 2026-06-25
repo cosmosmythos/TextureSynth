@@ -56,9 +56,32 @@ int ts_wrap(int v, int per) {
 | `floor()` on exact integers | `floor(3.0)` → `3.0` (correct) but `floor(2.999999)` → `2.0` | Ensure period multiplication before floor, not after |
 
 
+## Bindless sampler style
+
+GLSL bindless sampler constructors (`sampler2D(u_sampled[...], samp)`) MUST appear at the point of use in `texture()` calls — they CANNOT be assigned to local variables or passed as function arguments.
+
+**Pattern:** use a `#define` macro to avoid repetition:
+
+```glsl
+#define TSBLUR(o) texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], samp_repeat), uv + (o))
+
+    return TSBLUR(vec2(0))  * 0.2270270270
+         + TSBLUR(+off1)    * 0.3162162162
+         + TSBLUR(-off1)    * 0.3162162162;
+
+#undef TSBLUR
+```
+
+**Rules:**
+- Macro name: `TS` prefix + descriptive suffix (e.g. `TSBLUR`, `TSNOISE`)
+- Always `#undef` after use
+- Little to no comments — let clear naming carry it
+- Alignment: align `=` and `+` operators for readability
+
 ## Verification checklist
 - [ ] No integer `%` on negative values — use `int(mod(float(v), float(per)))` for wrapping
 - [ ] `ts_wrap()` used for all cell coordinate wrapping in tiling noise
 - [ ] Time-shift tiling test passes for non-power-of-2 periods (3, 5, 7, 11)
 - [ ] No `int(float)` truncation where `round()` is intended
 - [ ] Hash functions use `uint` arithmetic throughout (no implicit sign extension)
+- [ ] Bindless samplers use `#define` macros, not locals or function args
