@@ -814,3 +814,106 @@ TEST_F(FusedRealNodesChain, Blur_SingletonChainMembership) {
         }
     }
 }
+
+// ===========================================================================
+// Part 5: Warp node tests
+// ===========================================================================
+
+TEST_F(FusedRealNodesGLSL, Warp_ContainsAllModes) {
+    // Warp GLSL must contain all 4 mode branches: gradient, directional, curl, slope.
+    // Warp is single-pass, so GLSL is in ch.glsl (not ch.sub_pass_glsl).
+    Graph g;
+    g.nodes.push_back({1, "warp"});
+    g.output_node = 1;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 1) {
+            EXPECT_EQ(ch.sub_pass_count, 0u)
+                << "warp is single-pass (sub_pass_count=0)";
+            EXPECT_NE(ch.glsl.find("node_warp"), std::string::npos)
+                << "warp GLSL must contain node_warp function";
+            EXPECT_NE(ch.glsl.find("GetTexelSize"), std::string::npos)
+                << "warp GLSL must use GetTexelSize (not hardcoded texel size)";
+            EXPECT_NE(ch.glsl.find("mode < 0.5"), std::string::npos)
+                << "warp GLSL must contain gradient mode branch";
+            EXPECT_NE(ch.glsl.find("mode < 1.5"), std::string::npos)
+                << "warp GLSL must contain directional mode branch";
+            EXPECT_NE(ch.glsl.find("mode < 2.5"), std::string::npos)
+                << "warp GLSL must contain curl mode branch";
+            break;
+        }
+    }
+}
+
+TEST_F(FusedRealNodesChain, Warp_Sampler2DChainSplit) {
+    // warp(image, gradient) -> both Sampler2D inputs, must be in singleton chain.
+    // warp's source must be materialized as VRAM image.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "warp"});
+    g.connections.push_back({1, 0, 2, 1});  // perlin -> warp.gradient
+    g.output_node = 2;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+    ASSERT_EQ(cr.pass_plan.chains.size(), 2u)
+        << "perlin->warp must split into 2 chains at Sampler2D boundary";
+
+    // Warp must be in singleton chain (Sampler2D boundary).
+    bool found_warp_chain = false;
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 2) found_warp_chain = true;
+    }
+    EXPECT_TRUE(found_warp_chain) << "warp must be in its own chain";
+
+    // Perlin output must be in active_resources.
+    ResourceUUID perlin_out{1, 0};
+    EXPECT_NE(cr.pass_plan.active_resources.find(perlin_out),
+              cr.pass_plan.active_resources.end())
+        << "perlin output must be in active_resources (consumed by warp cross-chain)";
+}
+
+TEST_F(FusedRealNodesPixel, PerlinToWarp_DiffersFromPerlin) {
+    // perlin -> warp(image, gradient) must produce different output than raw perlin.
+    // Connect perlin to BOTH sampler inputs (image + gradient) so it displaces itself.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "warp"});
+    g.connections.push_back({1, 0, 2, 0});  // perlin -> warp.image
+    g.connections.push_back({1, 0, 2, 1});  // perlin -> warp.gradient
+    g.output_node = 2;
+
+    uint64_t gen = engine.set_graph(g);
+    ASSERT_NE(gen, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    // Set warp intensity=0.5, mode=0 (gradient).
+    engine.update_node_params_by_id(2, {0.5f, 0.0f, 0.0f, 0.0f});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px_warp;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen, px_warp, w, h));
+    EXPECT_GT(avg_brightness(px_warp), 0.0) << "warp output is all-black";
+
+    // Compare with perlin-only output.
+    Graph g1;
+    g1.nodes.push_back({1, "perlin"});
+    g1.output_node = 1;
+    uint64_t gen1 = engine.set_graph(g1);
+    ASSERT_TRUE(wait_for_pipeline(engine));
+    std::vector<float> px_perlin;
+    uint32_t w2 = 0, h2 = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen1, px_perlin, w2, h2));
+
+    // Warp must differ from raw perlin.
+    double diff = 0;
+    for (size_t i = 0; i + 3 < px_warp.size() && i + 3 < px_perlin.size(); i += 4)
+        diff += std::abs(px_warp[i] - px_perlin[i]);
+    EXPECT_GT(diff, 0.0)
+        << "warp(intensity=0.5) output must differ from raw perlin";
+}
