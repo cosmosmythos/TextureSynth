@@ -22,7 +22,8 @@ struct PassPushConstants {
     uint32_t      input_count;
     uint32_t      param_ring_idx;
     uint32_t      in_sampled_slots[MAX_PASS_INPUTS];
+    uint32_t      pass_index;  // sub-pass index within multi-pass chain (0, 1, ...)
 };
-static_assert(sizeof(PassPushConstants) == 76, "PassPushConstants size mismatch");
+static_assert(sizeof(PassPushConstants) == 80, "PassPushConstants size mismatch");
 
 } // namespace te

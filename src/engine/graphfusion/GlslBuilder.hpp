@@ -161,6 +161,7 @@ layout(set = 0, binding = 2) uniform sampler samp_repeat;
 layout(set = 0, binding = 3) uniform sampler samp_clamp;
 layout(set = 0, binding = 4) uniform sampler samp_mirror;
 layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+layout(constant_id = 0) const uint ts_pass_index = 0u;
 layout(push_constant, std430) uniform PC {
     uint resolution_x, resolution_y, seed;
     float time;
@@ -169,6 +170,7 @@ layout(push_constant, std430) uniform PC {
     uint input_count;
     uint param_ring_idx;
     uint in_sampled_slots[8];
+    uint pass_index;
 } pc;
 
 struct TSTexture { int slot; vec2 inv_size; };

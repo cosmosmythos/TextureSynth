@@ -1,7 +1,7 @@
 {
     "id": "blur",
     "display_name": "Blur",
-    "description": "Single-pass Gaussian blur",
+    "description": "Separable Gaussian blur (2-pass: horizontal + vertical)",
     "includes": [],
     "inputs": [
         { "name": "tex", "type": "sampler2D" }
@@ -13,5 +13,7 @@
         { "name": "intensity", "display_name": "Intensity", "default": 0.1, "min": 0.0, "max": 5.0, "step": 0.01 }
     ],
     "shader": "blur.glsl",
-    "entry": "node_blur"
+    "entry": "node_blur",
+    "pass_count": 2,
+    "intermediate_count": 1
 }

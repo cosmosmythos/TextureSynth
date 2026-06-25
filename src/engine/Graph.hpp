@@ -141,6 +141,14 @@ struct NodeType {
     // validator, then into ComputePass::kind by GraphCompiler.
     // Stages 3-6 (chain find, chain emit, dispatch) consume this.
     PassKind pass_kind = PassKind::Compute;
+
+    // Multi-pass: how many compute dispatches this node needs (default 1).
+    // >1 means the node is a multi-pass compute node (e.g. separable blur:
+    // pass_count=2, intermediate_count=1). The engine allocates
+    // intermediate_count temp images between sub-passes and dispatches
+    // pass_count times with different pipelines.
+    uint32_t pass_count        = 1;
+    uint32_t intermediate_count = 0;
 };
 
 

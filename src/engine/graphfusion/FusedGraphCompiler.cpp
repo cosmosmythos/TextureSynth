@@ -19,7 +19,9 @@ ShaderVariantKey build_variant_key(const NodeType& type,
                                    uint32_t input_count,
                                    uint32_t param_socket_count,
                                    ChannelFormat format,
-                                   BitDepth depth) {
+                                   BitDepth depth,
+                                   uint32_t sub_pass_index = 0,
+                                   uint32_t pass_count = 1) {
     ShaderVariantKey key;
     key.node_type_id = type.id;
     key.input_count = input_count;
@@ -33,6 +35,11 @@ ShaderVariantKey build_variant_key(const NodeType& type,
     const uint32_t fmt_bits   = static_cast<uint32_t>(format) & 0x7u;
     const uint32_t depth_bits = static_cast<uint32_t>(depth)  & 0x3u;
     key.feature_flags = fmt_bits | (depth_bits << 3);
+
+    if (pass_count > 1) {
+        key.specialization[0] = sub_pass_index;
+        key.specialization_count = 1;
+    }
     return key;
 }
 
@@ -128,7 +135,8 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
 
         if (pass.kind == PassKind::Compute) {
             pass.variant_key = build_variant_key(*type, total_slots, param_socket_count,
-                                                 inst->format_override, inst->resolved_depth);
+                                                 inst->format_override, inst->resolved_depth,
+                                                 0, type->pass_count);
             pass.shader_glsl = ""; // per-node shader not emitted here; chain shader replaces it
         }
         pass.input_socket_count = total_slots;
@@ -161,10 +169,10 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         return result;
     }
 
-    // 3b. Detect Sampler2D boundaries: nodes with Sampler2D inputs connected
-    // to in-path sources MUST be in a different chain so the source's output
-    // is materialized as a VRAM image (registers can't be sampled as textures).
-    // Force split AFTER the source node so it becomes a chain tail.
+    // 3b. Detect boundaries that force chain splits:
+    // 1) Sampler2D: source must be in a different chain (materialized as VRAM image).
+    // 2) Multi-pass nodes (pass_count > 1): must be singleton chains (need intermediates).
+    // Force split AFTER the predecessor so the multi-pass node becomes a chain head.
     std::vector<size_t> split_after;
     {
         std::unordered_set<NodeId> pset(path.nodes.begin(), path.nodes.end());
@@ -173,6 +181,12 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             const auto* dn = ir.find(dst);
             const auto* dt = dn ? lib.find(dn->type_id) : nullptr;
             if (!dt) continue;
+
+            // Multi-pass nodes must be singleton chains.
+            if (dt->pass_count > 1 && di > 0) {
+                split_after.push_back(di - 1);
+            }
+
             for (uint32_t s = 0; s < dt->inputs.size(); ++s) {
                 if (dt->inputs[s].type != SocketType::Sampler2D) continue;
                 for (const auto& c : ir.connections) {
@@ -271,6 +285,15 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         Chain chain;
         chain.nodes = group.nodes;
 
+        // Check if this is a singleton multi-pass node.
+        bool is_multipass = (group.nodes.size() == 1);
+        const NodeType* mp_type = nullptr;
+        if (is_multipass) {
+            const auto* mp_inst = ir.find(group.nodes[0]);
+            mp_type = mp_inst ? lib.find(mp_inst->type_id) : nullptr;
+            if (!mp_type || mp_type->pass_count <= 1) is_multipass = false;
+        }
+
         // Compute param offsets and base slot.
         // chain_base = min global slot so all nodes get non-negative relative offsets.
         uint32_t min_slot = UINT32_MAX;
@@ -304,21 +327,47 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             }
         }
 
-        // Emit fused GLSL.
-        ActivePath group_path;
-        group_path.nodes = group.nodes;
+        if (is_multipass) {
+            // Multi-pass singleton chain: emit per-sub-pass GLSL.
+            chain.sub_pass_count = mp_type->pass_count;
+            chain.intermediate_count = mp_type->intermediate_count;
+            chain.sub_pass_glsl.resize(mp_type->pass_count);
+            chain.sub_pass_variant_keys.resize(mp_type->pass_count);
 
-        auto fused = emit_fused_subgraph(group_path, ir, lib, chain.param_base_slot,
-                                         param_base_slot);
-        if (fused.ok()) {
-            chain.glsl = std::move(fused.source);
-            chain.external_socket_masks = std::move(fused.external_socket_masks);
-            chain.internal_producer_indices = std::move(fused.internal_producer_indices);
-            chain.variant_key = build_fused_key(chain, ir, lib);
+            const auto* inst = ir.find(group.nodes[0]);
+            const uint32_t inputs_n = (uint32_t)mp_type->inputs.size();
+            uint32_t param_socket_count = 0;
+            for (auto& p : mp_type->params) if (p.as_socket) ++param_socket_count;
+
+            auto& pass = plan.passes[pass_idx_by_node[group.nodes[0]]];
+            for (uint32_t sp = 0; sp < mp_type->pass_count; ++sp) {
+                chain.sub_pass_variant_keys[sp] = build_variant_key(
+                    *mp_type, pass.input_socket_count, param_socket_count,
+                    inst->format_override, inst->resolved_depth,
+                    sp, mp_type->pass_count);
+                chain.sub_pass_glsl[sp] = emit_node_shader(
+                    *inst, *mp_type, chain.sub_pass_variant_keys[sp],
+                    pass.param_base_slot, pass.input_socket_count,
+                    inst->format_override, pass.input_resources);
+            }
+            chain.glsl = pass.shader_glsl;
         } else {
-            log_warn("FusedGraphCompiler: group [" +
-                     [&]{ std::string s; for (auto n : group.nodes) s += std::to_string(n) + ","; return s; }() +
-                     "] emit failed: " + fused.error);
+            // Fused chain: emit single fused GLSL.
+            ActivePath group_path;
+            group_path.nodes = group.nodes;
+
+            auto fused = emit_fused_subgraph(group_path, ir, lib, chain.param_base_slot,
+                                             param_base_slot);
+            if (fused.ok()) {
+                chain.glsl = std::move(fused.source);
+                chain.external_socket_masks = std::move(fused.external_socket_masks);
+                chain.internal_producer_indices = std::move(fused.internal_producer_indices);
+                chain.variant_key = build_fused_key(chain, ir, lib);
+            } else {
+                log_warn("FusedGraphCompiler: group [" +
+                         [&]{ std::string s; for (auto n : group.nodes) s += std::to_string(n) + ","; return s; }() +
+                         "] emit failed: " + fused.error);
+            }
         }
 
         plan.chains.push_back(std::move(chain));

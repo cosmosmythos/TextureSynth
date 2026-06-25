@@ -108,6 +108,23 @@ struct ChainExec {
     };
     SlotSource slot_sources[MAX_PASS_INPUTS] = {};
     uint32_t   slot_source_count = 0;
+
+    // Multi-pass: populated when sub_pass_count > 0.
+    // Each sub-pass gets its own pipeline. Intermediate images sit between passes.
+    static constexpr uint32_t MAX_SUB_PASSES = 8;
+    std::vector<std::unique_ptr<ComputePipeline>> sub_pipelines;
+    uint32_t sub_pass_count = 0;
+
+    struct Intermediate {
+        std::unique_ptr<Image> image;
+        uint32_t sampled_slot = BindlessTable::INVALID_SLOT;
+        uint32_t storage_slot = BindlessTable::INVALID_SLOT;
+    };
+    std::vector<Intermediate> intermediates;
+
+    // Per-sub-pass output storage slots: [sub_pass][output_index].
+    // Last sub-pass writes to the chain's final output.
+    uint32_t sub_out_storage_slots[MAX_SUB_PASSES][MAX_PASS_OUTPUTS] = {};
 };
 
 class Engine {

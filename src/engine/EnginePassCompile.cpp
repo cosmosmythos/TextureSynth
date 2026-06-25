@@ -222,6 +222,28 @@ void Engine::retire_all_passes_() {
                 MAX_FRAMES_IN_FLIGHT + 2
             });
         }
+        // Retire sub-pass pipelines.
+        for (auto& sp : ce.sub_pipelines) {
+            if (sp) {
+                retired_passes_.push_back({
+                    std::move(sp),
+                    MAX_FRAMES_IN_FLIGHT + 2
+                });
+            }
+        }
+        // Retire intermediate images and free their bindless slots.
+        for (auto& intermedi : ce.intermediates) {
+            if (intermedi.image) {
+                RetiredImage ri;
+                ri.img = std::move(intermedi.image);
+                ri.frames_remaining = MAX_FRAMES_IN_FLIGHT + 2;
+                retired_images_.push_back(std::move(ri));
+            }
+            if (intermedi.sampled_slot != BindlessTable::INVALID_SLOT)
+                bindless_.free_sampled_slot(intermedi.sampled_slot);
+            if (intermedi.storage_slot != BindlessTable::INVALID_SLOT)
+                bindless_.free_storage_slot(intermedi.storage_slot);
+        }
     }
     chain_execs_.clear();
     chain_id_of_pass_.clear();
@@ -336,6 +358,83 @@ void Engine::populate_chains_(const PassPlan& plan) {
                 }
             }
         }
+
+        // Multi-pass: allocate intermediate images and compile per-sub-pass pipelines.
+        if (ch.sub_pass_count > 1 && !ch.bypassed) {
+            ce.sub_pass_count = ch.sub_pass_count;
+
+            // Allocate intermediate images (pass_count - 1 temps between sub-passes).
+            for (uint32_t i = 0; i < ch.intermediate_count; ++i) {
+                ChainExec::Intermediate intermedi;
+                intermedi.image = std::make_unique<Image>();
+                intermedi.image->create(ctx_, output_w_, output_h_);
+                intermedi.sampled_slot = bindless_.alloc_sampled_slot();
+                intermedi.storage_slot = bindless_.alloc_storage_slot();
+                if (intermedi.sampled_slot != BindlessTable::INVALID_SLOT && intermedi.image->image() != VK_NULL_HANDLE)
+                    bindless_.write_sampled(ctx_, intermedi.sampled_slot,
+                                            intermedi.image->view(), VK_IMAGE_LAYOUT_GENERAL);
+                if (intermedi.storage_slot != BindlessTable::INVALID_SLOT && intermedi.image->image() != VK_NULL_HANDLE)
+                    bindless_.write_storage(ctx_, intermedi.storage_slot,
+                                            intermedi.image->view());
+                ce.intermediates.push_back(std::move(intermedi));
+            }
+
+            // Compile per-sub-pass pipelines.
+            ce.sub_pipelines.reserve(ch.sub_pass_count);
+            for (uint32_t sp = 0; sp < ch.sub_pass_count; ++sp) {
+                std::optional<std::vector<uint32_t>> blob;
+                if (cache_) blob = cache_->load(ch.sub_pass_variant_keys[sp]);
+                if (!blob) {
+                    CompileResult r = compiler_.compile_compute_sync(
+                        ch.sub_pass_glsl[sp],
+                        "chain_" + std::to_string(ci) + "_sp" + std::to_string(sp));
+                    if (r.success) {
+                        if (cache_) cache_->store(ch.sub_pass_variant_keys[sp], r.spirv);
+                        blob = std::move(r.spirv);
+                    } else {
+                        log_warn("sub-pass compile failed: chain " + std::to_string(ci)
+                                 + " sp" + std::to_string(sp) + ": " + r.error_log);
+                    }
+                }
+                if (blob) {
+                    auto pipe = std::make_unique<ComputePipeline>();
+                    const std::string pipe_name = "pipe_chain_" + std::to_string(ci) + "_sp" + std::to_string(sp);
+                    pipe->set_name(pipe_name);
+                    VkSpecializationMapEntry entries[8];
+                    VkSpecializationInfo     spec{};
+                    entries[0] = {0, 0, sizeof(uint32_t)};
+                    spec.mapEntryCount = 1;
+                    spec.pMapEntries = entries;
+                    spec.dataSize = sizeof(uint32_t);
+                    spec.pData = &sp;
+                    if (pipe->create(ctx_, *blob, bindless_.pipeline_layout(), &spec)) {
+                        ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
+                                            (uint64_t)pipe->pipeline(), pipe->name());
+                        ce.sub_pipelines.push_back(std::move(pipe));
+                    } else {
+                        log_warn("sub-pass pipeline creation failed: chain " + std::to_string(ci)
+                                 + " sp" + std::to_string(sp));
+                    }
+                }
+            }
+
+            // Set up per-sub-pass output storage slots.
+            // Intermediate sub-passes write to intermediates[sp].
+            // Last sub-pass writes to the chain's final output.
+            const PassExec& tail = passes_[ce.tail_pass_index];
+            for (uint32_t sp = 0; sp < ch.sub_pass_count; ++sp) {
+                if (sp == ch.sub_pass_count - 1) {
+                    // Last sub-pass: write to final output.
+                    for (uint32_t t = 0; t < tail.output_count && t < MAX_PASS_OUTPUTS; ++t)
+                        ce.sub_out_storage_slots[sp][t] = tail.out_storage_slots[t];
+                } else {
+                    // Intermediate: write to intermediate[sp].
+                    if (sp < ce.intermediates.size())
+                        ce.sub_out_storage_slots[sp][0] = ce.intermediates[sp].storage_slot;
+                }
+            }
+        }
+
         chain_execs_.push_back(std::move(ce));
         membership[(ChainId)ci] = ch.nodes;
     }

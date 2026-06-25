@@ -67,6 +67,13 @@ struct Chain {
 
     // Phase 1c: mirrors ComputePass::bypassed. If any node is bypassed, the whole chain is bypassed (clear-to-zero).
     bool                  bypassed = false;
+
+    // Multi-pass: sub-pass GLSL and variant keys for nodes with pass_count > 1.
+    // Single-pass chains: sub_pass_count == 0 (use legacy single glsl/pipeline).
+    std::vector<std::string>      sub_pass_glsl;
+    std::vector<ShaderVariantKey> sub_pass_variant_keys;
+    uint32_t sub_pass_count     = 0;  // 0 = legacy single-pipeline chain
+    uint32_t intermediate_count = 0;  // temp images between sub-passes
 };
 
 

@@ -26,10 +26,16 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
                                             &zero, 1, &range);
             }
         }
+        // Also clear intermediate images for multi-pass chains.
+        for (auto& intermedi : ce.intermediates) {
+            if (intermedi.image && intermedi.image->image() != VK_NULL_HANDLE)
+                vkCmdClearColorImage(cmd, intermedi.image->image(),
+                                     VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+        }
         return;
     }
-    if (!ce.pipeline) return;
 
+    // Transition input images to general layout.
     for (const auto& inp : head.input_resources) {
         if (inp.node_id == 0) continue;
         auto* src = resources_.get(inp);
@@ -40,6 +46,7 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
         src->layout = VK_IMAGE_LAYOUT_GENERAL;
     }
 
+    // Transition output image to general layout.
     for (uint32_t o = 0; o < tail.output_count; ++o) {
         auto* r = resources_.get(tail.output_resources[o]);
         if (!r) continue;
@@ -49,15 +56,70 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
             resources_.record_alias_write(r->alias_group_id, *r);
     }
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ce.pipeline->pipeline());
     VkDescriptorSet set = bindless_.set();
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             bindless_.pipeline_layout(), 0, 1, &set, 0, nullptr);
+
+    // Multi-pass chain: loop over sub-passes with barriers between them.
+    if (ce.sub_pass_count > 1 && !ce.sub_pipelines.empty()) {
+        for (uint32_t sp = 0; sp < ce.sub_pass_count && sp < (uint32_t)ce.sub_pipelines.size(); ++sp) {
+            // Barrier: transition previous intermediate from storage write to sampled read.
+            if (sp > 0) {
+                uint32_t prev_idx = sp - 1;
+                if (prev_idx < ce.intermediates.size() && ce.intermediates[prev_idx].image)
+                    barrier_compute_write_to_sampled(cmd, ce.intermediates[prev_idx].image->image());
+            }
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              ce.sub_pipelines[sp]->pipeline());
+
+            PassPushConstants ppc{};
+            ppc.global          = pc;
+            ppc.param_base_slot = (uint32_t)head.param_base_slot;
+            ppc.input_count     = head.input_count;
+            ppc.pass_index      = sp;
+
+            // External inputs: same for all sub-passes.
+            for (uint32_t k = 0; k < ce.slot_source_count; ++k) {
+                const auto& src = ce.slot_sources[k];
+                uint32_t pass_idx = ce.member_pass_indices[src.member_idx];
+                ppc.in_sampled_slots[k] = passes_[pass_idx].in_sampled_slots[src.input_index];
+            }
+            for (uint32_t k = ce.slot_source_count; k < MAX_PASS_INPUTS; ++k)
+                ppc.in_sampled_slots[k] = dummy_slot_;
+
+            // Output: intermediate for non-last passes, final output for last.
+            for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
+                ppc.out_storage_slots[t] = ce.sub_out_storage_slots[sp][t];
+
+            ppc.param_ring_idx = param_write_idx_;
+
+            vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
+                               VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(PassPushConstants), &ppc);
+            auto& ts = ts_pools_[ts_pool_write_idx_];
+            const uint32_t qi = ts_query_idx_; ts_query_idx_ += 2;
+            if (ts.pool != VK_NULL_HANDLE && qi + 1 < ts.capacity) {
+                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi);
+                vkCmdDispatch(cmd, gx, gy, 1);
+                vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ts.pool, qi + 1);
+            } else {
+                vkCmdDispatch(cmd, gx, gy, 1);
+            }
+            ++last_dispatch_count_;
+        }
+        return;
+    }
+
+    // Single-pipeline chain: original path.
+    if (!ce.pipeline) return;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ce.pipeline->pipeline());
 
     PassPushConstants ppc{};
     ppc.global           = pc;
     ppc.param_base_slot  = (uint32_t)head.param_base_slot;
     ppc.input_count      = head.input_count;
+    ppc.pass_index       = 0;
     for (uint32_t k = 0; k < ce.slot_source_count; ++k) {
         const auto& src = ce.slot_sources[k];
         uint32_t pass_idx = ce.member_pass_indices[src.member_idx];
@@ -271,6 +333,7 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
             ppc.global           = pc;
             ppc.param_base_slot  = (uint32_t)pe.param_base_slot;
             ppc.input_count      = pe.input_count;
+            ppc.pass_index       = 0;
             for (uint32_t k = 0; k < MAX_PASS_INPUTS; ++k)
                 ppc.in_sampled_slots[k] = pe.in_sampled_slots[k];
             for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)

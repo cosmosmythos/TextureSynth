@@ -143,6 +143,10 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
             // Stage 2: how this node participates in chain fusion (7-kind reference: shader_assets/nodes/README.md).
             n.pass_kind = parse_pass_kind(m.value("pass_kind", "pure_pixel"));
 
+            // Multi-pass: how many compute dispatches this node needs.
+            n.pass_count         = m.value("pass_count", 1);
+            n.intermediate_count = m.value("intermediate_count", 0);
+
             auto shader_file = m.at("shader").get<std::string>();
             std::unordered_set<std::string> loaded;
             n.glsl_function = assemble_glsl(

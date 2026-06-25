@@ -27,7 +27,9 @@ static ShaderVariantKey build_variant_key(const NodeType& type,
                                            uint32_t input_count,
                                            uint32_t param_socket_count,
                                            ChannelFormat format,
-                                           BitDepth depth) {
+                                           BitDepth depth,
+                                           uint32_t sub_pass_index = 0,
+                                           uint32_t pass_count = 1) {
 
     ShaderVariantKey key;
     key.node_type_id   = type.id;
@@ -46,6 +48,13 @@ static ShaderVariantKey build_variant_key(const NodeType& type,
     const uint32_t fmt_bits   = static_cast<uint32_t>(format) & 0x7u;
     const uint32_t depth_bits = static_cast<uint32_t>(depth) & 0x3u;
     key.feature_flags = fmt_bits | (depth_bits << 3);
+
+    // Multi-pass: specialization constant distinguishes sub-passes.
+    // ts_pass_index (constant_id=0) is baked into SPIR-V for dead-code elimination.
+    if (pass_count > 1) {
+        key.specialization[0] = sub_pass_index;
+        key.specialization_count = 1;
+    }
 
     return key;
 }
@@ -95,7 +104,16 @@ std::string emit_node_shader(const ValidatedNode& vn,
       << "    uint  input_count;\n"
       << "    uint  param_ring_idx;\n"
       << "    uint  in_sampled_slots[" << MAX_PASS_INPUTS << "];\n"
+      << "    uint  pass_index;\n"
       << "} pc;\n\n";
+
+    // ── Multi-pass specialization constant ────────────────────────
+    // ts_pass_index (constant_id=0) distinguishes sub-passes (0=H, 1=V for blur).
+    // The GLSL compiler bakes this value into SPIR-V at pipeline creation,
+    // enabling dead-code elimination of the inactive branch.
+    if (type.pass_count > 1) {
+        s << "layout(constant_id = 0) const uint ts_pass_index = 0u;\n\n";
+    }
 
     // ── Sampler2D helpers ──────────────────────────────────────────
     s << "struct TSTexture { int slot; vec2 inv_size; };\n\n";
@@ -315,8 +333,10 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
             // from NodeInstance by validate_graph, depth resolved by
             // resolve_node_depths) into the cache key so each variant gets
             // its own .spv. See build_variant_key for the encoding.
+            // Multi-pass nodes: each sub-pass gets its own key via specialization[0].
             pass.variant_key = build_variant_key(*type, total_slots, param_socket_count,
-                                                 inst->format_override, inst->resolved_depth);
+                                                 inst->format_override, inst->resolved_depth,
+                                                 0, type->pass_count);
             pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots, inst->format_override, pass.input_resources);
         }
         pass.input_socket_count = total_slots;
@@ -324,59 +344,110 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
     }
     plan.final_output_resource = {ir.output_node, ir.output_socket};
 
-    // Stage 6 aliasing: compute lifetimes and color classes (no chains).
-    {
-        plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
+    // Multi-pass chains: for nodes with pass_count > 1, create a singleton
+    // Chain with sub-pass GLSL and variant keys. The chain dispatch loop
+    // will iterate over sub-passes with intermediate images between them.
+    plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
+    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
+        auto& pass = plan.passes[i];
+        const auto* inst = ir.find(pass.node_id);
+        const auto* type = lib.find(pass.type_id);
+        if (!inst || !type || type->pass_count <= 1) continue;
 
-        for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
-            const auto& pass = plan.passes[i];
-            for (const auto& rid : pass.output_resources) {
-                auto& lt = plan.lifetimes[rid];
-                if (lt.first_pass == UINT32_MAX) lt.first_pass = i;
-                lt.last_pass = i;
-            }
-            for (const auto& rid : pass.input_resources) {
-                if (rid.node_id == 0) continue;
-                auto& lt = plan.lifetimes[rid];
-                lt.last_pass = i;
-                if (lt.first_pass == UINT32_MAX) lt.first_pass = 0;
+        // Create singleton chain for this multi-pass node.
+        Chain chain;
+        chain.nodes.push_back(pass.node_id);
+        chain.param_base_slot = pass.param_base_slot;
+        chain.total_inputs = pass.input_socket_count;
+        chain.total_outputs = 1;
+        chain.total_params = 0;
+        chain.bypassed = pass.bypassed;
+
+        const uint32_t inputs_n = (uint32_t)type->inputs.size();
+        uint32_t param_socket_count = 0;
+        for (auto& p : type->params) if (p.as_socket) ++param_socket_count;
+        uint32_t float_input_count = 0;
+        for (const auto& inp : type->inputs)
+            if (inp.type == SocketType::Float) ++float_input_count;
+
+        chain.param_offsets.push_back(0);
+        chain.param_global_slots.push_back(pass.param_base_slot);
+        chain.total_params = (uint32_t)type->params.size() + float_input_count;
+
+        // Emit per-sub-pass GLSL with different specialization constants.
+        chain.sub_pass_count = type->pass_count;
+        chain.intermediate_count = type->intermediate_count;
+        chain.sub_pass_glsl.resize(type->pass_count);
+        chain.sub_pass_variant_keys.resize(type->pass_count);
+
+        for (uint32_t sp = 0; sp < type->pass_count; ++sp) {
+            chain.sub_pass_variant_keys[sp] = build_variant_key(
+                *type, pass.input_socket_count, param_socket_count,
+                inst->format_override, inst->resolved_depth,
+                sp, type->pass_count);
+            chain.sub_pass_glsl[sp] = emit_node_shader(
+                *inst, *type, chain.sub_pass_variant_keys[sp],
+                pass.param_base_slot, pass.input_socket_count,
+                inst->format_override, pass.input_resources);
+        }
+
+        // Store legacy single-pass glsl for backward compat (used by bypass path).
+        chain.glsl = pass.shader_glsl;
+
+        uint32_t chain_idx = (uint32_t)plan.chains.size();
+        plan.chains.push_back(std::move(chain));
+        plan.chain_index_of_pass[i] = chain_idx;
+    }
+
+    // Stage 6 aliasing: compute lifetimes and color classes.
+    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
+        const auto& pass = plan.passes[i];
+        for (const auto& rid : pass.output_resources) {
+            auto& lt = plan.lifetimes[rid];
+            if (lt.first_pass == UINT32_MAX) lt.first_pass = i;
+            lt.last_pass = i;
+        }
+        for (const auto& rid : pass.input_resources) {
+            if (rid.node_id == 0) continue;
+            auto& lt = plan.lifetimes[rid];
+            lt.last_pass = i;
+            if (lt.first_pass == UINT32_MAX) lt.first_pass = 0;
+        }
+    }
+    auto& fo_lt = plan.lifetimes[plan.final_output_resource];
+    fo_lt.first_pass = 0;
+    fo_lt.last_pass = UINT32_MAX;
+
+    struct Colored { ResourceUUID rid; uint32_t first, last; };
+    std::vector<Colored> items;
+    for (auto& kv : plan.lifetimes) {
+        if (kv.first == plan.final_output_resource) continue;
+        if (kv.second.first_pass == kv.second.last_pass) continue;
+        if (kv.second.last_pass == UINT32_MAX) continue;
+        items.push_back({kv.first, kv.second.first_pass, kv.second.last_pass});
+    }
+    std::sort(items.begin(), items.end(),
+        [](const Colored& a, const Colored& b) {
+            if (a.first != b.first) return a.first < b.first;
+            return a.last < b.last;
+        });
+
+    std::vector<uint32_t> color_end;
+    uint32_t next_color = 1;
+    for (auto& item : items) {
+        bool found = false;
+        for (uint32_t c = 0; c < (uint32_t)color_end.size(); ++c) {
+            if (color_end[c] < item.first) {
+                plan.color_classes[item.rid] = c + 1;
+                color_end[c] = item.last;
+                found = true;
+                break;
             }
         }
-        auto& fo_lt = plan.lifetimes[plan.final_output_resource];
-        fo_lt.first_pass = 0;
-        fo_lt.last_pass = UINT32_MAX;
-
-        struct Colored { ResourceUUID rid; uint32_t first, last; };
-        std::vector<Colored> items;
-        for (auto& kv : plan.lifetimes) {
-            if (kv.first == plan.final_output_resource) continue;
-            if (kv.second.first_pass == kv.second.last_pass) continue;
-            if (kv.second.last_pass == UINT32_MAX) continue;
-            items.push_back({kv.first, kv.second.first_pass, kv.second.last_pass});
-        }
-        std::sort(items.begin(), items.end(),
-            [](const Colored& a, const Colored& b) {
-                if (a.first != b.first) return a.first < b.first;
-                return a.last < b.last;
-            });
-
-        std::vector<uint32_t> color_end;
-        uint32_t next_color = 1;
-        for (auto& item : items) {
-            bool found = false;
-            for (uint32_t c = 0; c < (uint32_t)color_end.size(); ++c) {
-                if (color_end[c] < item.first) {
-                    plan.color_classes[item.rid] = c + 1;
-                    color_end[c] = item.last;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                plan.color_classes[item.rid] = next_color;
-                color_end.push_back(item.last);
-                ++next_color;
-            }
+        if (!found) {
+            plan.color_classes[item.rid] = next_color;
+            color_end.push_back(item.last);
+            ++next_color;
         }
     }
 

@@ -645,6 +645,7 @@ TEST_F(FusedRealNodesGLSL, PerlinToBlur_Sampler2DChainSplit) {
     // perlin(vec4) -> blur(sampler2D input)
     // Must produce TWO chains: [perlin] and [blur].
     // Blur's GLSL must construct a TSTexture, NOT pass a vec4 register.
+    // Blur chain must have sub_pass_count == 2 (separable: H + V).
     Graph g;
     g.nodes.push_back({1, "perlin"});
     g.nodes.push_back({2, "blur"});
@@ -670,14 +671,27 @@ TEST_F(FusedRealNodesGLSL, PerlinToBlur_Sampler2DChainSplit) {
     // Blur's chain must use TSTexture constructor for the sampler input.
     for (const auto& ch : cr.pass_plan.chains) {
         if (ch.nodes.size() == 1 && ch.nodes[0] == 2) {
-            EXPECT_NE(ch.glsl.find("TSTexture"), std::string::npos)
-                << "blur chain must construct TSTexture for sampler input";
-            EXPECT_NE(ch.glsl.find("node_blur"), std::string::npos)
-                << "blur chain must call node_blur";
-            // Must NOT pass a vec4 register as the sampler argument.
-            // The TSTexture constructor should be the second argument.
-            EXPECT_NE(ch.glsl.find("TSTexture("), std::string::npos)
-                << "blur must receive TSTexture, not vec4";
+            // Multi-pass: sub_pass_count must be 2 (H + V).
+            EXPECT_EQ(ch.sub_pass_count, 2u)
+                << "blur chain must have sub_pass_count=2 (separable blur)";
+            EXPECT_EQ(ch.intermediate_count, 1u)
+                << "blur chain must have intermediate_count=1";
+
+            // Sub-pass GLSL must exist and contain TSTexture.
+            ASSERT_EQ(ch.sub_pass_glsl.size(), 2u)
+                << "blur chain must have 2 sub-pass GLSL sources";
+            for (uint32_t sp = 0; sp < 2; ++sp) {
+                EXPECT_NE(ch.sub_pass_glsl[sp].find("TSTexture"), std::string::npos)
+                    << "sub-pass " << sp << " must construct TSTexture";
+                EXPECT_NE(ch.sub_pass_glsl[sp].find("node_blur"), std::string::npos)
+                    << "sub-pass " << sp << " must call node_blur";
+                EXPECT_NE(ch.sub_pass_glsl[sp].find("0.2270270270"), std::string::npos)
+                    << "sub-pass " << sp << " must contain Gaussian kernel coefficients";
+            }
+
+            // Legacy glsl field: for multi-pass chains this is the node-level emit
+            // (not the full chain wrapper), so it may not contain TSTexture.
+            // The important check is the sub-pass GLSLs above.
             break;
         }
     }
@@ -713,7 +727,7 @@ TEST_F(FusedRealNodesChain, PerlinToBlur_TwoChains) {
 
 TEST_F(FusedRealNodesPixel, PerlinToBlur_DiffersFromPerlin) {
     // perlin -> blur(intensity=1.0) must produce different output than raw perlin.
-    // A Gaussian blur smooths noise, reducing high-frequency detail.
+    // A separable Gaussian blur smooths noise, reducing high-frequency detail.
     Graph g;
     g.nodes.push_back({1, "perlin"});
     g.nodes.push_back({2, "blur"});
@@ -750,4 +764,53 @@ TEST_F(FusedRealNodesPixel, PerlinToBlur_DiffersFromPerlin) {
         diff += std::abs(px_blur[i] - px_perlin[i]);
     EXPECT_GT(diff, 0.0)
         << "blur(intensity=1.0) output must differ from raw perlin";
+}
+
+TEST_F(FusedRealNodesGLSL, Blur_VariantKeysDifferPerSubPass) {
+    // The two sub-passes must have different variant keys
+    // (specialization[0] = 0 for H, 1 for V).
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 2) {
+            ASSERT_EQ(ch.sub_pass_variant_keys.size(), 2u);
+            EXPECT_NE(ch.sub_pass_variant_keys[0], ch.sub_pass_variant_keys[1])
+                << "H and V sub-passes must have different variant keys";
+            // Specialization constant should differ.
+            EXPECT_EQ(ch.sub_pass_variant_keys[0].specialization[0], 0u);
+            EXPECT_EQ(ch.sub_pass_variant_keys[1].specialization[0], 1u);
+            EXPECT_EQ(ch.sub_pass_variant_keys[0].specialization_count, 1u);
+            EXPECT_EQ(ch.sub_pass_variant_keys[1].specialization_count, 1u);
+            break;
+        }
+    }
+}
+
+TEST_F(FusedRealNodesChain, Blur_SingletonChainMembership) {
+    // Blur chain must be a singleton (one node).
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+    ASSERT_EQ(cr.pass_plan.chains.size(), 2u);
+
+    // Blur must be in a singleton chain with sub_pass_count=2.
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 2) {
+            EXPECT_EQ(ch.sub_pass_count, 2u);
+            EXPECT_EQ(ch.nodes.size(), 1u);
+            break;
+        }
+    }
 }
