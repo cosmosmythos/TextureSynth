@@ -379,6 +379,8 @@ void Engine::shutdown_internal_() {
 
     dummy_slot_ = BindlessTable::INVALID_SLOT;
     output_storage_slot_ = BindlessTable::INVALID_SLOT;
+    output_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    dummy_layout_  = VK_IMAGE_LAYOUT_UNDEFINED;
     // Release external image slots.
     for (auto& kv : ext_sampled_slot_) bindless_.free_sampled_slot(kv.second);
     ext_sampled_slot_.clear();

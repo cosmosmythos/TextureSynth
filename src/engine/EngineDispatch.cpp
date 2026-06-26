@@ -42,7 +42,7 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
         if (!src) continue;
         if (src->layout == VK_IMAGE_LAYOUT_GENERAL &&
             !dirty_set_.is_dirty(inp.node_id)) continue;
-        barrier_compute_write_to_sampled_read(cmd, src->image);
+        transition_output_to_general(cmd, src->image, src->layout, 0);
         src->layout = VK_IMAGE_LAYOUT_GENERAL;
     }
 
@@ -415,6 +415,15 @@ void Engine::record_final_copy_(VkCommandBuffer cmd, const PushConstants& pc,
 
     barrier_compute_write_to_sampled_read(cmd, final_res->image);
     final_res->layout = VK_IMAGE_LAYOUT_GENERAL;
+
+    if (output_layout_ != VK_IMAGE_LAYOUT_GENERAL) {
+        transition(cmd, output_storage_->image(),
+                   output_layout_, VK_IMAGE_LAYOUT_GENERAL,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
+    }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                       final_copy_pipeline_->pipeline());
