@@ -398,8 +398,13 @@ def register():
     for cls in _generated_classes:
         register_class(cls)
 
+    for op in specialized.collect_operator_classes():
+        register_class(op)
+
 
 def unregister():
+    for op in reversed(specialized.collect_operator_classes()):
+        unregister_class(op)
     for cls in reversed(_generated_classes):
         unregister_class(cls)
     for sock in reversed(specialized.collect_socket_classes()):

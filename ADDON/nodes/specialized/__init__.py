@@ -9,6 +9,7 @@ _MODULE_NAMES = (
     "image",
     "levels",
     "output",
+    "repeat",
 )
 
 
@@ -40,8 +41,13 @@ def specialized_property_groups() -> list:
 
 def collect_node_classes() -> list:
     """Return every NODE_CLASS from every specialized module, in declaration order."""
-    return [mod.NODE_CLASS for mod in iter_specialized_modules()
-            if hasattr(mod, "NODE_CLASS")]
+    result = []
+    for mod in iter_specialized_modules():
+        if hasattr(mod, "NODE_CLASS"):
+            result.append(mod.NODE_CLASS)
+        for cls in getattr(mod, "NODE_CLASSES", ()):
+            result.append(cls)
+    return result
 
 
 def collect_socket_classes() -> list:
@@ -49,5 +55,14 @@ def collect_socket_classes() -> list:
     result = []
     for mod in iter_specialized_modules():
         for cls in getattr(mod, "SOCKET_CLASSES", ()):
+            result.append(cls)
+    return result
+
+
+def collect_operator_classes() -> list:
+    """Return every Operator subclass exported by a specialized module."""
+    result = []
+    for mod in iter_specialized_modules():
+        for cls in getattr(mod, "OPERATOR_CLASSES", ()):
             result.append(cls)
     return result

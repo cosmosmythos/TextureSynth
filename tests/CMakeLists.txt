@@ -39,6 +39,7 @@ add_executable(engine_tests
     test_blend_py_repro.cpp
     test_channel_defaults.cpp
     test_color_const.cpp
+    test_blur_debug.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE

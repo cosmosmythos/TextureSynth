@@ -185,17 +185,30 @@ public:
 
     void set_resolution(uint32_t w, uint32_t h) {
         if (output_w_ == w && output_h_ == h) return;
+        if (!ctx_.device()) {
+            output_w_ = w;
+            output_h_ = h;
+            return;
+        }
+        auto next_output = std::make_unique<Image>();
+        if (!next_output->create(ctx_, w, h)) {
+            set_error_(EngineErrorCode::InitFailed,
+                       "set_resolution: output storage image creation failed",
+                       EnginePhase::Submit);
+            return;
+        }
         output_w_ = w;
         output_h_ = h;
-        if (!ctx_.device()) return;
         if (output_storage_ && output_storage_->image() != VK_NULL_HANDLE) {
             RetiredImage ri;
             ri.img = std::move(output_storage_);
             ri.frames_remaining = MAX_FRAMES_IN_FLIGHT + 2;
             retired_images_.push_back(std::move(ri));
         }
-        output_storage_ = std::make_unique<Image>();
-        output_storage_->create(ctx_, output_w_, output_h_);
+        output_storage_ = std::move(next_output);
+        if (output_storage_slot_ != BindlessTable::INVALID_SLOT) {
+            bindless_.write_storage(ctx_, output_storage_slot_, output_storage_->view());
+        }
         output_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
         dirty_set_.mark_topology_change();
         any_pass_dirty_.store(true);
@@ -275,6 +288,7 @@ public:
 private:
     void retire_all_passes_();
     bool ensure_dummy_images_();
+    bool create_final_copy_pipeline_();
     bool create_global_samplers_();
     void destroy_global_samplers_();
     void mark_downstream_dirty_(NodeId root);
@@ -286,7 +300,7 @@ private:
     void record_barriers_(VkCommandBuffer cmd, const PushConstants& pc);
     bool record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& pc,
                                  uint32_t gx, uint32_t gy);
-    void record_final_blit_(VkCommandBuffer cmd, const PushConstants& pc,
+    void record_final_copy_(VkCommandBuffer cmd, const PushConstants& pc,
                             bool final_pass_was_dirty);
     void seed_param_ssbo_defaults_();
     void poll_completed_uploads_();
@@ -360,8 +374,10 @@ private:
     std::unordered_map<uint64_t, uint32_t> ext_sampled_slot_;
 
     BindlessTable  bindless_;
+    std::unique_ptr<ComputePipeline> final_copy_pipeline_;
 
     std::unique_ptr<Image> output_storage_;
+    uint32_t output_storage_slot_ = BindlessTable::INVALID_SLOT;
     struct RetiredImage { std::unique_ptr<Image> img; uint32_t frames_remaining; };
     std::vector<RetiredImage> retired_images_;
 

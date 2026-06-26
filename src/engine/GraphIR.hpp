@@ -69,6 +69,15 @@ struct GraphIRResult {
     std::string error;           // human-readable on failure
 };
 
+// Resolve a node's StorageFormat from its validated state.
+// Single source of truth for node output format — used by ResourceManager,
+// EnginePassCompile (intermediate allocation), and any future format consumers.
+// Channels: from format_override, else from the node type's output socket
+//           declaration, else RGBA.  Depth: from vn.resolved_depth.
+StorageFormat resolve_node_storage(const ValidatedNode& vn,
+                                   const NodeLibrary& lib,
+                                   uint32_t output_index = 0);
+
 // Validate a raw Graph against a NodeLibrary and produce a GraphIR.
 GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib);
 

@@ -65,7 +65,8 @@ FusedVariantKey build_fused_key(const Chain& chain,
         k.param_socket_masks.push_back(mask);
         k.input_counts.push_back(static_cast<uint32_t>(type->inputs.size()));
         if (inst) {
-            feature |= (static_cast<uint32_t>(inst->format_override) & 0x7u) << shift;
+            const ChannelFormat resolved_fmt = resolve_node_storage(*inst, lib).channels;
+            feature |= (static_cast<uint32_t>(resolved_fmt) & 0x7u) << shift;
             shift += 3;
             feature |= (static_cast<uint32_t>(inst->resolved_depth) & 0x3u) << shift;
             shift += 2;

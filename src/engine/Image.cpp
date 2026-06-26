@@ -2,6 +2,7 @@
 #include "engine/VulkanContext.hpp"
 #include "engine/Logging.hpp"
 #include <mutex>
+#include <string>
 
 namespace te {
 
@@ -23,6 +24,12 @@ bool Image::create(VulkanContext& ctx, uint32_t w, uint32_t h, VkFormat fmt,
                     | VK_IMAGE_USAGE_TRANSFER_DST_BIT
                     | extra_usage;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    std::string usage_error;
+    if (!ctx.format_supports_image_usage(fmt, ici.usage, &usage_error)) {
+        log_error("Image::create: " + usage_error);
+        return false;
+    }
 
     VmaAllocationCreateInfo aci{};
     aci.usage = VMA_MEMORY_USAGE_AUTO;

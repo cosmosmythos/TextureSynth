@@ -68,6 +68,13 @@ The user is a **3D texture artist/developer**. Every architecture/design answer 
 - `cmake --build build --config Release --target <name>` (Rebuilds ONE target)
 - `cmake -S . -B build` (Refresh settings safely)
 
+### 🔴 CRITICAL: Stale Incremental Build Trap
+**Rule: Any time you add/remove/reorder members in any header that is included across multiple .cpp files:**
+```powershell
+cmake --build build --config Release --target <target> -- /t:Rebuild
+```
+This forces MSVC to recompile ALL .cpp files in the target. It does NOT touch `build/_deps/` (FetchContent cache is safe). **Do this BEFORE debugging crashes after header layout changes.** If a test crashes on modified code but passes on HEAD with identical logic, stale build is the #1 suspect.
+
 **If you get CMake errors (missing target/source/dep), DO NOT WIPE. Instead:**
 1. Re-detect generator: `cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_PYTHON_BINDINGS=ON`
 2. Re-configure bad var: `cmake -S . -B build -DBUILD_TESTS:BOOL=ON`

@@ -55,6 +55,10 @@ protected:
     void SetUp() override {
         if (!init_engine(engine, "test_blend_cross")) GTEST_SKIP() << engine.last_error();
     }
+
+    void TearDown() override {
+        engine.shutdown();
+    }
 };
 
 // Simplex(1) -> blend.a, Value(2) -> blend.b, output=blend(3)

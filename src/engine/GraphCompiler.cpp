@@ -334,10 +334,13 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
             // resolve_node_depths) into the cache key so each variant gets
             // its own .spv. See build_variant_key for the encoding.
             // Multi-pass nodes: each sub-pass gets its own key via specialization[0].
+            // resolved_fmt MUST match resolve_node_storage() — the same function
+            // ResourceManager uses to pick the VkFormat for image allocation.
+            const ChannelFormat resolved_fmt = resolve_node_storage(*inst, lib).channels;
             pass.variant_key = build_variant_key(*type, total_slots, param_socket_count,
-                                                 inst->format_override, inst->resolved_depth,
+                                                 resolved_fmt, inst->resolved_depth,
                                                  0, type->pass_count);
-            pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots, inst->format_override, pass.input_resources);
+            pass.shader_glsl = emit_node_shader(*inst, *type, pass.variant_key, pass.param_base_slot, total_slots, resolved_fmt, pass.input_resources);
         }
         pass.input_socket_count = total_slots;
         plan.passes.push_back(std::move(pass));
@@ -381,14 +384,15 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
         chain.sub_pass_variant_keys.resize(type->pass_count);
 
         for (uint32_t sp = 0; sp < type->pass_count; ++sp) {
+            const ChannelFormat resolved_fmt = resolve_node_storage(*inst, lib).channels;
             chain.sub_pass_variant_keys[sp] = build_variant_key(
                 *type, pass.input_socket_count, param_socket_count,
-                inst->format_override, inst->resolved_depth,
+                resolved_fmt, inst->resolved_depth,
                 sp, type->pass_count);
             chain.sub_pass_glsl[sp] = emit_node_shader(
                 *inst, *type, chain.sub_pass_variant_keys[sp],
                 pass.param_base_slot, pass.input_socket_count,
-                inst->format_override, pass.input_resources);
+                resolved_fmt, pass.input_resources);
         }
 
         // Store legacy single-pass glsl for backward compat (used by bypass path).

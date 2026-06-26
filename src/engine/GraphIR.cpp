@@ -8,6 +8,23 @@
 namespace te {
 
 
+StorageFormat resolve_node_storage(const ValidatedNode& vn,
+                                   const NodeLibrary& lib,
+                                   uint32_t output_index) {
+    ChannelFormat ch = vn.format_override;
+    auto* type = lib.find(vn.type_id);
+    if (type && output_index < type->outputs.size()
+        && type->outputs[output_index].format != ChannelFormat::RGBA) {
+        ch = type->outputs[output_index].format;
+    } else if (ch == ChannelFormat::RGBA) {
+        if (type && !type->outputs.empty()) {
+            ch = type->outputs[0].format;
+        }
+    }
+    return StorageFormat{ch, vn.resolved_depth};
+}
+
+
 static bool has_node(const Graph& g, NodeId id) {
     for (auto& n : g.nodes)
         if (n.id == id) return true;

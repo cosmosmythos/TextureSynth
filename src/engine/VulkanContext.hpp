@@ -50,6 +50,10 @@ public:
     bool save_pipeline_cache(const std::string& path) const;
     bool load_pipeline_cache(const std::string& path);
 
+    bool format_supports_image_usage(VkFormat fmt,
+                                     VkImageUsageFlags usage,
+                                     std::string* error = nullptr) const;
+
     // Debug object naming (VK_EXT_debug_utils). No-op if extension unavailable. Name must outlive call (VVL does not copy it - VVL#1168). Returns VK_SUCCESS for no-ops so callers can chain without if-guard. Names >255 chars truncated to Vulkan spec limit.
     VkResult set_debug_name(VkObjectType type, uint64_t handle,
                             const std::string& name) const;

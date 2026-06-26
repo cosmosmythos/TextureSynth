@@ -72,7 +72,7 @@ FusedResult emit_fused_subgraph(
         NodeId tail_id = path.nodes.back();
         const auto* tail_inst = ir.find(tail_id);
         if (tail_inst) {
-            tail_sf.channels = tail_inst->format_override;
+            tail_sf.channels = resolve_node_storage(*tail_inst, lib).channels;
             tail_sf.depth    = tail_inst->resolved_depth;
         }
     }

@@ -143,6 +143,15 @@ bool Engine::init(VkSurfaceKHR surface,
         goto rollback;
     }
 
+    output_storage_slot_ = bindless_.alloc_storage_slot();
+    if (output_storage_slot_ == BindlessTable::INVALID_SLOT) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "output storage bindless slot allocation failed",
+                   EnginePhase::Init);
+        goto rollback;
+    }
+    bindless_.write_storage(ctx_, output_storage_slot_, output_storage_->view());
+
     // Bind the single dummy image to bindless sampled slot 0.
     dummy_slot_ = 0;
     bindless_.write_sampled(ctx_, dummy_slot_,
@@ -152,6 +161,13 @@ bool Engine::init(VkSurfaceKHR surface,
     if (!create_timestamp_pools_()) {
         set_error_(EngineErrorCode::InitFailed,
                    "timestamp pool creation failed",
+                   EnginePhase::Init);
+        goto rollback;
+    }
+
+    if (!create_final_copy_pipeline_()) {
+        set_error_(EngineErrorCode::InitFailed,
+                   "final copy pipeline creation failed",
                    EnginePhase::Init);
         goto rollback;
     }
@@ -246,6 +262,63 @@ bool Engine::ensure_dummy_images_() {
     return true;
 }
 
+bool Engine::create_final_copy_pipeline_() {
+    static constexpr const char* kFinalCopyGlsl = R"GLSL(
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+layout(set = 0, binding = 1, rgba32f) writeonly uniform image2D u_storage[];
+
+layout(push_constant, std430) uniform PC {
+    uint  resolution_x;
+    uint  resolution_y;
+    uint  seed;
+    float time;
+    uint  out_storage_slots[4];
+    uint  param_base_slot;
+    uint  input_count;
+    uint  param_ring_idx;
+    uint  in_sampled_slots[8];
+    uint  pass_index;
+} pc;
+
+void main() {
+    ivec2 dst = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dst_size = ivec2(int(pc.resolution_x), int(pc.resolution_y));
+    if (dst.x >= dst_size.x || dst.y >= dst_size.y) return;
+
+    uint src_slot = pc.in_sampled_slots[0];
+    ivec2 src_size = textureSize(u_sampled[nonuniformEXT(src_slot)], 0);
+    ivec2 src_max = max(src_size - ivec2(1), ivec2(0));
+    ivec2 src = min((dst * src_size) / max(dst_size, ivec2(1)), src_max);
+
+    vec4 value = texelFetch(u_sampled[nonuniformEXT(src_slot)], src, 0);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], dst, value);
+}
+)GLSL";
+
+    CompileResult r = compiler_.compile_compute_sync(kFinalCopyGlsl, "final_copy");
+    if (!r.success) {
+        log_error("final_copy shader compile failed: " + r.error_log);
+        return false;
+    }
+
+    auto pipeline = std::make_unique<ComputePipeline>();
+    pipeline->set_name("pipe_final_copy");
+    if (!pipeline->create(ctx_, r.spirv, bindless_.pipeline_layout(), nullptr)) {
+        log_error("final_copy pipeline creation failed");
+        return false;
+    }
+    ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
+                        (uint64_t)pipeline->pipeline(),
+                        pipeline->name());
+    final_copy_pipeline_ = std::move(pipeline);
+    return true;
+}
+
 
 // shutdown. Idempotent. Holds entry_mu_ for entire teardown. Tolerates VK_ERROR_DEVICE_LOST. State: Uninitialized -> ShutDown, Ready/Error -> ShuttingDown -> ShutDown.
 void Engine::shutdown() {
@@ -289,11 +362,23 @@ void Engine::shutdown_internal_() {
 
     for (auto& ce : chain_execs_) {
         if (ce.pipeline) ce.pipeline->destroy(ctx_);
+        for (auto& sp : ce.sub_pipelines) {
+            if (sp) sp->destroy(ctx_);
+        }
+        for (auto& intermedi : ce.intermediates) {
+            if (intermedi.image) intermedi.image->destroy(ctx_);
+        }
     }
     chain_execs_.clear();
     chain_id_of_pass_.clear();
 
+    if (final_copy_pipeline_) {
+        final_copy_pipeline_->destroy(ctx_);
+        final_copy_pipeline_.reset();
+    }
+
     dummy_slot_ = BindlessTable::INVALID_SLOT;
+    output_storage_slot_ = BindlessTable::INVALID_SLOT;
     // Release external image slots.
     for (auto& kv : ext_sampled_slot_) bindless_.free_sampled_slot(kv.second);
     ext_sampled_slot_.clear();

@@ -3,6 +3,7 @@
 #include "engine/Logging.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/Graph.hpp"
+#include "engine/GraphIR.hpp"
 #include <algorithm>
 
 
@@ -12,50 +13,9 @@ namespace te {
 constexpr uint32_t RETIRE_FRAMES = 4; // MAX_FRAMES_IN_FLIGHT + safety
 
 
-// Resolve a node's StorageFormat from its validated state.
-// Channels: from format_override, else from the specific output socket's
-//           declared format in the node manifest, else RGBA.
-// Depth:    from vn.resolved_depth (set by resolve_node_depths via SD-style
-//           inheritance -- Auto/MatchInput/Absolute).
-static StorageFormat resolve_node_storage(const ValidatedNode& vn,
-                                          const NodeLibrary& lib,
-                                          uint32_t output_index = 0) {
-    ChannelFormat ch = vn.format_override;
-    auto* type = lib.find(vn.type_id);
-    if (type && output_index < type->outputs.size()
-        && type->outputs[output_index].format != ChannelFormat::RGBA) {
-        ch = type->outputs[output_index].format;
-    } else if (ch == ChannelFormat::RGBA) {
-        if (type && !type->outputs.empty()) {
-            ch = type->outputs[0].format;
-        }
-    }
-    return StorageFormat{ch, vn.resolved_depth};
-}
-
-
 size_t ResourceManager::pixel_bytes_(VkFormat f) const {
-    switch (f) {
-        // 32-bit
-        case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
-        case VK_FORMAT_R32G32B32_SFLOAT:    return 12;
-        case VK_FORMAT_R32G32_SFLOAT:       return 8;
-        case VK_FORMAT_R32_SFLOAT:          return 4;
-        case VK_FORMAT_R32_UINT:            return 4;
-        // 16-bit
-        case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
-        case VK_FORMAT_R16G16B16_SFLOAT:    return 6;
-        case VK_FORMAT_R16G16_SFLOAT:       return 4;
-        case VK_FORMAT_R16_SFLOAT:          return 2;
-        case VK_FORMAT_R16_UINT:            return 2;
-        // 8-bit
-        case VK_FORMAT_R8G8B8A8_UNORM:      return 4;
-        case VK_FORMAT_R8G8B8_UNORM:        return 3;
-        case VK_FORMAT_R8G8_UNORM:          return 2;
-        case VK_FORMAT_R8_UNORM:            return 1;
-        case VK_FORMAT_R8_UINT:             return 1;
-        default: return 4;
-    }
+    const uint32_t bytes = vk_format_bytes(f);
+    return bytes == 0 ? 4 : bytes;
 }
 
 
@@ -81,6 +41,12 @@ bool ResourceManager::create_image_(VulkanContext& ctx, NodeResource& r,
                   | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (can_alias) ici.flags |= VK_IMAGE_CREATE_ALIAS_BIT;
+
+    std::string usage_error;
+    if (!ctx.format_supports_image_usage(r.format, ici.usage, &usage_error)) {
+        log_error("ResourceManager: " + usage_error + " for " + dbg);
+        return false;
+    }
 
     VmaAllocationCreateInfo aci{};
     aci.usage = VMA_MEMORY_USAGE_AUTO;
@@ -274,6 +240,14 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
             ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
             ici.flags        |= VK_IMAGE_CREATE_ALIAS_BIT;
+
+            std::string usage_error;
+            if (!ctx.format_supports_image_usage(r.format, ici.usage, &usage_error)) {
+                log_error("Aliasing: " + usage_error + " for " + info.debug_name);
+                if (error) *error = usage_error;
+                any_failed = true;
+                break;
+            }
 
             if (vkCreateImage(ctx.device(), &ici, nullptr, &images[k]) != VK_SUCCESS) {
                 log_error("Aliasing: vkCreateImage failed for " + info.debug_name);

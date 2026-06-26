@@ -61,6 +61,9 @@ protected:
     void SetUp() override {
         if (!init_engine(engine, "test_py_repro")) GTEST_SKIP() << engine.last_error();
     }
+    void TearDown() override {
+        engine.shutdown();
+    }
 };
 
 TEST_F(BlendPythonRepro, PerRenderSetGraph) {

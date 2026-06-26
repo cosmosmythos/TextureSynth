@@ -62,6 +62,12 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
 
     // Multi-pass chain: loop over sub-passes with barriers between them.
     if (ce.sub_pass_count > 1 && !ce.sub_pipelines.empty()) {
+        // Transition intermediates to GENERAL before first write (Bug 3 fix).
+        for (uint32_t i = 0; i < ce.intermediates.size(); ++i) {
+            if (ce.intermediates[i].image && ce.intermediates[i].image->image() != VK_NULL_HANDLE)
+                transition_output_to_general(cmd, ce.intermediates[i].image->image(),
+                                              VK_IMAGE_LAYOUT_UNDEFINED, 0);
+        }
         for (uint32_t sp = 0; sp < ce.sub_pass_count && sp < (uint32_t)ce.sub_pipelines.size(); ++sp) {
             // Barrier: transition previous intermediate from storage write to sampled read.
             if (sp > 0) {
@@ -85,12 +91,28 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
                 uint32_t pass_idx = ce.member_pass_indices[src.member_idx];
                 ppc.in_sampled_slots[k] = passes_[pass_idx].in_sampled_slots[src.input_index];
             }
+            // Sub-passes > 0 must read from the previous intermediate, not the
+            // original external input.  The intermediate was written by sub-pass
+            // sp-1 and transitioned to SAMPLED_READ by the barrier above.
+            if (sp > 0 && sp - 1 < ce.intermediates.size()
+                && ce.intermediates[sp - 1].sampled_slot != BindlessTable::INVALID_SLOT) {
+                ppc.in_sampled_slots[0] = ce.intermediates[sp - 1].sampled_slot;
+            }
             for (uint32_t k = ce.slot_source_count; k < MAX_PASS_INPUTS; ++k)
                 ppc.in_sampled_slots[k] = dummy_slot_;
 
             // Output: intermediate for non-last passes, final output for last.
             for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
                 ppc.out_storage_slots[t] = ce.sub_out_storage_slots[sp][t];
+
+            log_info("[blur-debug] dispatch chain=" + std::to_string(chain_idx)
+                     + " sp=" + std::to_string(sp)
+                     + " pass_index=" + std::to_string(ppc.pass_index)
+                     + " in_sampled[0]=" + std::to_string(ppc.in_sampled_slots[0])
+                     + " in_sampled[1]=" + std::to_string(ppc.in_sampled_slots[1])
+                     + " out_storage[0]=" + std::to_string(ppc.out_storage_slots[0])
+                     + " slot_source_count=" + std::to_string(ce.slot_source_count)
+                     + " intermediates=" + std::to_string(ce.intermediates.size()));
 
             ppc.param_ring_idx = param_write_idx_;
 
@@ -191,7 +213,7 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
     resolve_aliased_staleness_();
     record_barriers_(cmd, pc);
     bool final_pass_was_dirty = record_pass_dispatches_(cmd, pc, gx, gy);
-    record_final_blit_(cmd, pc, final_pass_was_dirty);
+    record_final_copy_(cmd, pc, final_pass_was_dirty);
 }
 
 
@@ -230,7 +252,7 @@ void Engine::record_barriers_(VkCommandBuffer cmd, const PushConstants&) {
             acq.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
             acq.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
                               | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-            acq.oldLayout     = VK_IMAGE_LAYOUT_GENERAL;
+            acq.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
             acq.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
             acq.srcQueueFamilyIndex = ctx_.transfer_family();
             acq.dstQueueFamilyIndex = ctx_.graphics_family();
@@ -372,55 +394,50 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
 }
 
 
-void Engine::record_final_blit_(VkCommandBuffer cmd, const PushConstants& pc,
+void Engine::record_final_copy_(VkCommandBuffer cmd, const PushConstants& pc,
                                 bool final_pass_was_dirty) {
     auto* final_res = resources_.get(final_output_resource_);
-    if (!final_res || !final_pass_was_dirty) return;
+    if (!final_res || !final_pass_was_dirty || !final_copy_pipeline_) return;
 
-    transition(cmd, final_res->image,
-               VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_READ_BIT);
-    final_res->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    uint32_t sampled_slot = BindlessTable::INVALID_SLOT;
+    auto sit = res_sampled_slot_.find(final_output_resource_);
+    if (sit == res_sampled_slot_.end()) {
+        sampled_slot = bindless_.alloc_sampled_slot();
+        if (sampled_slot == BindlessTable::INVALID_SLOT) {
+            log_error("record_final_copy_: sampled bindless slot allocation failed");
+            return;
+        }
+        res_sampled_slot_[final_output_resource_] = sampled_slot;
+        bindless_.write_sampled(ctx_, sampled_slot, final_res->view, VK_IMAGE_LAYOUT_GENERAL);
+    } else {
+        sampled_slot = sit->second;
+    }
 
-    transition(cmd, output_storage_->image(),
-               VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
-               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_WRITE_BIT);
-
-    VkImageBlit blit{};
-    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.srcOffsets[0]  = {0, 0, 0};
-    blit.srcOffsets[1]  = {static_cast<int32_t>(pc.resolution_x), static_cast<int32_t>(pc.resolution_y), 1};
-    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.dstOffsets[0]  = {0, 0, 0};
-    blit.dstOffsets[1]  = {static_cast<int32_t>(output_w_), static_cast<int32_t>(output_h_), 1};
-
-    vkCmdBlitImage(cmd,
-                   final_res->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   output_storage_->image(),  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   1, &blit,
-                   VK_FILTER_NEAREST);
-
-    transition(cmd, output_storage_->image(),
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_WRITE_BIT,
-               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
-
-    transition(cmd, final_res->image,
-               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_READ_BIT,
-               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-               VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    barrier_compute_write_to_sampled_read(cmd, final_res->image);
     final_res->layout = VK_IMAGE_LAYOUT_GENERAL;
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      final_copy_pipeline_->pipeline());
+    VkDescriptorSet set = bindless_.set();
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            bindless_.pipeline_layout(), 0, 1, &set, 0, nullptr);
+
+    PassPushConstants ppc{};
+    ppc.global = pc;
+    ppc.global.resolution_x = output_w_;
+    ppc.global.resolution_y = output_h_;
+    ppc.out_storage_slots[0] = output_storage_slot_;
+    ppc.input_count = 1;
+    ppc.in_sampled_slots[0] = sampled_slot;
+    for (uint32_t k = 1; k < MAX_PASS_INPUTS; ++k)
+        ppc.in_sampled_slots[k] = dummy_slot_;
+    ppc.param_ring_idx = param_write_idx_;
+
+    vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(PassPushConstants), &ppc);
+    vkCmdDispatch(cmd, (output_w_ + 7) / 8, (output_h_ + 7) / 8, 1);
+    output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
 }
 
 } // namespace te

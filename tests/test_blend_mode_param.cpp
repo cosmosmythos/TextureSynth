@@ -72,6 +72,9 @@ protected:
     void SetUp() override {
         if (!init_engine(engine, "test_blend_mode")) GTEST_SKIP() << engine.last_error();
     }
+    void TearDown() override {
+        engine.shutdown();
+    }
 };
 
 // Pure-compile dump: shows the GLSL the chain emitter produces, plus the

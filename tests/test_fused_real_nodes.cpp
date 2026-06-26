@@ -375,6 +375,10 @@ protected:
         bool ok = init_engine(engine, "test_fused_real_nodes");
         if (!ok) GTEST_SKIP() << engine.last_error();
     }
+
+    void TearDown() override {
+        engine.shutdown();
+    }
 };
 
 TEST_F(FusedRealNodesPixel, Perlin_ProducesNonZeroPixels) {
@@ -916,4 +920,405 @@ TEST_F(FusedRealNodesPixel, PerlinToWarp_DiffersFromPerlin) {
         diff += std::abs(px_warp[i] - px_perlin[i]);
     EXPECT_GT(diff, 0.0)
         << "warp(intensity=0.5) output must differ from raw perlin";
+}
+
+// ===========================================================================
+// Part 6: Multi-pass blur correctness tests
+// These tests expose bugs in the multi-pass blur dispatch where sub-pass 1
+// (V-blur) reads from the original texture instead of the H-blurred
+// intermediate, and where the intermediate image format may not match
+// the GLSL layout qualifier.
+// ===========================================================================
+
+namespace {
+// Compute average magnitude of horizontal gradients (finite differences)
+// across all RGBA channels. Higher values = sharper horizontal edges.
+double avg_horizontal_gradient(const std::vector<float>& px, uint32_t w, uint32_t h) {
+    double sum = 0;
+    uint64_t count = 0;
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x + 1 < w; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                size_t i0 = (y * w + x) * 4 + c;
+                size_t i1 = (y * w + x + 1) * 4 + c;
+                sum += std::abs(px[i1] - px[i0]);
+                ++count;
+            }
+        }
+    }
+    return count ? sum / count : 0.0;
+}
+
+// Compute average magnitude of vertical gradients (finite differences)
+// across all RGBA channels. Higher values = sharper vertical edges.
+double avg_vertical_gradient(const std::vector<float>& px, uint32_t w, uint32_t h) {
+    double sum = 0;
+    uint64_t count = 0;
+    for (uint32_t y = 0; y + 1 < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                size_t i0 = (y * w + x) * 4 + c;
+                size_t i1 = ((y + 1) * w + x) * 4 + c;
+                sum += std::abs(px[i1] - px[i0]);
+                ++count;
+            }
+        }
+    }
+    return count ? sum / count : 0.0;
+}
+} // anonymous namespace
+
+TEST_F(FusedRealNodesPixel, Blur_SeparableSymmetry) {
+    // BUG 1 EXPOSER: If sub-pass 1 (V-blur) reads from the original texture
+    // instead of the H-blurred intermediate, the output is effectively a
+    // V-blur only — horizontal edges are preserved while vertical edges
+    // are smoothed. This test detects that asymmetry by comparing
+    // horizontal vs vertical gradient magnitudes.
+    //
+    // Correct behavior: H-blur and V-blur are both applied, so horizontal
+    // and vertical gradient magnitudes should be roughly equal (within tolerance).
+    //
+    // Bug behavior: Only V-blur is applied, so horizontal gradient > vertical gradient.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    uint64_t gen = engine.set_graph(g);
+    ASSERT_NE(gen, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    // Strong blur to amplify the asymmetry.
+    engine.update_node_params_by_id(2, {1.0f});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen, px, w, h));
+    EXPECT_GT(avg_brightness(px), 0.0) << "blur output is all-black";
+
+    double hgrad = avg_horizontal_gradient(px, w, h);
+    double vgrad = avg_vertical_gradient(px, w, h);
+
+    // With a separable blur, both directions should be smoothed equally.
+    // Allow 50% tolerance — perlin noise is not perfectly isotropic.
+    // If the bug exists, hgrad will be 2-5x larger than vgrad.
+    EXPECT_LT(hgrad, vgrad * 2.0)
+        << "Blur asymmetry: horizontal gradient (" << hgrad
+        << ") is much larger than vertical (" << vgrad
+        << "). Sub-pass 1 may be reading from original instead of H-blurred intermediate.";
+}
+
+TEST_F(FusedRealNodesPixel, Blur_IntensityScalesSmoothly) {
+    // BUG 1 EXPOSER: With correct separable blur, increasing intensity
+    // should monotonically decrease gradient magnitude. If sub-pass 1
+    // reads from original, increasing intensity only strengthens the
+    // V-blur, making the H/V asymmetry worse.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    // Read unblurred perlin.
+    uint64_t gen0 = engine.set_graph(g);
+    ASSERT_NE(gen0, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+    std::vector<float> px0;
+    uint32_t w0 = 0, h0 = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen0, px0, w0, h0));
+    double hgrad0 = avg_horizontal_gradient(px0, w0, h0);
+
+    // Read blurred perlin (intensity=1.0).
+    engine.update_node_params_by_id(2, {1.0f});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+    std::vector<float> px1;
+    uint32_t w1 = 0, h1 = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen0, px1, w1, h1));
+    double hgrad1 = avg_horizontal_gradient(px1, w1, h1);
+
+    // Blur should reduce horizontal gradients.
+    EXPECT_LT(hgrad1, hgrad0)
+        << "Blur with intensity=1.0 should reduce horizontal gradients vs unblurred.";
+
+    // The ratio should be less than 1 (gradient reduced).
+    // If the bug exists, hgrad1 ≈ hgrad0 (H-blur is missing).
+    double ratio = (hgrad0 > 0) ? hgrad1 / hgrad0 : 0;
+    EXPECT_LT(ratio, 0.9)
+        << "Blur should reduce horizontal gradients by >10%. Ratio=" << ratio
+        << ". Sub-pass 1 may not be reading from H-blurred intermediate.";
+}
+
+TEST_F(FusedRealNodesChain, Blur_IntermediateFormat) {
+    // BUG 2 EXPOSER: The intermediate image format must match the GLSL
+    // storage image layout qualifier. If the graph uses F16 precision but
+    // the intermediate is RGBA32F, the format qualifier mismatches.
+    //
+    // This test verifies the intermediate is allocated with the correct format.
+    // The intermediate's VkFormat should match the storage format derived
+    // from the node's resolved depth and channel format.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.output_node = 2;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+    ASSERT_EQ(cr.pass_plan.chains.size(), 2u);
+
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 2) {
+            EXPECT_EQ(ch.sub_pass_count, 2u);
+            EXPECT_EQ(ch.intermediate_count, 1u);
+
+            // Both sub-pass GLSL must use GetTexelSize (not hardcoded texel size).
+            for (uint32_t sp = 0; sp < ch.sub_pass_glsl.size(); ++sp) {
+                EXPECT_NE(ch.sub_pass_glsl[sp].find("pc.in_sampled_slots[0]"),
+                          std::string::npos)
+                    << "sub-pass " << sp << " must read from pc.in_sampled_slots[0]";
+            }
+            break;
+        }
+    }
+}
+
+TEST_F(FusedRealNodesPixel, Blur_HorizontalStripes_ExposesVerticalOnlyBug) {
+    // STRIP-DOWN TEST: upload known pixel values, read back raw, print exact numbers.
+    // Step 1: image only (no blur) — verify upload works.
+    // Step 2: image → blur — see what blur actually does.
+
+    constexpr uint32_t W = 64, H = 64;
+    constexpr uint32_t STRIPE_H = 8;
+
+    // Build horizontal stripes: rows 0-7 = 0.9, rows 8-15 = 0.1, repeat.
+    std::vector<float> px(W * H * 4);
+    for (uint32_t y = 0; y < H; ++y) {
+        float val = ((y / STRIPE_H) % 2 == 0) ? 0.9f : 0.1f;
+        for (uint32_t x = 0; x < W; ++x) {
+            uint32_t i = (y * W + x) * 4;
+            px[i + 0] = val;
+            px[i + 1] = val;
+            px[i + 2] = val;
+            px[i + 3] = 1.0f;
+        }
+    }
+
+    const uint64_t image_id = 10;
+    ASSERT_TRUE(engine.upload_image(image_id, px.data(), W, H));
+    // Wait long enough for transfer queue to finish.
+    for (int i = 0; i < 200; ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // ---- STEP 1: image only, no blur ----
+    {
+        Graph g;
+        g.nodes.push_back({image_id, "image"});
+        g.output_node = image_id;
+
+        uint64_t gen = engine.set_graph(g);
+        ASSERT_NE(gen, 0u) << engine.last_error();
+        engine.set_resolution(W, H);
+        ASSERT_TRUE(wait_for_pipeline(engine));
+
+        std::vector<float> out;
+        uint32_t ow = 0, oh = 0;
+        PushConstants pc{};
+        pc.resolution_x = W; pc.resolution_y = H;
+        pc.seed = 1; pc.time = 0.0f;
+        uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+        ASSERT_NE(ticket, 0u);
+        bool got = false;
+        for (int i = 0; i < 500; ++i) {
+            if (engine.async_readback().poll(engine.ctx(), out, ow, oh, gen)) { got = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(got) << "readback timed out";
+
+        printf("\n=== STEP 1: image only (no blur) %ux%u ===\n", ow, oh);
+        // Print a vertical slice at x=32
+        printf("Column x=32, vertical slice:\n");
+        for (uint32_t y = 0; y < H && y < oh; y += 4) {
+            size_t i = (y * ow + 32) * 4;
+            printf("  y=%2u: R=%.6f G=%.6f B=%.6f A=%.6f  (expected %.1f)\n",
+                   y, out[i], out[i+1], out[i+2], out[i+3],
+                   ((y / STRIPE_H) % 2 == 0) ? 0.9f : 0.1f);
+        }
+        // Print a horizontal slice at y=4 (should be all 0.9)
+        printf("Row y=4, horizontal slice:\n");
+        for (uint32_t x = 0; x < W && x < ow; x += 8) {
+            size_t i = (4 * ow + x) * 4;
+            printf("  x=%2u: R=%.6f (expected 0.9)\n", x, out[i]);
+        }
+    }
+
+    // ---- STEP 2: image → blur, intensity=1.0 ----
+    {
+        Graph g;
+        g.nodes.push_back({image_id, "image"});
+        g.nodes.push_back({2, "blur"});
+        g.connections.push_back({image_id, 0, 2, 0});
+        g.output_node = 2;
+
+        uint64_t gen = engine.set_graph(g);
+        ASSERT_NE(gen, 0u) << engine.last_error();
+        engine.set_resolution(W, H);
+        ASSERT_TRUE(wait_for_pipeline(engine));
+
+        engine.update_node_params_by_id(2, {1.0f});
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        engine.poll_pending_compiles();
+
+        std::vector<float> out;
+        uint32_t ow = 0, oh = 0;
+        PushConstants pc{};
+        pc.resolution_x = W; pc.resolution_y = H;
+        pc.seed = 1; pc.time = 0.0f;
+        uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+        ASSERT_NE(ticket, 0u);
+        bool got = false;
+        for (int i = 0; i < 500; ++i) {
+            if (engine.async_readback().poll(engine.ctx(), out, ow, oh, gen)) { got = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(got) << "readback timed out";
+
+        printf("\n=== STEP 2: image → blur (intensity=1.0) %ux%u ===\n", ow, oh);
+        printf("Column x=32, vertical slice:\n");
+        for (uint32_t y = 0; y < H && y < oh; y += 4) {
+            size_t i = (y * ow + 32) * 4;
+            printf("  y=%2u: R=%.6f G=%.6f B=%.6f A=%.6f\n",
+                   y, out[i], out[i+1], out[i+2], out[i+3]);
+        }
+        printf("Row y=4, horizontal slice:\n");
+        for (uint32_t x = 0; x < W && x < ow; x += 8) {
+            size_t i = (4 * ow + x) * 4;
+            printf("  x=%2u: R=%.6f\n", x, out[i]);
+        }
+        // Boundary check: y=7 (last bright row) → y=8 (first dark row)
+        size_t i7 = (7 * ow + 32) * 4;
+        size_t i8 = (8 * ow + 32) * 4;
+        printf("Boundary y=7→8 at x=32: %.6f → %.6f (gradient=%.6f)\n",
+               out[i7], out[i8], std::abs(out[i8] - out[i7]));
+    }
+
+    printf("================================================\n\n");
+}
+
+TEST_F(FusedRealNodesPixel, Blur_VerticalStripes_HBlurTest) {
+    // Test H-blur: vertical stripes have horizontal edges but NO vertical edges.
+    // If H-blur works, horizontal gradient decreases.
+    // If V-only blur, nothing changes (no vertical edges to smooth).
+
+    constexpr uint32_t W = 64, H = 64;
+    constexpr uint32_t STRIPE_W = 8;
+
+    // Vertical stripes: columns 0-7 = 0.9, columns 8-15 = 0.1, repeat.
+    std::vector<float> px(W * H * 4);
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            float val = ((x / STRIPE_W) % 2 == 0) ? 0.9f : 0.1f;
+            uint32_t i = (y * W + x) * 4;
+            px[i + 0] = val;
+            px[i + 1] = val;
+            px[i + 2] = val;
+            px[i + 3] = 1.0f;
+        }
+    }
+
+    const uint64_t image_id = 11;
+    ASSERT_TRUE(engine.upload_image(image_id, px.data(), W, H));
+    for (int i = 0; i < 200; ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // ---- STEP 1: image only ----
+    {
+        Graph g;
+        g.nodes.push_back({image_id, "image"});
+        g.output_node = image_id;
+
+        uint64_t gen = engine.set_graph(g);
+        ASSERT_NE(gen, 0u) << engine.last_error();
+        engine.set_resolution(W, H);
+        ASSERT_TRUE(wait_for_pipeline(engine));
+
+        std::vector<float> out;
+        uint32_t ow = 0, oh = 0;
+        PushConstants pc{};
+        pc.resolution_x = W; pc.resolution_y = H;
+        pc.seed = 1; pc.time = 0.0f;
+        uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+        ASSERT_NE(ticket, 0u);
+        bool got = false;
+        for (int i = 0; i < 500; ++i) {
+            if (engine.async_readback().poll(engine.ctx(), out, ow, oh, gen)) { got = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(got) << "readback timed out";
+
+        printf("\n=== VERTICAL STRIPES STEP 1: image only ===\n");
+        printf("Row y=32, horizontal slice (should show 0.9/0.1 pattern):\n");
+        for (uint32_t x = 0; x < W && x < ow; x += 4) {
+            size_t i = (32 * ow + x) * 4;
+            printf("  x=%2u: R=%.6f (expect %.1f)\n", x, out[i],
+                   ((x / STRIPE_W) % 2 == 0) ? 0.9f : 0.1f);
+        }
+    }
+
+    // ---- STEP 2: image → blur, intensity=1.0 ----
+    {
+        Graph g;
+        g.nodes.push_back({image_id, "image"});
+        g.nodes.push_back({2, "blur"});
+        g.connections.push_back({image_id, 0, 2, 0});
+        g.output_node = 2;
+
+        uint64_t gen = engine.set_graph(g);
+        ASSERT_NE(gen, 0u) << engine.last_error();
+        engine.set_resolution(W, H);
+        ASSERT_TRUE(wait_for_pipeline(engine));
+
+        engine.update_node_params_by_id(2, {1.0f});
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        engine.poll_pending_compiles();
+
+        std::vector<float> out;
+        uint32_t ow = 0, oh = 0;
+        PushConstants pc{};
+        pc.resolution_x = W; pc.resolution_y = H;
+        pc.seed = 1; pc.time = 0.0f;
+        uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+        ASSERT_NE(ticket, 0u);
+        bool got = false;
+        for (int i = 0; i < 500; ++i) {
+            if (engine.async_readback().poll(engine.ctx(), out, ow, oh, gen)) { got = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(got) << "readback timed out";
+
+        printf("\n=== VERTICAL STRIPES STEP 2: blur intensity=1.0 ===\n");
+        printf("Row y=32, horizontal slice (stripe pattern should be smoothed):\n");
+        for (uint32_t x = 0; x < W && x < ow; x += 4) {
+            size_t i = (32 * ow + x) * 4;
+            printf("  x=%2u: R=%.6f\n", x, out[i]);
+        }
+        printf("Column x=32, vertical slice (should be UNIFORM — no vertical edges):\n");
+        for (uint32_t y = 0; y < H && y < oh; y += 8) {
+            size_t i = (y * ow + 32) * 4;
+            printf("  y=%2u: R=%.6f\n", y, out[i]);
+        }
+        // Boundary check at x=7→8 (bright→dark)
+        size_t i7 = (32 * ow + 7) * 4;
+        size_t i8 = (32 * ow + 8) * 4;
+        printf("Boundary x=7→8 at y=32: %.6f → %.6f (gradient=%.6f)\n",
+               out[i7], out[i8], std::abs(out[i8] - out[i7]));
+    }
+    printf("================================================\n\n");
 }

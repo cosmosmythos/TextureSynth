@@ -105,6 +105,9 @@ protected:
     void SetUp() override {
         if (!init_engine(engine, "test_chan_defaults")) GTEST_SKIP() << engine.last_error();
     }
+    void TearDown() override {
+        engine.shutdown();
+    }
 };
 
 // T1: value noise with format_override=Mono -> readback.

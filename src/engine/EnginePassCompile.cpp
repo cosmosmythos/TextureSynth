@@ -364,10 +364,20 @@ void Engine::populate_chains_(const PassPlan& plan) {
             ce.sub_pass_count = ch.sub_pass_count;
 
             // Allocate intermediate images (pass_count - 1 temps between sub-passes).
+            // Format must match the GLSL u_storage[] layout qualifier — single
+            // source of truth is resolve_node_storage() (same as ResourceManager).
+            VkFormat intermedi_fmt = VK_FORMAT_R32G32B32A32_SFLOAT;
+            if (auto* vn = current_ir_.find(ch.nodes[0])) {
+                intermedi_fmt = storage_format_to_vk(
+                    resolve_node_storage(*vn, node_lib_));
+            }
             for (uint32_t i = 0; i < ch.intermediate_count; ++i) {
                 ChainExec::Intermediate intermedi;
                 intermedi.image = std::make_unique<Image>();
-                intermedi.image->create(ctx_, output_w_, output_h_);
+                if (!intermedi.image->create(ctx_, output_w_, output_h_, intermedi_fmt)) {
+                    log_warn("[populate_chains] intermediate image creation failed for chain "
+                             + std::to_string(ci) + " intermedi[" + std::to_string(i) + "]");
+                }
                 intermedi.sampled_slot = bindless_.alloc_sampled_slot();
                 intermedi.storage_slot = bindless_.alloc_storage_slot();
                 if (intermedi.sampled_slot != BindlessTable::INVALID_SLOT && intermedi.image->image() != VK_NULL_HANDLE)
@@ -377,6 +387,14 @@ void Engine::populate_chains_(const PassPlan& plan) {
                     bindless_.write_storage(ctx_, intermedi.storage_slot,
                                             intermedi.image->view());
                 ce.intermediates.push_back(std::move(intermedi));
+            }
+
+            // Log intermediate slot assignments.
+            for (uint32_t i = 0; i < (uint32_t)ce.intermediates.size(); ++i) {
+                log_info("[blur-debug] chain " + std::to_string(ci)
+                         + " intermediate[" + std::to_string(i) + "]"
+                         + " sampled_slot=" + std::to_string(ce.intermediates[i].sampled_slot)
+                         + " storage_slot=" + std::to_string(ce.intermediates[i].storage_slot));
             }
 
             // Compile per-sub-pass pipelines.
@@ -407,6 +425,10 @@ void Engine::populate_chains_(const PassPlan& plan) {
                     spec.pMapEntries = entries;
                     spec.dataSize = sizeof(uint32_t);
                     spec.pData = &sp;
+                    log_info("[blur-debug] chain " + std::to_string(ci)
+                             + " compiling sub-pass sp=" + std::to_string(sp)
+                             + " specialization ts_pass_index=" + std::to_string(sp)
+                             + " pipeline=" + pipe_name);
                     if (pipe->create(ctx_, *blob, bindless_.pipeline_layout(), &spec)) {
                         ctx_.set_debug_name(VK_OBJECT_TYPE_PIPELINE,
                                             (uint64_t)pipe->pipeline(), pipe->name());
@@ -422,6 +444,10 @@ void Engine::populate_chains_(const PassPlan& plan) {
             // Intermediate sub-passes write to intermediates[sp].
             // Last sub-pass writes to the chain's final output.
             const PassExec& tail = passes_[ce.tail_pass_index];
+            log_info("[blur-debug] chain " + std::to_string(ci)
+                     + " tail.out_storage_slots[0]=" + std::to_string(tail.out_storage_slots[0])
+                     + " tail.out_storage_slots[1]=" + std::to_string(tail.out_storage_slots[1])
+                     + " tail.output_count=" + std::to_string(tail.output_count));
             for (uint32_t sp = 0; sp < ch.sub_pass_count; ++sp) {
                 if (sp == ch.sub_pass_count - 1) {
                     // Last sub-pass: write to final output.

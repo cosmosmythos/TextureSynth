@@ -1,6 +1,8 @@
 #define VMA_IMPLEMENTATION
 #include "engine/VulkanContext.hpp"
+#include "engine/Graph.hpp"
 #include "engine/Logging.hpp"
+#include <algorithm>
 #include <fstream>
 #include <vector>
 
@@ -64,21 +66,22 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
     vkb_device_ = dev_ret.value();
     device_     = vkb_device_.device;
 
-    // Verify storage support for our target formats
-    auto check_storage = [&](VkFormat fmt, const char* name) {
-        VkFormatProperties props;
-        vkGetPhysicalDeviceFormatProperties(physical_device_, fmt, &props);
-        if (!(props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
-            log_error(std::string("Format ") + name + " lacks STORAGE_IMAGE_BIT");
-            return false;
-        }
-        return true;
-    };
+    const VkImageUsageFlags node_image_usage =
+        VK_IMAGE_USAGE_STORAGE_BIT |
+        VK_IMAGE_USAGE_SAMPLED_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     bool ok = true;
-    ok &= check_storage(VK_FORMAT_R16_SFLOAT,             "R16_SFLOAT");
-    ok &= check_storage(VK_FORMAT_R16G16_SFLOAT,           "R16G16_SFLOAT");
-    ok &= check_storage(VK_FORMAT_R16G16B16A16_SFLOAT,     "R16G16B16A16_SFLOAT");
-    if (!ok) { log_error("Required storage formats not supported"); return false; }
+    std::vector<VkFormat> checked;
+    size_t storage_count = 0;
+    const StorageFormatInfo* storage_infos = storage_format_info_table(storage_count);
+    for (size_t i = 0; i < storage_count; ++i) {
+        const VkFormat fmt = storage_infos[i].vk_format;
+        if (std::find(checked.begin(), checked.end(), fmt) != checked.end()) continue;
+        checked.push_back(fmt);
+        ok &= format_supports_image_usage(fmt, node_image_usage);
+    }
+    if (!ok) { log_error("Required image formats not supported"); return false; }
 
     // GPU timestamp period (nanoseconds per tick).
     VkPhysicalDeviceProperties props{};
@@ -142,6 +145,31 @@ bool VulkanContext::init(const VulkanContextDesc& desc) {
 
     log_info("Vulkan context ready");
     return true;
+}
+
+bool VulkanContext::format_supports_image_usage(VkFormat fmt,
+                                                VkImageUsageFlags usage,
+                                                std::string* error) const {
+    VkFormatFeatureFlags required = 0;
+    if (usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+        required |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    if (usage & VK_IMAGE_USAGE_STORAGE_BIT)
+        required |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+    if (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+        required |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+        required |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+
+    VkFormatProperties props{};
+    vkGetPhysicalDeviceFormatProperties(physical_device_, fmt, &props);
+    const VkFormatFeatureFlags available = props.optimalTilingFeatures;
+    if ((available & required) == required) return true;
+
+    std::string msg = std::string("Format ") + vk_format_name(fmt)
+                    + " lacks required optimal-tiling image features";
+    if (error) *error = msg;
+    log_error(msg);
+    return false;
 }
 
 bool VulkanContext::save_pipeline_cache(const std::string& path) const {

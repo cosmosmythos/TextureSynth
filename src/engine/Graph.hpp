@@ -1,5 +1,6 @@
 #pragma once
 #include <vulkan/vulkan.h>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -68,14 +69,24 @@ struct StorageFormat {
     bool operator==(const StorageFormat&) const = default;
 };
 
-// Resolve a StorageFormat to a concrete VkFormat. ID -> R32_UINT, Metadata -> RGBA32F.
+struct StorageFormatInfo {
+    StorageFormat storage;
+    VkFormat      vk_format;
+    const char*   vk_name;
+    const char*   glsl_qualifier;
+    uint32_t      bytes_per_pixel;
+    uint8_t       logical_channels;
+    uint8_t       stored_channels;
+};
+
+const StorageFormatInfo& storage_format_info(StorageFormat fmt);
+const StorageFormatInfo* storage_format_info_table(size_t& count);
 VkFormat storage_format_to_vk(StorageFormat fmt);
-// Bytes per pixel for budget checks.
 uint32_t storage_format_bytes(StorageFormat fmt);
-// GLSL storage image layout qualifier matching storage_format_to_vk exactly
-// (e.g. "r8", "r16_sfloat", "rgba32f"). Eliminates the old bug where the
-// shader declared r32f but the image was allocated as R16_SFLOAT.
 std::string storage_format_glsl_qualifier(StorageFormat fmt);
+bool storage_format_has_exact_vk_channels(StorageFormat fmt);
+const char* vk_format_name(VkFormat fmt);
+uint32_t vk_format_bytes(VkFormat fmt);
 
 // Deprecated shim -- calls storage_format_to_vk at fixed F16 depth.
 // New code should pass StorageFormat. Kept during incremental migration.

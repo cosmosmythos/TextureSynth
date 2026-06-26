@@ -228,6 +228,10 @@ protected:
         if (!ok) GTEST_SKIP() << engine.last_error();
     }
 
+    void TearDown() override {
+        engine.shutdown();
+    }
+
     std::vector<float> render_and_readback(uint64_t gen, NodeId active_id) {
         PushConstants pc{};
         pc.resolution_x = kRes; pc.resolution_y = kRes;
