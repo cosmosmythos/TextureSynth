@@ -1322,3 +1322,94 @@ TEST_F(FusedRealNodesPixel, Blur_VerticalStripes_HBlurTest) {
     }
     printf("================================================\n\n");
 }
+
+TEST_F(FusedRealNodesPixel, Blur_LowIntensity_NoHugeValues) {
+    // Regression: intensity < 0.014 produced insane values (e.g. Red=62268).
+    // Root cause: erf approximation missing "1.0 -" → inverted sign on weights.
+    // Test with solid-color input — output must stay in [0,1].
+
+    constexpr uint32_t W = 64, H = 64;
+    constexpr float COLOR = 0.5f;
+
+    std::vector<float> px(W * H * 4);
+    for (uint32_t i = 0; i < W * H; ++i) {
+        px[i * 4 + 0] = COLOR;
+        px[i * 4 + 1] = COLOR;
+        px[i * 4 + 2] = COLOR;
+        px[i * 4 + 3] = 1.0f;
+    }
+
+    const uint64_t image_id = 11;
+    ASSERT_TRUE(engine.upload_image(image_id, px.data(), W, H));
+    // Wait for transfer queue to finish (2s is generous for 64x64).
+    for (int i = 0; i < 200; ++i) {
+        engine.poll_pending_compiles();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // Helper lambda: build image→blur graph, set intensity, read back, return max value.
+    auto test_intensity = [&](float intensity, float& out_max, float& out_avg) {
+        Graph g;
+        g.nodes.push_back({image_id, "image"});
+        g.nodes.push_back({2, "blur"});
+        g.connections.push_back({image_id, 0, 2, 0});
+        g.output_node = 2;
+
+        uint64_t gen = engine.set_graph(g);
+        if (gen == 0) { out_max = -1; out_avg = -1; return; }
+        engine.set_resolution(W, H);
+        if (!wait_for_pipeline(engine)) { out_max = -1; out_avg = -1; return; }
+
+        engine.update_node_params_by_id(2, {intensity});
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        engine.poll_pending_compiles();
+
+        std::vector<float> out;
+        uint32_t ow = 0, oh = 0;
+        PushConstants pc{};
+        pc.resolution_x = W; pc.resolution_y = H;
+        pc.seed = 1; pc.time = 0.0f;
+        uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+        if (ticket == 0) { out_max = -1; out_avg = -1; return; }
+        bool got = false;
+        for (int i = 0; i < 500; ++i) {
+            if (engine.async_readback().poll(engine.ctx(), out, ow, oh, gen)) { got = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!got || ow == 0 || oh == 0) { out_max = -1; out_avg = -1; return; }
+
+        out_max = 0.0f;
+        for (size_t i = 0; i + 3 < out.size(); i += 4) {
+            for (int c = 0; c < 3; ++c) {
+                if (out[i + c] > out_max) out_max = out[i + c];
+            }
+        }
+        out_avg = float(avg_brightness(out) / double(ow * oh));
+    };
+
+    // Warm-up: run intensity=1.0 to ensure image upload is fully propagated.
+    {
+        float warm_max, warm_avg;
+        test_intensity(1.0f, warm_max, warm_avg);
+        printf("warm-up: max=%.6f avg=%.6f\n", warm_max, warm_avg);
+        ASSERT_GT(warm_max, 0.0f) << "warm-up produced no data — image upload likely failed";
+    }
+
+    float test_intensities[] = {0.014f, 0.01f, 0.005f, 0.001f, 0.0001f};
+    for (float intensity : test_intensities) {
+        float t_max, t_avg;
+        test_intensity(intensity, t_max, t_avg);
+
+        float sigma = std::max(intensity * 50.0f, 0.1f);
+        printf("intensity=%.4f  sigma=%.2f  max=%.6f  avg=%.6f\n",
+               intensity, sigma, t_max, t_avg);
+
+        EXPECT_LE(t_max, 1.0f)
+            << "intensity=" << intensity << " max=" << t_max
+            << " (expected all values in [0,1] for solid-color input)";
+
+        EXPECT_NEAR(t_avg, COLOR, 0.05)
+            << "intensity=" << intensity << " avg=" << t_avg
+            << " (expected near " << COLOR << " for solid-color blur)";
+    }
+}
