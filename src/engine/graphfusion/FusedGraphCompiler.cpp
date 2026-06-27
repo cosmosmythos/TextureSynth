@@ -173,7 +173,9 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
     // 3b. Detect boundaries that force chain splits:
     // 1) Sampler2D: source must be in a different chain (materialized as VRAM image).
     // 2) Multi-pass nodes (pass_count > 1): must be singleton chains (need intermediates).
-    // Force split AFTER the predecessor so the multi-pass node becomes a chain head.
+    // 3) Independent sources: if consecutive path nodes have no dependency edge,
+    //    they produce independent outputs that can't share a single output slot.
+    //    Force split AFTER the predecessor so each source gets its own chain.
     std::vector<size_t> split_after;
     {
         std::unordered_set<NodeId> pset(path.nodes.begin(), path.nodes.end());
@@ -202,6 +204,26 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
                 }
             }
         }
+
+        // Split at independent sources: if a node has no predecessors in the
+        // DAG (is a true root/source), it produces an independent output that
+        // can't share a single output slot with a prior root. Two consecutive
+        // roots (e.g. perlin + worley) must be in separate chains, or only
+        // the last root's output is stored; earlier outputs are discarded.
+        for (size_t di = 1; di < path.nodes.size(); ++di) {
+            NodeId curr = path.nodes[di];
+            bool is_root = true;
+            for (const auto& c : ir.connections) {
+                if (c.dst_node == curr && pset.count(c.src_node)) {
+                    is_root = false;
+                    break;
+                }
+            }
+            if (is_root) {
+                split_after.push_back(di - 1);
+            }
+        }
+
         std::sort(split_after.begin(), split_after.end());
         split_after.erase(std::unique(split_after.begin(), split_after.end()),
                           split_after.end());

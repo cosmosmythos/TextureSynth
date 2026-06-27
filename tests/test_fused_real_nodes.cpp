@@ -12,6 +12,7 @@
 #include <thread>
 #include <chrono>
 #include <regex>
+#include <set>
 
 using namespace te;
 
@@ -51,6 +52,24 @@ bool wait_for_readback_gen(Engine& engine, uint64_t gen,
                            uint32_t& w, uint32_t& h, int timeout_ms = 3000) {
     PushConstants pc{};
     pc.resolution_x = 512; pc.resolution_y = 512;
+    pc.seed = 1; pc.time = 0.0f;
+    uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
+    if (ticket == 0) return false;
+    uint64_t og = 0;
+    for (int i = 0; i * 10 < timeout_ms; ++i) {
+        if (engine.async_readback().poll(engine.ctx(), pixels, w, h, og)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
+bool wait_for_readback_gen_res(Engine& engine, uint64_t gen,
+                               std::vector<float>& pixels,
+                               uint32_t& w, uint32_t& h,
+                               uint32_t res_x, uint32_t res_y,
+                               int timeout_ms = 3000) {
+    PushConstants pc{};
+    pc.resolution_x = res_x; pc.resolution_y = res_y;
     pc.seed = 1; pc.time = 0.0f;
     uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
     if (ticket == 0) return false;
@@ -1411,5 +1430,333 @@ TEST_F(FusedRealNodesPixel, Blur_LowIntensity_NoHugeValues) {
         EXPECT_NEAR(t_avg, COLOR, 0.05)
             << "intensity=" << intensity << " avg=" << t_avg
             << " (expected near " << COLOR << " for solid-color blur)";
+    }
+}
+
+// ===========================================================================
+// Part 8: User-graph diagnostic — warp intensity=0 passthrough
+//
+// User graph (256x256 in Blender):
+//   Node 1: perlin (format_override=1 Mono)
+//   Node 2: levels
+//   Node 3: blur
+//   Node 4: warp  (intensity=0, mode=3, angle=0, edge_wrap=1)
+//   Node 5: worley (format_override=1 Mono)
+//   Node 6: blur
+//   Node 7: invert
+//   Connections:
+//     1→2, 2→3, 3→4.socket_0 (image)
+//     5→6, 6→7.socket_0, 7→4.socket_1 (gradient)
+//   output_node = 4
+//
+// At intensity=0, warp.glsl line 3 returns Sample(image, uv) unchanged.
+// Expected output = perlin→levels→blur (smooth Perlin).
+// Actual output per user = "contrasty voronoi, as if worley→levels".
+//
+// Diagnostic: render full graph at intensity=0, then render image-chain
+// alone, then render gradient-chain alone. Compare all three.
+// ===========================================================================
+
+namespace {
+
+double max_diff(const std::vector<float>& a, const std::vector<float>& b) {
+    double md = 0;
+    for (size_t i = 0; i < a.size() && i < b.size(); i += 4) {
+        for (int c = 0; c < 3; ++c)
+            md = std::max(md, std::abs((double)a[i+c] - (double)b[i+c]));
+    }
+    return md;
+}
+
+double avg_diff(const std::vector<float>& a, const std::vector<float>& b) {
+    double sum = 0;
+    uint64_t count = 0;
+    for (size_t i = 0; i < a.size() && i < b.size(); i += 4) {
+        for (int c = 0; c < 3; ++c) {
+            sum += std::abs((double)a[i+c] - (double)b[i+c]);
+            ++count;
+        }
+    }
+    return count ? sum / count : 0.0;
+}
+
+// Print per-channel min/max/avg for a pixel buffer.
+void dump_channel_stats(const char* label, const std::vector<float>& px) {
+    if (px.empty()) { printf("%s: EMPTY\n", label); return; }
+    float ch_min[4] = {999,999,999,999}, ch_max[4] = {-999,-999,-999,-999};
+    double ch_sum[4] = {0,0,0,0};
+    uint64_t n = px.size() / 4;
+    for (size_t i = 0; i + 3 < px.size(); i += 4) {
+        for (int c = 0; c < 4; ++c) {
+            ch_min[c] = std::min(ch_min[c], px[i+c]);
+            ch_max[c] = std::max(ch_max[c], px[i+c]);
+            ch_sum[c] += px[i+c];
+        }
+    }
+    printf("  %s (%lu px): R[%.3f..%.3f avg=%.3f] G[%.3f..%.3f avg=%.3f] "
+           "B[%.3f..%.3f avg=%.3f] A[%.3f..%.3f avg=%.3f]\n",
+           label, (unsigned long)n,
+           ch_min[0], ch_max[0], ch_sum[0]/n,
+           ch_min[1], ch_max[1], ch_sum[1]/n,
+           ch_min[2], ch_max[2], ch_sum[2]/n,
+           ch_min[3], ch_max[3], ch_sum[3]/n);
+}
+
+} // anonymous namespace
+
+TEST_F(FusedRealNodesPixel, Warp_IntensityZero_Passthrough) {
+    // TEST 1: Simple warp(perlin, perlin) at intensity=0.
+    // Expected: output == perlin (passthrough).
+    // If this fails, the basic warp plumbing is broken.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "warp"});
+    g.connections.push_back({1, 0, 2, 0});  // perlin -> warp.image
+    g.connections.push_back({1, 0, 2, 1});  // perlin -> warp.gradient
+    g.output_node = 2;
+
+    uint64_t gen = engine.set_graph(g);
+    ASSERT_NE(gen, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    // intensity=0, mode=0
+    engine.update_node_params_by_id(2, {0.0f, 0.0f, 0.0f, 0.0f});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px_warp;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen, px_warp, w, h));
+
+    // Now render perlin alone.
+    Graph g1;
+    g1.nodes.push_back({1, "perlin"});
+    g1.output_node = 1;
+    uint64_t gen1 = engine.set_graph(g1);
+    ASSERT_TRUE(wait_for_pipeline(engine));
+    std::vector<float> px_perlin;
+    uint32_t w2 = 0, h2 = 0;
+    ASSERT_TRUE(wait_for_readback_gen(engine, gen1, px_perlin, w2, h2));
+
+    printf("TEST 1: Simple warp(perlin,perlin) intensity=0\n");
+    dump_channel_stats("warp_output", px_warp);
+    dump_channel_stats("perlin_only", px_perlin);
+    printf("  max_diff=%.6f  avg_diff=%.6f\n",
+           max_diff(px_warp, px_perlin), avg_diff(px_warp, px_perlin));
+
+    // At intensity=0, warp should pass through image unchanged.
+    // Tolerance 0.03 accounts for Vulkan pipeline precision noise between
+    // two separate graph compilations (different readback slots/pipelines).
+    EXPECT_LT(max_diff(px_warp, px_perlin), 0.03)
+        << "warp(intensity=0) must pass through image unchanged. "
+           "If diff > 0.03, the basic warp plumbing is broken.";
+}
+
+TEST_F(FusedRealNodesPixel, Warp_UserGraph_IntensityZero) {
+    // TEST 2: Full user graph at intensity=0.
+    // Renders full graph, image-chain alone, gradient-chain alone.
+    // Compares all three to find where wrong output appears.
+    uint32_t RES = 256;
+
+    // Full user graph: Perlin(Mono)->Levels->Blur->Warp.Image
+    //                  Worley(Mono)->Blur->Invert->Warp.Gradient
+    Graph g;
+    g.nodes.push_back({1, "perlin", ChannelFormat::Mono});
+    g.nodes.push_back({2, "levels"});
+    g.nodes.push_back({3, "blur"});
+    g.nodes.push_back({4, "warp"});
+    g.nodes.push_back({5, "worley", ChannelFormat::Mono});
+    g.nodes.push_back({6, "blur"});
+    g.nodes.push_back({7, "invert"});
+    g.connections.push_back({1, 0, 2, 0});   // perlin -> levels.color
+    g.connections.push_back({2, 0, 3, 0});   // levels -> blur.color
+    g.connections.push_back({3, 0, 4, 0});   // blur -> warp.image
+    g.connections.push_back({5, 0, 6, 0});   // worley -> blur2.color
+    g.connections.push_back({6, 0, 7, 1});   // blur2 -> invert.color (socket 1 in invert.node.json)
+    g.connections.push_back({7, 0, 4, 1});   // invert -> warp.gradient
+    g.output_node = 4;
+
+    uint64_t gen = engine.set_graph(g);
+    ASSERT_NE(gen, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    // intensity=0, mode=3 (slope), angle=0, edge_wrap=1
+    engine.update_node_params_by_id(4, {0.0f, 3.0f, 0.0f, 1.0f});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px_full;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(wait_for_readback_gen_res(engine, gen, px_full, w, h, RES, RES));
+
+    // Image chain alone: Perlin(Mono)->Levels->Blur
+    Graph g_img;
+    g_img.nodes.push_back({1, "perlin", ChannelFormat::Mono});
+    g_img.nodes.push_back({2, "levels"});
+    g_img.nodes.push_back({3, "blur"});
+    g_img.connections.push_back({1, 0, 2, 0});
+    g_img.connections.push_back({2, 0, 3, 0});
+    g_img.output_node = 3;
+
+    uint64_t gen_img = engine.set_graph(g_img);
+    ASSERT_TRUE(wait_for_pipeline(engine));
+    std::vector<float> px_img;
+    uint32_t w2 = 0, h2 = 0;
+    ASSERT_TRUE(wait_for_readback_gen_res(engine, gen_img, px_img, w2, h2, RES, RES));
+
+    // Gradient chain alone: Worley(Mono)->Blur->Invert
+    Graph g_grad;
+    g_grad.nodes.push_back({5, "worley", ChannelFormat::Mono});
+    g_grad.nodes.push_back({6, "blur"});
+    g_grad.nodes.push_back({7, "invert"});
+    g_grad.connections.push_back({5, 0, 6, 0});
+    g_grad.connections.push_back({6, 0, 7, 1});   // socket 1 = color in invert.node.json
+    g_grad.output_node = 7;
+
+    uint64_t gen_grad = engine.set_graph(g_grad);
+    ASSERT_TRUE(wait_for_pipeline(engine));
+    std::vector<float> px_grad;
+    uint32_t w3 = 0, h3 = 0;
+    ASSERT_TRUE(wait_for_readback_gen_res(engine, gen_grad, px_grad, w3, h3, RES, RES));
+
+    printf("TEST 2: User graph warp intensity=0 @ %ux%u\n", RES, RES);
+    dump_channel_stats("FULL graph (warp output)", px_full);
+    dump_channel_stats("IMAGE chain (perlin->levels->blur)", px_img);
+    dump_channel_stats("GRADIENT chain (worley->blur->invert)", px_grad);
+
+    double diff_full_vs_img = avg_diff(px_full, px_img);
+    double diff_full_vs_grad = avg_diff(px_full, px_grad);
+    double diff_img_vs_grad = avg_diff(px_img, px_grad);
+
+    printf("  avg_diff: full_vs_image=%.6f  full_vs_gradient=%.6f  image_vs_gradient=%.6f\n",
+           diff_full_vs_img, diff_full_vs_grad, diff_img_vs_grad);
+
+    // At intensity=0, full graph output MUST match image chain.
+    EXPECT_LT(avg_diff(px_full, px_img), 0.01)
+        << "warp(intensity=0) output must match image chain. "
+           "If full graph differs from image chain, params may not reach shader.";
+
+    // Image chain should NOT look like gradient chain.
+    EXPECT_GT(avg_diff(px_img, px_grad), 0.01)
+        << "image and gradient chains should produce different patterns "
+           "(sanity check — if they're identical, the test setup is wrong)";
+}
+
+TEST_F(FusedRealNodesGLSL, UserGraph_ChainStructure) {
+    // Dump chain structure and GLSL for the full user graph.
+    // This reveals which bindless slots the warp reads from.
+    Graph g;
+    g.nodes.push_back({1, "perlin", ChannelFormat::Mono});
+    g.nodes.push_back({2, "levels"});
+    g.nodes.push_back({3, "blur"});
+    g.nodes.push_back({4, "warp"});
+    g.nodes.push_back({5, "worley", ChannelFormat::Mono});
+    g.nodes.push_back({6, "blur"});
+    g.nodes.push_back({7, "invert"});
+    g.connections.push_back({1, 0, 2, 0});   // perlin -> levels
+    g.connections.push_back({2, 0, 3, 0});   // levels -> blur
+    g.connections.push_back({3, 0, 4, 0});   // blur -> warp.image
+    g.connections.push_back({5, 0, 6, 0});   // worley -> blur2
+    g.connections.push_back({6, 0, 7, 1});   // blur2 -> invert.color
+    g.connections.push_back({7, 0, 4, 1});   // invert -> warp.gradient
+    g.output_node = 4;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== USER GRAPH CHAIN STRUCTURE ===\n");
+    printf("Total chains: %zu  Total passes: %zu\n",
+           cr.pass_plan.chains.size(), cr.pass_plan.passes.size());
+    printf("Final output resource: %u\n", cr.pass_plan.final_output_resource);
+
+    // Dump active resources.
+    printf("Active resources: %zu\n", cr.pass_plan.active_resources.size());
+
+    // Dump chain index per pass.
+    printf("Chain index per pass:\n");
+    for (uint32_t i = 0; i < cr.pass_plan.chain_index_of_pass.size(); ++i) {
+        uint32_t ci = cr.pass_plan.chain_index_of_pass[i];
+        printf("  pass[%u] -> chain[%u]\n", i, ci);
+    }
+
+    // Dump per-chain details.
+    for (uint32_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("\n--- Chain %u ---\n", ci);
+        printf("  Nodes: ");
+        for (NodeId n : ch.nodes) printf("%u ", n);
+        printf("\n");
+        printf("  Sub-pass count: %u  Intermediate count: %u\n",
+               ch.sub_pass_count, ch.intermediate_count);
+        printf("  External socket masks: ");
+        for (uint32_t m : ch.external_socket_masks) printf("0x%x ", m);
+        printf("\n");
+        printf("  Total inputs: %u  Total outputs: %u  Total params: %u\n",
+               ch.total_inputs, ch.total_outputs, ch.total_params);
+        printf("  Param base slot: %d\n", ch.param_base_slot);
+
+        // Dump GLSL (truncated to first 500 chars for overview).
+        const auto& glsl = ch.glsl;
+        if (!glsl.empty()) {
+            printf("  GLSL length: %zu\n", glsl.size());
+            // Look for texture sampling — which u_sampled slots are used.
+            std::regex slot_re(R"(u_sampled\[(\d+)\])");
+            auto begin = std::sregex_iterator(glsl.begin(), glsl.end(), slot_re);
+            auto end = std::sregex_iterator();
+            std::set<int> slots;
+            for (auto it = begin; it != end; ++it)
+                slots.insert(std::stoi((*it)[1]));
+            printf("  u_sampled slots used in GLSL: ");
+            for (int s : slots) printf("%d ", s);
+            printf("\n");
+
+            // Write full GLSL to file.
+            char fname[128];
+            snprintf(fname, sizeof(fname), "chain_%u_nodes", ci);
+            for (NodeId n : ch.nodes) {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "_%u", n);
+                strncat(fname, buf, sizeof(fname) - strlen(fname) - 1);
+            }
+            strncat(fname, ".glsl", sizeof(fname) - strlen(fname) - 1);
+            std::ofstream f(fname);
+            f << glsl;
+            printf("  GLSL written to: %s\n", fname);
+        }
+
+        // Dump sub-pass GLSL.
+        for (uint32_t sp = 0; sp < ch.sub_pass_glsl.size(); ++sp) {
+            const auto& spglsl = ch.sub_pass_glsl[sp];
+            printf("  Sub-pass %u GLSL length: %zu\n", sp, spglsl.size());
+            std::regex slot_re2(R"(u_sampled\[(\d+)\])");
+            auto begin2 = std::sregex_iterator(spglsl.begin(), spglsl.end(), slot_re2);
+            auto end2 = std::sregex_iterator();
+            std::set<int> slots2;
+            for (auto it = begin2; it != end2; ++it)
+                slots2.insert(std::stoi((*it)[1]));
+            printf("    u_sampled slots: ");
+            for (int s : slots2) printf("%d ", s);
+            printf("\n");
+
+            char fname[128];
+            snprintf(fname, sizeof(fname), "chain_%u_sp%u.glsl", ci, sp);
+            std::ofstream f(fname);
+            f << spglsl;
+            printf("    GLSL written to: %s\n", fname);
+        }
+    }
+
+    // Also dump per-pass details.
+    printf("\n=== PER-PASS DETAILS ===\n");
+    for (uint32_t pi = 0; pi < cr.pass_plan.passes.size(); ++pi) {
+        const auto& p = cr.pass_plan.passes[pi];
+        printf("pass[%u]: node=%u type=%s param_base=%d inputs=%u outputs=%u\n",
+               pi, p.node_id, p.type_id.c_str(), p.param_base_slot,
+               p.input_socket_count, (uint32_t)p.output_resources.size());
+        printf("  input_resources: ");
+        for (ResourceUUID r : p.input_resources) printf("%u ", r);
+        printf("\n  output_resources: ");
+        for (ResourceUUID r : p.output_resources) printf("%u ", r);
+        printf("\n");
     }
 }
