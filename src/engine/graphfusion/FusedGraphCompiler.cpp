@@ -210,24 +210,13 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             }
         }
 
-        // Split at independent sources: if a node has no predecessors in the
-        // DAG (is a true root/source), it produces an independent output that
-        // can't share a single output slot with a prior root. Two consecutive
-        // roots (e.g. perlin + worley) must be in separate chains, or only
-        // the last root's output is stored; earlier outputs are discarded.
-        for (size_t di = 1; di < path.nodes.size(); ++di) {
-            NodeId curr = path.nodes[di];
-            bool is_root = true;
-            for (const auto& c : ir.connections) {
-                if (c.dst_node == curr && pset.count(c.src_node)) {
-                    is_root = false;
-                    break;
-                }
-            }
-            if (is_root) {
-                split_after.push_back(di - 1);
-            }
-        }
+        // NOTE: Independent-source split removed — redundant.
+        // The Sampler2D split (lines 198-210) already materializes source
+        // nodes as VRAM images when a consumer needs to sample them.
+        // Root nodes with downstream dependents (e.g. perlin → levels)
+        // stay in the same chain and share registers. Only truly dead
+        // roots (no consumers at all) get materialized by the
+        // active_resources scan (lines 519-557).
 
         std::sort(split_after.begin(), split_after.end());
         split_after.erase(std::unique(split_after.begin(), split_after.end()),

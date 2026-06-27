@@ -1984,3 +1984,59 @@ TEST_F(FusedRealNodesGLSL, InvertThenBlur_ChainStructure) {
         }
     }
 }
+
+TEST_F(FusedRealNodesGLSL, PerlinLevelsBlurInvert_ChainStructure) {
+    // Dump chain structure for perlin → levels → blur → invert.
+    // With independent-source split removed, perlin+levels should fuse.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "levels"});
+    g.nodes.push_back({3, "blur"});
+    g.nodes.push_back({4, "invert"});
+    g.connections.push_back({1, 0, 2, 0});  // perlin -> levels.color
+    g.connections.push_back({2, 0, 3, 0});  // levels -> blur.image
+    g.connections.push_back({3, 0, 4, 1});  // blur -> invert.color
+    g.output_node = 4;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== PERLIN->LEVELS->BLUR->INVERT CHAIN STRUCTURE ===\n");
+    printf("Total chains: %zu\n", cr.pass_plan.chains.size());
+
+    for (uint32_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("\n--- Chain %u ---\n", ci);
+        printf("  Nodes: ");
+        for (NodeId n : ch.nodes) printf("%u ", n);
+        printf("\n  Sub-pass count: %u\n", ch.sub_pass_count);
+        printf("  Total params: %u  Param base: %d\n", ch.total_params, ch.param_base_slot);
+
+        if (!ch.glsl.empty()) {
+            std::regex slot_re(R"(u_sampled\[(\d+)\])");
+            auto begin = std::sregex_iterator(ch.glsl.begin(), ch.glsl.end(), slot_re);
+            auto end = std::sregex_iterator();
+            std::set<int> slots;
+            for (auto it = begin; it != end; ++it)
+                slots.insert(std::stoi((*it)[1]));
+            printf("  u_sampled slots: ");
+            for (int s : slots) printf("%d ", s);
+            printf("\n");
+
+            char fname[64];
+            snprintf(fname, sizeof(fname), "plbi_chain_%u.glsl", ci);
+            std::ofstream f(fname);
+            f << ch.glsl;
+            printf("  GLSL written to: %s\n", fname);
+        }
+
+        for (uint32_t sp = 0; sp < ch.sub_pass_glsl.size(); ++sp) {
+            printf("  Sub-pass %u GLSL length: %zu\n", sp, ch.sub_pass_glsl[sp].size());
+            char fname[64];
+            snprintf(fname, sizeof(fname), "plbi_chain_%u_sp%u.glsl", ci, sp);
+            std::ofstream f(fname);
+            f << ch.sub_pass_glsl[sp];
+            printf("    Written to: %s\n", fname);
+        }
+    }
+}
