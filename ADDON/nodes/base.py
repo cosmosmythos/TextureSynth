@@ -178,7 +178,7 @@ class TextureSynthNode(bpy.types.Node):
         return None
 
     def get_format_override(self):
-        """Return ChannelFormat enum value for engine."""
+        """Return ChannelFormat enum value."""
         from .tree import FORMAT_CHANNEL_MAP, _get_channel_format
         if not getattr(self, 'supports_format_override', False):
             return _get_channel_format().RGBA
@@ -189,13 +189,13 @@ class TextureSynthNode(bpy.types.Node):
         return _get_channel_format().RGBA
 
     def get_depth_mode(self):
-        """Return DepthMode enum value for engine (Auto if not supported)."""
+        """Return DepthMode enum value (Auto if not supported)."""
         if not getattr(self, 'supports_format_override', False):
             return None
         return _resolve_depth_mode_enum(getattr(self, 'depth_mode', 'AUTO'))
 
     def get_absolute_depth(self):
-        """Return BitDepth enum value for engine (F16 default)."""
+        """Return BitDepth enum value (F16 default)."""
         return _resolve_depth_enum(getattr(self, 'absolute_depth', 'F16'))
 
     def draw_format_override_ui(self, layout):

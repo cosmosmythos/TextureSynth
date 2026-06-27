@@ -732,7 +732,7 @@ def update_params_only(force_submit: bool = False):
 
 def _check_active_node_change(tree, engine):
     """Update preview target in engine if selected node changed. Returns True on update."""
-    global _last_active_node_id, _last_pushed_param_hash, _submitted_generation
+    global _last_active_node_id, _last_pushed_param_hash, _submitted_generation, _last_active_fingerprint
     if not _submitted_generation:
         return False
     active = getattr(tree.nodes, "active", None)
