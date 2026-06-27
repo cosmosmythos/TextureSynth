@@ -185,9 +185,14 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             const auto* dt = dn ? lib.find(dn->type_id) : nullptr;
             if (!dt) continue;
 
-            // Multi-pass nodes must be singleton chains.
+            // Multi-pass nodes must be singleton chains — they need
+            // intermediate images between sub-passes and can't fuse with
+            // other nodes. Split both before AND after the multi-pass node.
             if (dt->pass_count > 1 && di > 0) {
                 split_after.push_back(di - 1);
+            }
+            if (dt->pass_count > 1 && di + 1 < path.nodes.size()) {
+                split_after.push_back(di);
             }
 
             for (uint32_t s = 0; s < dt->inputs.size(); ++s) {

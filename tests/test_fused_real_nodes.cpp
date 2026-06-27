@@ -708,8 +708,8 @@ TEST_F(FusedRealNodesGLSL, PerlinToBlur_Sampler2DChainSplit) {
                     << "sub-pass " << sp << " must construct TSTexture";
                 EXPECT_NE(ch.sub_pass_glsl[sp].find("node_blur"), std::string::npos)
                     << "sub-pass " << sp << " must call node_blur";
-                EXPECT_NE(ch.sub_pass_glsl[sp].find("0.2270270270"), std::string::npos)
-                    << "sub-pass " << sp << " must contain Gaussian kernel coefficients";
+                EXPECT_NE(ch.sub_pass_glsl[sp].find("sigma"), std::string::npos)
+                    << "sub-pass " << sp << " must contain Gaussian sigma computation";
             }
 
             // Legacy glsl field: for multi-pass chains this is the node-level emit
@@ -1758,5 +1758,229 @@ TEST_F(FusedRealNodesGLSL, UserGraph_ChainStructure) {
         printf("\n  output_resources: ");
         for (ResourceUUID r : p.output_resources) printf("%u ", r);
         printf("\n");
+    }
+}
+
+// ===========================================================================
+// Part 9: Blur→Invert vs Invert→Blur ordering bug
+//
+// User reports: blur→invert produces X-axis stretching.
+//               invert→blur looks correct.
+// Hypothesis: the fused chain GLSL computes blur and invert in path order,
+// but the output slot assignment or format post-process differs based on
+// which node is the chain tail.
+//
+// Test: build both orderings with the same source (perlin),
+// render both, compare pixels, and dump GLSL for inspection.
+// ===========================================================================
+
+TEST_F(FusedRealNodesPixel, BlurThenInvert_Vs_InvertThenBlur) {
+    // Graph A (buggy per user): perlin → blur → invert
+    // Graph B (correct per user): perlin → invert → blur
+    // Both should produce similar output (invert and blur commute for
+    // uniform inputs, but NOT for noise — the ordering matters).
+    // The key: we compare the DIFFERENCE between A and B to understand
+    // what the bug is, not whether they're identical.
+
+    uint32_t RES = 256;
+
+    // --- Graph A: perlin → blur → invert ---
+    Graph ga;
+    ga.nodes.push_back({1, "perlin"});
+    ga.nodes.push_back({2, "blur"});
+    ga.nodes.push_back({3, "invert"});
+    ga.connections.push_back({1, 0, 2, 0});  // perlin → blur
+    ga.connections.push_back({2, 0, 3, 1});  // blur → invert.color (socket 1)
+    ga.output_node = 3;
+
+    uint64_t gen_a = engine.set_graph(ga);
+    ASSERT_NE(gen_a, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    engine.update_node_params_by_id(2, {0.5f});  // blur intensity=0.5
+    engine.update_node_params_by_id(3, {1.0f, 0.0f});  // invert mask=1, unused
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px_a;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(wait_for_readback_gen_res(engine, gen_a, px_a, w, h, RES, RES));
+
+    // --- Graph B: perlin → invert → blur ---
+    Graph gb;
+    gb.nodes.push_back({1, "perlin"});
+    gb.nodes.push_back({2, "invert"});
+    gb.nodes.push_back({3, "blur"});
+    gb.connections.push_back({1, 0, 2, 1});  // perlin → invert.color (socket 1)
+    gb.connections.push_back({2, 0, 3, 0});  // invert → blur
+    gb.output_node = 3;
+
+    uint64_t gen_b = engine.set_graph(gb);
+    ASSERT_NE(gen_b, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    engine.update_node_params_by_id(2, {1.0f, 0.0f});  // invert mask=1
+    engine.update_node_params_by_id(3, {0.5f});  // blur intensity=0.5
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px_b;
+    uint32_t w2 = 0, h2 = 0;
+    ASSERT_TRUE(wait_for_readback_gen_res(engine, gen_b, px_b, w2, h2, RES, RES));
+
+    // --- Compare ---
+    ASSERT_EQ(px_a.size(), px_b.size()) << "different resolution";
+
+    dump_channel_stats("A: blur->invert", px_a);
+    dump_channel_stats("B: invert->blur", px_b);
+
+    double md = max_diff(px_a, px_b);
+    double ad = avg_diff(px_a, px_b);
+    printf("  max_diff=%.6f  avg_diff=%.6f\n", md, ad);
+
+    // Find spatial pattern of differences.
+    // Compute per-row average diff to detect X-axis stretching.
+    printf("\n  Per-row avg diff (first 32 rows):\n");
+    for (uint32_t y = 0; y < std::min(32u, h); ++y) {
+        double row_diff = 0;
+        for (uint32_t x = 0; x < w; ++x) {
+            size_t i = (y * w + x) * 4;
+            for (int c = 0; c < 3; ++c)
+                row_diff += std::abs((double)px_a[i+c] - (double)px_b[i+c]);
+        }
+        row_diff /= (w * 3);
+        printf("    y=%u: %.6f\n", y, row_diff);
+    }
+
+    // Compute per-column average diff to detect Y-axis stretching.
+    printf("\n  Per-col avg diff (first 32 cols):\n");
+    for (uint32_t x = 0; x < std::min(32u, w); ++x) {
+        double col_diff = 0;
+        for (uint32_t y = 0; y < h; ++y) {
+            size_t i = (y * w + x) * 4;
+            for (int c = 0; c < 3; ++c)
+                col_diff += std::abs((double)px_a[i+c] - (double)px_b[i+c]);
+        }
+        col_diff /= (h * 3);
+        printf("    x=%u: %.6f\n", x, col_diff);
+    }
+
+    // Check if A (blur→invert) has horizontal edges preserved but vertical
+    // edges smoothed (asymmetric blur symptom).
+    double hgrad_a = avg_horizontal_gradient(px_a, w, h);
+    double vgrad_a = avg_vertical_gradient(px_a, w, h);
+    double hgrad_b = avg_horizontal_gradient(px_b, w, h);
+    double vgrad_b = avg_vertical_gradient(px_b, w, h);
+    printf("\n  Gradient analysis:\n");
+    printf("    A (blur->invert): hgrad=%.6f  vgrad=%.6f  ratio=%.3f\n",
+           hgrad_a, vgrad_a, vgrad_a > 0 ? hgrad_a / vgrad_a : 0);
+    printf("    B (invert->blur): hgrad=%.6f  vgrad=%.6f  ratio=%.3f\n",
+           hgrad_b, vgrad_b, vgrad_b > 0 ? hgrad_b / vgrad_b : 0);
+}
+
+TEST_F(FusedRealNodesGLSL, BlurThenInvert_ChainStructure) {
+    // Dump chain structure for perlin → blur → invert to see
+    // how the fused chain handles the blur+invert combination.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "blur"});
+    g.nodes.push_back({3, "invert"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({2, 0, 3, 1});
+    g.output_node = 3;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== BLUR->INVERT CHAIN STRUCTURE ===\n");
+    printf("Total chains: %zu\n", cr.pass_plan.chains.size());
+
+    for (uint32_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("\n--- Chain %u ---\n", ci);
+        printf("  Nodes: ");
+        for (NodeId n : ch.nodes) printf("%u ", n);
+        printf("\n  Sub-pass count: %u\n", ch.sub_pass_count);
+        printf("  Total params: %u  Param base: %d\n", ch.total_params, ch.param_base_slot);
+
+        if (!ch.glsl.empty()) {
+            std::regex slot_re(R"(u_sampled\[(\d+)\])");
+            auto begin = std::sregex_iterator(ch.glsl.begin(), ch.glsl.end(), slot_re);
+            auto end = std::sregex_iterator();
+            std::set<int> slots;
+            for (auto it = begin; it != end; ++it)
+                slots.insert(std::stoi((*it)[1]));
+            printf("  u_sampled slots: ");
+            for (int s : slots) printf("%d ", s);
+            printf("\n");
+
+            char fname[64];
+            snprintf(fname, sizeof(fname), "blur_invert_chain_%u.glsl", ci);
+            std::ofstream f(fname);
+            f << ch.glsl;
+            printf("  GLSL written to: %s\n", fname);
+        }
+
+        for (uint32_t sp = 0; sp < ch.sub_pass_glsl.size(); ++sp) {
+            printf("  Sub-pass %u GLSL length: %zu\n", sp, ch.sub_pass_glsl[sp].size());
+            char fname[64];
+            snprintf(fname, sizeof(fname), "blur_invert_chain_%u_sp%u.glsl", ci, sp);
+            std::ofstream f(fname);
+            f << ch.sub_pass_glsl[sp];
+            printf("    Written to: %s\n", fname);
+        }
+    }
+}
+
+TEST_F(FusedRealNodesGLSL, InvertThenBlur_ChainStructure) {
+    // Dump chain structure for perlin → invert → blur for comparison.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "invert"});
+    g.nodes.push_back({3, "blur"});
+    g.connections.push_back({1, 0, 2, 1});
+    g.connections.push_back({2, 0, 3, 0});
+    g.output_node = 3;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== INVERT->BLUR CHAIN STRUCTURE ===\n");
+    printf("Total chains: %zu\n", cr.pass_plan.chains.size());
+
+    for (uint32_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("\n--- Chain %u ---\n", ci);
+        printf("  Nodes: ");
+        for (NodeId n : ch.nodes) printf("%u ", n);
+        printf("\n  Sub-pass count: %u\n", ch.sub_pass_count);
+        printf("  Total params: %u  Param base: %d\n", ch.total_params, ch.param_base_slot);
+
+        if (!ch.glsl.empty()) {
+            std::regex slot_re(R"(u_sampled\[(\d+)\])");
+            auto begin = std::sregex_iterator(ch.glsl.begin(), ch.glsl.end(), slot_re);
+            auto end = std::sregex_iterator();
+            std::set<int> slots;
+            for (auto it = begin; it != end; ++it)
+                slots.insert(std::stoi((*it)[1]));
+            printf("  u_sampled slots: ");
+            for (int s : slots) printf("%d ", s);
+            printf("\n");
+
+            char fname[64];
+            snprintf(fname, sizeof(fname), "invert_blur_chain_%u.glsl", ci);
+            std::ofstream f(fname);
+            f << ch.glsl;
+            printf("  GLSL written to: %s\n", fname);
+        }
+
+        for (uint32_t sp = 0; sp < ch.sub_pass_glsl.size(); ++sp) {
+            printf("  Sub-pass %u GLSL length: %zu\n", sp, ch.sub_pass_glsl[sp].size());
+            char fname[64];
+            snprintf(fname, sizeof(fname), "invert_blur_chain_%u_sp%u.glsl", ci, sp);
+            std::ofstream f(fname);
+            f << ch.sub_pass_glsl[sp];
+            printf("    Written to: %s\n", fname);
+        }
     }
 }

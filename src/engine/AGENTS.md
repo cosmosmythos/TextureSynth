@@ -29,7 +29,7 @@ The static `engine` library. Owns the full GPU pipeline: Vulkan instance/device,
 - **Multi-pass architecture**: nodes with `pass_count > 1` (e.g. separable blur) are singleton chains with sub-pass GLSL. `Chain::sub_pass_count` / `sub_pass_glsl` / `sub_pass_variant_keys` hold per-sub-pass data. `ChainExec::sub_pipelines` / `Intermediate` / `sub_out_storage_slots` hold runtime state. `populate_chains_()` allocates intermediate images (`Image::create(ctx_, w, h)`) with bindless sampled+storage slots, compiles sub-pipelines with `VkSpecializationInfo` (specialization constant = sub-pass index). `record_chain_dispatch_()` loops over sub-passes with `barrier_compute_write_to_sampled` between passes. `ts_pass_index` (GLSL `layout(constant_id = 0)`) is baked into SPIR-V for dead-code elimination. `pc.pass_index` is set to sub-pass index at dispatch time. Intermediate images are retired via `retired_images_` with frame counter.
 
 ## Verification
-- C++ unit tests: `tests/test_context.cpp`, `test_full_pipeline.cpp`, `test_graph_validation.cpp`, `test_async_readback.cpp`, `test_aliasing.cpp`, `test_dirty_set.cpp`, `test_image_upload.cpp`, `test_mask_node.cpp`, `test_mute_middle_node.cpp`, `test_timestamps.cpp`, `test_combine_rgba.cpp`, `test_noise_nodes.cpp`.
+- C++ unit tests: all `tests/test_*.cpp` files (30 files covering context, pipeline, validation, fusion, blend, blur, storage format, depth resolution, etc.). See `tests/AGENTS.md` for suite contracts.
 - Build: `cmake -S . -B build -DBUILD_TESTS:BOOL=ON` then `cmake --build build --config Release --target engine_tests` (never `--target clean`).
 
 ## Child DOX Index

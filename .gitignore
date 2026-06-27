@@ -43,6 +43,7 @@ imgui.ini
 
 # Stray diagnostic dumps (must never be committed).
 diag_engine.txt
+*.glsl
 
 # ctest drops a Testing/ dir at CWD when run with --test-dir; never commit it.
 /Testing/
