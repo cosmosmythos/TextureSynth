@@ -2,6 +2,7 @@
 #include "engine/GraphIR.hpp"   // transitively brings in PassKind from Graph.hpp
 #include "engine/NodeResource.hpp"
 #include "engine/ShaderVariantKey.hpp"
+#include "engine/register_allocation/GraphColorer.hpp"
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -74,6 +75,11 @@ struct Chain {
     std::vector<ShaderVariantKey> sub_pass_variant_keys;
     uint32_t sub_pass_count     = 0;  // 0 = legacy single-pipeline chain
     uint32_t intermediate_count = 0;  // temp images between sub-passes
+
+    // Register allocation: maps each ResourceUUID to a register color.
+    // colors_used = number of GLSL vec4 locals needed for this chain.
+    // spilled = resources that exceed the budget (future: shared memory).
+    register_allocation::ColoringResult coloring;
 };
 
 

@@ -21,6 +21,12 @@ struct ColoringResult {
     // Resources that could not be colored within the budget (need spill/split).
     std::vector<ResourceUUID> spilled;
 
+    // Maps spilled resource -> shared memory slot index.
+    std::unordered_map<ResourceUUID, uint32_t, ResourceUUIDHash> spilled_assignment;
+
+    // Total shared memory slots needed (= spilled.size()).
+    uint32_t shared_slot_count = 0;
+
     [[nodiscard]] bool has_spills() const { return !spilled.empty(); }
 };
 

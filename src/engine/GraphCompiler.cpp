@@ -3,6 +3,7 @@
 #include "engine/PushConstants.hpp"
 #include "engine/BindlessTable.hpp"
 #include "engine/Logging.hpp"
+#include "engine/memory_allocation/AliasColorer.hpp"
 #include <sstream>
 #include <algorithm>
 #include <unordered_map>
@@ -403,56 +404,17 @@ CompileGraphResult GraphCompiler::compile(const GraphIR& ir, const NodeLibrary& 
         plan.chain_index_of_pass[i] = chain_idx;
     }
 
-    // Stage 6 aliasing: compute lifetimes and color classes.
-    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
-        const auto& pass = plan.passes[i];
-        for (const auto& rid : pass.output_resources) {
-            auto& lt = plan.lifetimes[rid];
-            if (lt.first_pass == UINT32_MAX) lt.first_pass = i;
-            lt.last_pass = i;
+    // Stage 6 aliasing: compute lifetimes and color classes via AliasColorer.
+    {
+        auto alias_result = memory_allocation::AliasColorer::compute(
+            plan.passes, plan.final_output_resource, ir, lib);
+        plan.lifetimes.reserve(alias_result.lifetimes.size());
+        for (const auto& kv : alias_result.lifetimes) {
+            auto& lt = plan.lifetimes[kv.first];
+            lt.first_pass = kv.second.first_pass;
+            lt.last_pass = kv.second.last_pass;
         }
-        for (const auto& rid : pass.input_resources) {
-            if (rid.node_id == 0) continue;
-            auto& lt = plan.lifetimes[rid];
-            lt.last_pass = i;
-            if (lt.first_pass == UINT32_MAX) lt.first_pass = 0;
-        }
-    }
-    auto& fo_lt = plan.lifetimes[plan.final_output_resource];
-    fo_lt.first_pass = 0;
-    fo_lt.last_pass = UINT32_MAX;
-
-    struct Colored { ResourceUUID rid; uint32_t first, last; };
-    std::vector<Colored> items;
-    for (auto& kv : plan.lifetimes) {
-        if (kv.first == plan.final_output_resource) continue;
-        if (kv.second.first_pass == kv.second.last_pass) continue;
-        if (kv.second.last_pass == UINT32_MAX) continue;
-        items.push_back({kv.first, kv.second.first_pass, kv.second.last_pass});
-    }
-    std::sort(items.begin(), items.end(),
-        [](const Colored& a, const Colored& b) {
-            if (a.first != b.first) return a.first < b.first;
-            return a.last < b.last;
-        });
-
-    std::vector<uint32_t> color_end;
-    uint32_t next_color = 1;
-    for (auto& item : items) {
-        bool found = false;
-        for (uint32_t c = 0; c < (uint32_t)color_end.size(); ++c) {
-            if (color_end[c] < item.first) {
-                plan.color_classes[item.rid] = c + 1;
-                color_end[c] = item.last;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            plan.color_classes[item.rid] = next_color;
-            color_end.push_back(item.last);
-            ++next_color;
-        }
+        plan.color_classes = std::move(alias_result.color_classes);
     }
 
     // ── User-facing error FIRST (param budget) ─────────────────────

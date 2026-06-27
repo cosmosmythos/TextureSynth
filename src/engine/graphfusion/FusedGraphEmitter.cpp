@@ -28,9 +28,7 @@ struct NodeEmit {
     ChannelFormat           format_override = ChannelFormat::RGBA;
 };
 
-using ConnByDst = std::unordered_map<
-    NodeId,
-    std::vector<std::pair<uint32_t, NodeId>>>;
+using ConnByDst = std::unordered_map<NodeId, std::vector<std::pair<uint32_t, NodeId>>>;
 
 ConnByDst index_connections(const GraphIR& ir) noexcept {
     ConnByDst out;
@@ -39,10 +37,29 @@ ConnByDst index_connections(const GraphIR& ir) noexcept {
     return out;
 }
 
-std::string local_var_name(size_t node_index, uint32_t output_socket, uint32_t output_count) {
+std::string local_var_name_fallback(size_t node_index, uint32_t output_socket, uint32_t output_count) {
     if (output_count <= 1)
         return "_local_" + std::to_string(node_index);
     return "_local_" + std::to_string(node_index) + "_" + std::to_string(output_socket);
+}
+
+std::string colored_var_name(
+    const ActivePath& path,
+    size_t node_index,
+    uint32_t output_socket,
+    uint32_t output_count,
+    const register_allocation::ColoringResult* coloring)
+{
+    if (!coloring) return local_var_name_fallback(node_index, output_socket, output_count);
+
+    NodeId node_id = path.nodes[node_index];
+    ResourceUUID rid{node_id, output_socket};
+    auto it = coloring->assignment.find(rid);
+    if (it != coloring->assignment.end()) {
+        return "r" + std::to_string(it->second);
+    }
+    // Fallback for uncolored (external inputs, constants, etc).
+    return local_var_name_fallback(node_index, output_socket, output_count);
 }
 
 } // namespace
@@ -52,7 +69,9 @@ FusedResult emit_fused_subgraph(
     const GraphIR& ir,
     const NodeLibrary& lib,
     uint32_t chain_base_slot,
-    const std::unordered_map<NodeId, int>& global_param_slots)
+    const std::unordered_map<NodeId, int>& global_param_slots,
+    const register_allocation::ColoringResult* coloring,
+    const std::unordered_set<ResourceUUID, ResourceUUIDHash>* active_resources)
 {
     FusedResult result;
     if (path.nodes.empty()) {
@@ -180,6 +199,17 @@ FusedResult emit_fused_subgraph(
     builder.main_begin();
     builder.statement("if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;");
 
+    // Declare shared memory pool for spilled variables.
+    if (coloring && coloring->shared_slot_count > 0) {
+        builder.declare_shared(coloring->shared_slot_count);
+    }
+
+    // Track which variables have been declared to avoid redeclaring reused registers.
+    std::unordered_set<std::string> declared_vars;
+
+    // Track which spilled resources have been loaded into temps.
+    std::unordered_map<ResourceUUID, std::string, ResourceUUIDHash> spill_temps;
+
     for (size_t i = 0; i < emits.size(); ++i) {
         const auto& ne = emits[i];
         const NodeType* type = lib.find(ne.type_id);
@@ -199,12 +229,16 @@ FusedResult emit_fused_subgraph(
             }
         }
 
-        // Declare output locals.
+        // Declare output locals (skip if already declared — register reuse).
         if (ne.output_count <= 1) {
-            builder.declare_local("_local_" + std::to_string(i));
+            std::string var = colored_var_name(path, i, 0, 1, coloring);
+            if (declared_vars.insert(var).second)
+                builder.declare_local(var);
         } else {
             for (uint32_t o = 0; o < ne.output_count; ++o) {
-                builder.declare_local("_local_" + std::to_string(i) + "_" + std::to_string(o));
+                std::string var = colored_var_name(path, i, o, ne.output_count, coloring);
+                if (declared_vars.insert(var).second)
+                    builder.declare_local(var);
             }
         }
 
@@ -223,9 +257,26 @@ FusedResult emit_fused_subgraph(
                 const ValidatedNode* src_inst = ir.find(src_node);
                 const NodeType* src_type = src_inst ? lib.find(src_inst->type_id) : nullptr;
                 uint32_t src_out_count = src_type ? static_cast<uint32_t>(src_type->outputs.size()) : 1;
-                std::string var = local_var_name(reg.local_index, reg.output_socket, src_out_count);
-                if (is_float_input) var += ".r";
-                args.push_back(std::move(var));
+                ResourceUUID src_rid{src_node, reg.output_socket};
+                // Check if source is spilled — load from shared memory.
+                if (coloring && coloring->spilled_assignment.count(src_rid)) {
+                    uint32_t slot = coloring->spilled_assignment.at(src_rid);
+                    auto it = spill_temps.find(src_rid);
+                    if (it == spill_temps.end()) {
+                        std::string temp = "_spill_" + std::to_string(slot);
+                        builder.statement("vec4 " + temp + " = " +
+                                          builder.spill_load_expr(slot) + ";");
+                        spill_temps[src_rid] = temp;
+                        it = spill_temps.find(src_rid);
+                    }
+                    std::string var = it->second;
+                    if (is_float_input) var += ".r";
+                    args.push_back(std::move(var));
+                } else {
+                    std::string var = colored_var_name(path, reg.local_index, reg.output_socket, src_out_count, coloring);
+                    if (is_float_input) var += ".r";
+                    args.push_back(std::move(var));
+                }
             } else if (std::holds_alternative<ConstSrc>(ne.input_srcs[s])) {
                 auto c = std::get<ConstSrc>(ne.input_srcs[s]);
                 if (is_float_input) {
@@ -267,21 +318,40 @@ FusedResult emit_fused_subgraph(
 
         // Emit the function call.
         if (ne.output_count <= 1) {
-            builder.call_and_assign("_local_" + std::to_string(i),
+            builder.call_and_assign(colored_var_name(path, i, 0, 1, coloring),
                                     "node_" + type->id, args);
+            // Spill store: if this output is spilled, write to shared memory.
+            if (coloring) {
+                ResourceUUID rid{path.nodes[i], 0};
+                auto sit = coloring->spilled_assignment.find(rid);
+                if (sit != coloring->spilled_assignment.end()) {
+                    builder.spill_store(sit->second, colored_var_name(path, i, 0, 1, coloring));
+                }
+            }
         } else {
             for (uint32_t o = 0; o < ne.output_count; ++o) {
-                args.push_back("_local_" + std::to_string(i) + "_" + std::to_string(o));
+                args.push_back(colored_var_name(path, i, o, ne.output_count, coloring));
             }
             builder.call_void("node_" + type->id, args);
+            // Spill store for multi-output nodes.
+            if (coloring) {
+                for (uint32_t o = 0; o < ne.output_count; ++o) {
+                    ResourceUUID rid{path.nodes[i], o};
+                    auto sit = coloring->spilled_assignment.find(rid);
+                    if (sit != coloring->spilled_assignment.end()) {
+                        builder.spill_store(sit->second,
+                            colored_var_name(path, i, o, ne.output_count, coloring));
+                    }
+                }
+            }
         }
 
         // Format post-process IMMEDIATELY after each node so downstream
         // nodes in the chain see the formatted value (e.g. Mono zeroes G/B).
         if (ne.format_override != ChannelFormat::RGBA) {
             std::string var = (ne.output_count <= 1)
-                ? "_local_" + std::to_string(i)
-                : "_local_" + std::to_string(i) + "_0";
+                ? colored_var_name(path, i, 0, 1, coloring)
+                : colored_var_name(path, i, 0, ne.output_count, coloring);
             static const char* fn_for[] = {
                 "_fmt_mono", "_fmt_uv", "_fmt_rgb", "_fmt_rgba"
             };
@@ -293,11 +363,32 @@ FusedResult emit_fused_subgraph(
 
     // Compute the tail variable name for imageStore output.
     const auto& tail = emits.back();
-    std::string tail_var = (tail.output_count <= 1)
-        ? "_local_" + std::to_string(emits.size() - 1)
-        : "_local_" + std::to_string(emits.size() - 1) + "_0";
-
-    builder.main_end(tail_var);
+    if (tail.output_count <= 1) {
+        std::string tail_var = colored_var_name(path, emits.size() - 1, 0, 1, coloring);
+        builder.main_end(tail_var);
+    } else {
+        // Multi-output tail: only write outputs that are in active_resources.
+        size_t tail_idx = emits.size() - 1;
+        uint32_t oc = tail.output_count;
+        NodeId tail_node = path.nodes[tail_idx];
+        std::vector<uint32_t> materialized;
+        for (uint32_t o = 0; o < oc; ++o) {
+            ResourceUUID rid{tail_node, o};
+            if (!active_resources || active_resources->count(rid))
+                materialized.push_back(o);
+        }
+        if (materialized.size() == 1 && materialized[0] == 0) {
+            std::string tail_var = colored_var_name(path, tail_idx, 0, 1, coloring);
+            builder.main_end(tail_var);
+        } else if (materialized.empty()) {
+            builder.main_end("vec4(0.0)");
+        } else {
+            builder.main_end_multi(materialized,
+                [&, tail_idx, oc](uint32_t mi) -> std::string {
+                    return colored_var_name(path, tail_idx, materialized[mi], oc, coloring);
+                });
+        }
+    }
     result.source = builder.build();
     return result;
 }

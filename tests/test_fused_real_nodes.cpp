@@ -134,8 +134,8 @@ TEST_F(FusedRealNodesGLSL, PerlinOnly_SingleChain) {
         << "fused GLSL must contain node_perlin function";
     EXPECT_NE(glsl.find("imageStore"), std::string::npos)
         << "fused GLSL must write to storage image";
-    EXPECT_NE(glsl.find("_local_0"), std::string::npos)
-        << "fused GLSL must use _local_0 for perlin output";
+    EXPECT_NE(glsl.find("r0"), std::string::npos)
+        << "fused GLSL must use r0 for perlin output";
 }
 
 TEST_F(FusedRealNodesGLSL, PerlinToInvert_LinearChain) {
@@ -161,11 +161,11 @@ TEST_F(FusedRealNodesGLSL, PerlinToInvert_LinearChain) {
     EXPECT_NE(glsl.find("node_perlin"), std::string::npos);
     EXPECT_NE(glsl.find("node_invert"), std::string::npos);
 
-    // Must use register chain: _local_0 -> invert -> _local_1.
-    EXPECT_NE(glsl.find("_local_0"), std::string::npos);
-    EXPECT_NE(glsl.find("_local_1"), std::string::npos);
+    // Must use register chain: r0 (perlin) -> invert -> r1.
+    EXPECT_NE(glsl.find("r0"), std::string::npos);
+    EXPECT_NE(glsl.find("r1"), std::string::npos);
 
-    // invert's color input must come from _local_0 (register), not texelFetch.
+    // invert's color input must come from r0 (register), not texelFetch.
     EXPECT_NE(glsl.find("node_invert("), std::string::npos);
 
     // Must end with imageStore.
@@ -2039,4 +2039,360 @@ TEST_F(FusedRealNodesGLSL, PerlinLevelsBlurInvert_ChainStructure) {
             printf("    Written to: %s\n", fname);
         }
     }
+}
+
+TEST_F(FusedRealNodesGLSL, RegisterReuse_LinearChain) {
+    // A linear chain A→B→C should reuse registers.
+    // A's output is only alive while B reads it, then r0 is free for C.
+    // Expected: 2 registers (r0, r1) not 3 (_local_0, _local_1, _local_2).
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "levels"});
+    g.nodes.push_back({3, "invert"});
+    g.connections.push_back({1, 0, 2, 0});  // perlin -> levels
+    g.connections.push_back({2, 0, 3, 1});  // levels -> invert.color
+    g.output_node = 3;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+    ASSERT_EQ(cr.pass_plan.chains.size(), 1u);
+    EXPECT_EQ(cr.pass_plan.chains[0].nodes.size(), 3u);
+
+    const auto& coloring = cr.pass_plan.chains[0].coloring;
+    printf("\n=== REGISTER REUSE TEST ===\n");
+    printf("Colors used: %u (for 3-node chain)\n", coloring.colors_used);
+    printf("Spilled: %zu\n", coloring.spilled.size());
+
+    // 3 nodes, but perlin dies after levels reads it, so only 2 regs needed.
+    EXPECT_LE(coloring.colors_used, 2u)
+        << "3-node linear chain should need <= 2 registers (reuse)";
+
+    // Verify GLSL uses r0/r1 naming, not _local_0/_local_1/_local_2.
+    const auto& glsl = cr.pass_plan.chains[0].glsl;
+    EXPECT_NE(glsl.find("r0"), std::string::npos) << "must use r0";
+    EXPECT_NE(glsl.find("r1"), std::string::npos) << "must use r1";
+
+    // Must NOT declare 3 separate locals.
+    EXPECT_EQ(glsl.find("_local_2"), std::string::npos)
+        << "must not use _local_2 (register reuse should eliminate it)";
+}
+
+TEST_F(FusedRealNodesGLSL, RegisterReuse_ColoringMetadata) {
+    // Verify the coloring assignment maps each node output to a register.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "invert"});
+    g.connections.push_back({1, 0, 2, 1});
+    g.output_node = 2;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+    ASSERT_EQ(cr.pass_plan.chains.size(), 1u);
+
+    const auto& coloring = cr.pass_plan.chains[0].coloring;
+    printf("\n=== COLORING METADATA TEST ===\n");
+    printf("Colors used: %u\n", coloring.colors_used);
+    for (const auto& [rid, color] : coloring.assignment) {
+        printf("  ResourceUUID{node=%llu, socket=%u} -> r%u\n",
+               (unsigned long long)rid.node_id, rid.output_index, color);
+    }
+
+    // Perlin (node 1) output: should be assigned a register.
+    ResourceUUID perlin_out{1, 0};
+    EXPECT_TRUE(coloring.assignment.count(perlin_out))
+        << "perlin output must have a register assignment";
+
+    // Invert (node 2) output: should be assigned a register.
+    ResourceUUID invert_out{2, 0};
+    EXPECT_TRUE(coloring.assignment.count(invert_out))
+        << "invert output must have a register assignment";
+
+    // Both can share r0 since perlin dies after invert reads it.
+    // (Perlin interval [0,1], Invert interval [1,2] — they overlap at step 1,
+    // so they actually CANNOT share. Both need separate regs.)
+    // Actually: perlin [0,1] and invert [1,2] overlap at boundary, so 2 regs.
+    EXPECT_EQ(coloring.colors_used, 2u)
+        << "perlin->invert needs exactly 2 registers";
+}
+
+TEST_F(FusedRealNodesGLSL, RegisterReuse_LongChain) {
+    // 6-node linear chain: simplex->invert->levels->shuffle->separate_rgba->levels
+    // Each node's output is only read by the next node.
+    // Without reuse: needs 6 locals (_local_0 through _local_5).
+    // With reuse: only 2 registers needed (r0, r1) — peak pressure is 2.
+    //
+    // Socket wiring:
+    //   simplex(no inputs) -> invert(socket 1 = color, socket 0 = mask unconnected)
+    //   invert -> levels(socket 0 = color)
+    //   levels -> shuffle(socket 0 = color)
+    //   shuffle -> separate_rgba(socket 0 = color)
+    //   separate_rgba(socket 0 = red output) -> levels(socket 0 = color)
+    Graph g;
+    g.nodes.push_back({1, "simplex"});
+    g.nodes.push_back({2, "invert"});
+    g.nodes.push_back({3, "levels"});
+    g.nodes.push_back({4, "shuffle"});
+    g.nodes.push_back({5, "separate_rgba"});
+    g.nodes.push_back({6, "levels"});
+    g.connections.push_back({1, 0, 2, 1});  // simplex -> invert.color
+    g.connections.push_back({2, 0, 3, 0});  // invert -> levels.color
+    g.connections.push_back({3, 0, 4, 0});  // levels -> shuffle.color
+    g.connections.push_back({4, 0, 5, 0});  // shuffle -> separate_rgba.color
+    g.connections.push_back({5, 0, 6, 0});  // separate_rgba.r -> levels.color
+    g.output_node = 6;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+    ASSERT_EQ(cr.pass_plan.chains.size(), 1u) << "all 6 nodes should fuse into one chain";
+
+    const auto& chain = cr.pass_plan.chains[0];
+    EXPECT_EQ(chain.nodes.size(), 6u);
+
+    const auto& coloring = chain.coloring;
+    printf("\n=== 6-NODE LINEAR CHAIN ===\n");
+    printf("Chain nodes: ");
+    for (NodeId n : chain.nodes) printf("%llu ", (unsigned long long)n);
+    printf("\n");
+    printf("Colors used: %u (for 6-node chain)\n", coloring.colors_used);
+    printf("Spilled: %zu\n", coloring.spilled.size());
+    for (const auto& [rid, color] : coloring.assignment) {
+        printf("  node=%llu socket=%u -> r%u\n",
+               (unsigned long long)rid.node_id, rid.output_index, color);
+    }
+
+    // 6-node linear chain where each output is only live for 1 step.
+    // Peak pressure = 2 (current value + next value being computed).
+    EXPECT_LE(coloring.colors_used, 3u)
+        << "6-node linear chain should need <= 3 registers";
+
+    // Show the GLSL — verify it uses r0/r1/r2, not _local_0 through _local_5.
+    printf("\n=== GLSL (last 30 lines) ===\n");
+    std::istringstream iss(chain.glsl);
+    std::string line;
+    std::vector<std::string> lines;
+    while (std::getline(iss, line)) lines.push_back(line);
+    size_t start = lines.size() > 30 ? lines.size() - 30 : 0;
+    for (size_t i = start; i < lines.size(); ++i)
+        printf("%s\n", lines[i].c_str());
+
+    // Multi-output void functions (separate_rgba) still use _local_N_M for
+    // their side-channel outputs (g, b, a) — those aren't in the register graph.
+    // But the primary output (socket 0) uses r0, not _local_4.
+    // Verify the primary chain uses only r0/r1, no _local_0 through _local_3.
+    for (int i = 0; i <= 3; ++i) {
+        std::string bad = "_local_" + std::to_string(i) + ";";
+        EXPECT_EQ(chain.glsl.find(bad), std::string::npos)
+            << "register reuse should eliminate _local_" << i;
+    }
+}
+
+// ===========================================================================
+// Phase 2: Register-pressure-based FusionPlanner
+// ===========================================================================
+
+TEST_F(FusedRealNodesGLSL, PressureBasedPlanning_TenNodeChain) {
+    // 10-node linear chain: perlin->invert->levels->invert->levels->...
+    // With additive cost (5 regs/node), FusionPlanner splits at node 9 (50 > 48).
+    // With register pressure, peak pressure = 2 (linear chain, each value dies
+    // after the next node reads it), so the entire 10-node chain fits in one group.
+    //
+    // Node types:
+    //   perlin: inputs=[], outputs=[vec4]
+    //   invert: inputs=[mask(float), color(vec4)], outputs=[vec4]
+    //   levels: inputs=[vec4], outputs=[vec4]
+    //
+    // Wiring pattern:
+    //   perlin[0] -> invert[1] (color)
+    //   invert[0] -> levels[0]
+    //   levels[0] -> invert[1] (color)
+    //   ... repeat
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "invert"});
+    g.nodes.push_back({3, "levels"});
+    g.nodes.push_back({4, "invert"});
+    g.nodes.push_back({5, "levels"});
+    g.nodes.push_back({6, "invert"});
+    g.nodes.push_back({7, "levels"});
+    g.nodes.push_back({8, "invert"});
+    g.nodes.push_back({9, "levels"});
+    g.nodes.push_back({10, "invert"});
+    g.connections.push_back({1, 0, 2, 1});   // perlin -> invert.color
+    g.connections.push_back({2, 0, 3, 0});   // invert -> levels
+    g.connections.push_back({3, 0, 4, 1});   // levels -> invert.color
+    g.connections.push_back({4, 0, 5, 0});   // invert -> levels
+    g.connections.push_back({5, 0, 6, 1});   // levels -> invert.color
+    g.connections.push_back({6, 0, 7, 0});   // invert -> levels
+    g.connections.push_back({7, 0, 8, 1});   // levels -> invert.color
+    g.connections.push_back({8, 0, 9, 0});   // invert -> levels
+    g.connections.push_back({9, 0, 10, 1});  // levels -> invert.color
+    g.output_node = 10;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== 10-NODE CHAIN (pressure-based planning) ===\n");
+    printf("Chains: %zu\n", cr.pass_plan.chains.size());
+    for (size_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("  chain[%zu]: %zu nodes, regs=%u\n", ci, ch.nodes.size(),
+               ch.coloring.colors_used);
+    }
+
+    // With pressure-based planning, the 10-node linear chain should fit
+    // in ONE chain (peak register pressure = 2, well under 48).
+    // Under additive cost it would split into 2 chains.
+    ASSERT_EQ(cr.pass_plan.chains.size(), 1u)
+        << "pressure-based planning should fuse 10-node linear chain into 1 chain";
+
+    const auto& chain = cr.pass_plan.chains[0];
+    EXPECT_EQ(chain.nodes.size(), 10u);
+    EXPECT_LE(chain.coloring.colors_used, 3u)
+        << "peak register pressure for linear chain should be <= 3";
+}
+
+TEST_F(FusedRealNodesGLSL, PressureBasedPlanning_KeepsTwoChainsForFanOut) {
+    // Fan-out: perlin1 -> blend.a, perlin2 -> blend.b
+    // Active path: [perlin1, perlin2, blend] (3 nodes).
+    // Peak pressure = 2 (two perlin outputs live simultaneously).
+    // With pressure-based planning, this stays as one chain (2 <= 48).
+    // This is a regression test — fan-out should NOT split unnecessarily.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "perlin"});
+    g.nodes.push_back({3, "blend"});
+    g.connections.push_back({1, 0, 3, 1});
+    g.connections.push_back({2, 0, 3, 2});
+    g.output_node = 3;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== FAN-OUT (perlin1, perlin2 -> blend) ===\n");
+    printf("Chains: %zu\n", cr.pass_plan.chains.size());
+
+    // All 3 nodes should be in one chain (peak pressure = 2).
+    bool found_big_chain = false;
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 3) {
+            found_big_chain = true;
+            EXPECT_LE(ch.coloring.colors_used, 3u);
+        }
+    }
+    EXPECT_TRUE(found_big_chain)
+        << "fan-out graph should fuse into one 3-node chain";
+}
+
+TEST_F(FusedRealNodesGLSL, PressureBasedPlanning_LongLinearChain_NoSplit) {
+    // 15-node linear chain: perlin->invert->levels->invert->levels->...
+    // Additive cost (5 regs/node) would split at node 9 (50 > 48).
+    // Register pressure: peak = 2 for any linear chain (reuse is perfect).
+    // This test verifies the pressure function is actually driving the split decision.
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    for (int i = 2; i <= 15; ++i) {
+        g.nodes.push_back({static_cast<NodeId>(i), (i % 2 == 0) ? "invert" : "levels"});
+    }
+    // perlin[0] -> invert[1]
+    g.connections.push_back({1, 0, 2, 1});
+    for (int i = 2; i <= 14; ++i) {
+        if (i % 2 == 0) {
+            // invert[0] -> levels[0]
+            g.connections.push_back({static_cast<NodeId>(i), 0,
+                                     static_cast<NodeId>(i + 1), 0});
+        } else {
+            // levels[0] -> invert[1]
+            g.connections.push_back({static_cast<NodeId>(i), 0,
+                                     static_cast<NodeId>(i + 1), 1});
+        }
+    }
+    g.output_node = 15;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== 15-NODE LINEAR CHAIN ===\n");
+    printf("Chains: %zu\n", cr.pass_plan.chains.size());
+    for (size_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("  chain[%zu]: %zu nodes, regs=%u\n", ci, ch.nodes.size(),
+               ch.coloring.colors_used);
+    }
+
+    // Under pressure-based planning: 1 chain (pressure=2).
+    // Under additive cost: 2 chains (5*15=75 > 48).
+    ASSERT_EQ(cr.pass_plan.chains.size(), 1u)
+        << "pressure-based planning should fuse 15-node linear chain into 1 chain";
+
+    EXPECT_EQ(cr.pass_plan.chains[0].nodes.size(), 15u);
+    EXPECT_LE(cr.pass_plan.chains[0].coloring.colors_used, 3u);
+}
+
+TEST_F(FusedRealNodesGLSL, PressureBasedPlanning_MultiPassStillSplits) {
+    // blur (multi-pass) -> invert: blur must be singleton chain, invert separate.
+    // This test verifies multi-pass splits still happen with pressure-based planning.
+    Graph g;
+    g.nodes.push_back({1, "simplex"});
+    g.nodes.push_back({2, "blur"});
+    g.nodes.push_back({3, "invert"});
+    g.connections.push_back({1, 0, 2, 0});  // simplex -> blur
+    g.connections.push_back({2, 0, 3, 1});  // blur -> invert.color
+    g.output_node = 3;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== BLUR -> INVERT (multi-pass split) ===\n");
+    printf("Chains: %zu\n", cr.pass_plan.chains.size());
+    for (size_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("  chain[%zu]: %zu nodes, sub_passes=%u\n", ci, ch.nodes.size(),
+               ch.sub_pass_count);
+    }
+
+    // Must have at least 2 chains: [blur] singleton (sub_pass_count=2) + [invert].
+    bool found_blur = false, found_invert = false;
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 2) found_blur = true;
+        if (ch.nodes.size() == 1 && ch.nodes[0] == 3) found_invert = true;
+    }
+    EXPECT_TRUE(found_blur) << "blur must be singleton chain";
+    EXPECT_TRUE(found_invert) << "invert must be separate chain";
+}
+
+TEST_F(FusedRealNodesGLSL, PressureBasedPlanning_BranchingChain) {
+    // Diamond with reuse: perlin -> invert -> blend.a, perlin2 -> blend.b
+    // Active path has branching: perlin1 feeds invert which feeds blend,
+    // perlin2 directly feeds blend.
+    // Peak pressure: 3 (perlin1 + invert + perlin2 simultaneously live).
+    Graph g;
+    g.nodes.push_back({1, "perlin"});
+    g.nodes.push_back({2, "invert"});
+    g.nodes.push_back({3, "perlin"});
+    g.nodes.push_back({4, "blend"});
+    g.connections.push_back({1, 0, 2, 1});  // perlin1 -> invert.color
+    g.connections.push_back({2, 0, 4, 1});  // invert -> blend.a
+    g.connections.push_back({3, 0, 4, 2});  // perlin2 -> blend.b
+    g.output_node = 4;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== BRANCHING CHAIN (perlin->invert->blend, perlin2->blend) ===\n");
+    printf("Chains: %zu\n", cr.pass_plan.chains.size());
+    for (size_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("  chain[%zu]: %zu nodes, regs=%u\n", ci, ch.nodes.size(),
+               ch.coloring.colors_used);
+    }
+
+    // 4-node diamond fits in one chain (pressure=3, well under 48).
+    bool found_big = false;
+    for (const auto& ch : cr.pass_plan.chains) {
+        if (ch.nodes.size() == 4) {
+            found_big = true;
+            EXPECT_LE(ch.coloring.colors_used, 4u);
+        }
+    }
+    EXPECT_TRUE(found_big) << "4-node diamond should fuse into one chain";
 }

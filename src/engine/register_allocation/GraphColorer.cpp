@@ -211,6 +211,13 @@ ColoringResult GraphColorer::color_linear_scan(
     }
 
     result.colors_used = next_reg;
+
+    // Assign shared memory slots to spilled resources.
+    uint32_t next_shared_slot = 0;
+    for (auto& rid : result.spilled)
+        result.spilled_assignment[rid] = next_shared_slot++;
+    result.shared_slot_count = next_shared_slot;
+
     return result;
 }
 

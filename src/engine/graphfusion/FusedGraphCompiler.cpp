@@ -5,6 +5,10 @@
 #include "engine/graphfusion/DAG.hpp"
 #include "engine/ShaderVariantKey.hpp"
 #include "engine/Logging.hpp"
+#include "engine/register_allocation/LivenessAnalysis.hpp"
+#include "engine/register_allocation/InterferenceGraph.hpp"
+#include "engine/register_allocation/GraphColorer.hpp"
+#include "engine/memory_allocation/AliasColorer.hpp"
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -195,28 +199,28 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
                 split_after.push_back(di);
             }
 
-            for (uint32_t s = 0; s < dt->inputs.size(); ++s) {
-                if (dt->inputs[s].type != SocketType::Sampler2D) continue;
-                for (const auto& c : ir.connections) {
-                    if (c.dst_node == dst && c.dst_socket == s && pset.count(c.src_node)) {
-                        auto sit = std::find(path.nodes.begin(), path.nodes.end(), c.src_node);
-                        if (sit != path.nodes.end()) {
-                            size_t si = static_cast<size_t>(sit - path.nodes.begin());
-                            split_after.push_back(si);
-                        }
-                        break;
+        // Sampler2D split: the source node's output must be materialized
+        // as a VRAM image so the consumer chain can sample it via TSTexture.
+        // Split BOTH before and after the source to isolate it into its own
+        // chain — the source becomes the chain tail, guaranteeing its output
+        // gets a VRAM image slot. Without the before-split, two independent
+        // sources from different branches can land in the same chain, and
+        // only the tail's output gets a VRAM image (the other is lost).
+        for (uint32_t s = 0; s < dt->inputs.size(); ++s) {
+            if (dt->inputs[s].type != SocketType::Sampler2D) continue;
+            for (const auto& c : ir.connections) {
+                if (c.dst_node == dst && c.dst_socket == s && pset.count(c.src_node)) {
+                    auto sit = std::find(path.nodes.begin(), path.nodes.end(), c.src_node);
+                    if (sit != path.nodes.end()) {
+                        size_t si = static_cast<size_t>(sit - path.nodes.begin());
+                        split_after.push_back(si);       // split after source
+                        if (si > 0) split_after.push_back(si - 1);  // split before source
                     }
+                    break;
                 }
             }
         }
-
-        // NOTE: Independent-source split removed — redundant.
-        // The Sampler2D split (lines 198-210) already materializes source
-        // nodes as VRAM images when a consumer needs to sample them.
-        // Root nodes with downstream dependents (e.g. perlin → levels)
-        // stay in the same chain and share registers. Only truly dead
-        // roots (no consumers at all) get materialized by the
-        // active_resources scan (lines 519-557).
+        }
 
         std::sort(split_after.begin(), split_after.end());
         split_after.erase(std::unique(split_after.begin(), split_after.end()),
@@ -239,23 +243,11 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
     }
     dag::DAG<NodeId> dag(std::move(dag_nodes), std::move(dag_edges));
 
-    // Compute per-node register costs.
-    std::vector<uint32_t> per_node_costs;
-    per_node_costs.reserve(path.nodes.size());
-    for (NodeId nid : path.nodes) {
-        const auto* vn = ir.find(nid);
-        const auto* type = vn ? lib.find(vn->type_id) : nullptr;
-        if (!type) { per_node_costs.push_back(5); continue; }
-        auto cost = reg::RegisterAllocator::estimate_cost(type->id);
-        per_node_costs.push_back(cost.total());
-    }
-
     // If Sampler2D boundaries exist, split the active path into sub-paths
     // and plan each independently. This ensures the source node becomes a
     // chain tail (its output is materialized as a VRAM image) so the
     // consumer chain can sample it as a TSTexture.
-    auto plan_chain_group = [&](ActivePath& sub_path,
-                                std::vector<uint32_t>& sub_costs) {
+    auto plan_chain_group = [&](ActivePath& sub_path) {
         std::unordered_set<NodeId> sub_set(sub_path.nodes.begin(), sub_path.nodes.end());
         dag::DAG<NodeId>::NodeList sub_dag_nodes(sub_path.nodes.begin(), sub_path.nodes.end());
         dag::DAG<NodeId>::EdgeList sub_dag_edges;
@@ -265,8 +257,31 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         }
         dag::DAG<NodeId> sub_dag(std::move(sub_dag_nodes), std::move(sub_dag_edges));
 
+        // Phase 2: compute actual register pressure for each candidate group.
+        // This replaces additive cost with graph-coloring-based pressure,
+        // allowing the planner to see that register reuse keeps pressure low.
+        auto pressure_fn = [&](const std::vector<NodeId>& range) -> uint32_t {
+            std::vector<ResourceUUID> ext_outputs;
+            if (!range.empty()) {
+                NodeId tail = range.back();
+                const auto* tail_inst = ir.find(tail);
+                if (tail_inst) {
+                    const auto* tail_type = lib.find(tail_inst->type_id);
+                    if (tail_type) {
+                        for (uint32_t i = 0; i < tail_type->outputs.size(); ++i)
+                            ext_outputs.push_back(ResourceUUID{tail, i});
+                    }
+                }
+            }
+            auto intervals = register_allocation::LivenessAnalysis::compute_intervals(
+                range, ir.connections, ext_outputs);
+            auto coloring = register_allocation::GraphColorer::color_linear_scan(
+                intervals, range, DEFAULT_REG_BUDGET);
+            return coloring.colors_used;
+        };
+
         fusion::FusionPlanner planner(DEFAULT_REG_BUDGET);
-        return planner.plan(sub_dag, sub_path.nodes, sub_costs);
+        return planner.plan(sub_dag, sub_path.nodes, pressure_fn);
     };
 
     fusion::FusionPlan<NodeId> fusion_plan;
@@ -280,14 +295,12 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             if (lo >= hi) continue;
             ActivePath sub;
             sub.nodes.assign(path.nodes.begin() + lo, path.nodes.begin() + hi);
-            std::vector<uint32_t> sub_costs(per_node_costs.begin() + lo,
-                                            per_node_costs.begin() + hi);
-            auto sub_plan = plan_chain_group(sub, sub_costs);
+            auto sub_plan = plan_chain_group(sub);
             for (auto& g : sub_plan.groups)
                 fusion_plan.groups.push_back(std::move(g));
         }
     } else {
-        fusion_plan = plan_chain_group(path, per_node_costs);
+        fusion_plan = plan_chain_group(path);
     }
 
     // 5. Emit fused GLSL for each fusion group and create Chain entries.
@@ -373,13 +386,41 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             ActivePath group_path;
             group_path.nodes = group.nodes;
 
+            // Compute register allocation for this chain.
+            // Liveness analysis maps each node output to a [start, end] interval.
+            // Graph coloring assigns register colors to non-overlapping values.
+            {
+                std::vector<ResourceUUID> ext_outputs;
+                if (!group.nodes.empty()) {
+                    NodeId tail = group.nodes.back();
+                    const auto* tail_inst = ir.find(tail);
+                    if (tail_inst) {
+                        const auto* tail_type = lib.find(tail_inst->type_id);
+                        if (tail_type) {
+                            for (uint32_t i = 0; i < tail_type->outputs.size(); ++i)
+                                ext_outputs.push_back(ResourceUUID{tail, i});
+                        }
+                    }
+                }
+                auto intervals = register_allocation::LivenessAnalysis::compute_intervals(
+                    group.nodes, ir.connections, ext_outputs);
+                chain.coloring = register_allocation::GraphColorer::color_linear_scan(
+                    intervals, group.nodes, DEFAULT_REG_BUDGET);
+            }
+
             auto fused = emit_fused_subgraph(group_path, ir, lib, chain.param_base_slot,
-                                             param_base_slot);
+                                             param_base_slot, &chain.coloring,
+                                             &plan.active_resources);
             if (fused.ok()) {
                 chain.glsl = std::move(fused.source);
                 chain.external_socket_masks = std::move(fused.external_socket_masks);
                 chain.internal_producer_indices = std::move(fused.internal_producer_indices);
                 chain.variant_key = build_fused_key(chain, ir, lib);
+                log_info("FusedGraphCompiler: chain [" +
+                         [&]{ std::string s; for (auto n : group.nodes) s += std::to_string(n) + ","; return s; }() +
+                         "] regs=" + std::to_string(chain.coloring.colors_used) +
+                         " spilled=" + std::to_string(chain.coloring.spilled.size()) +
+                         " shared_slots=" + std::to_string(chain.coloring.shared_slot_count));
             } else {
                 log_warn("FusedGraphCompiler: group [" +
                          [&]{ std::string s; for (auto n : group.nodes) s += std::to_string(n) + ","; return s; }() +
@@ -415,58 +456,17 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
                                             pass.input_resources);
     }
 
-    // 7. Compute lifetimes and color classes.
+    // 7. Compute lifetimes and color classes via AliasColorer.
     {
-        for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
-            const auto& pass = plan.passes[i];
-            for (const auto& rid : pass.output_resources) {
-                auto& lt = plan.lifetimes[rid];
-                if (lt.first_pass == UINT32_MAX) lt.first_pass = i;
-                lt.last_pass = i;
-            }
-            for (const auto& rid : pass.input_resources) {
-                if (rid.node_id == 0) continue;
-                auto& lt = plan.lifetimes[rid];
-                lt.last_pass = i;
-                if (lt.first_pass == UINT32_MAX) lt.first_pass = 0;
-            }
+        auto alias_result = memory_allocation::AliasColorer::compute(
+            plan.passes, plan.final_output_resource, ir, lib);
+        plan.lifetimes.reserve(alias_result.lifetimes.size());
+        for (const auto& kv : alias_result.lifetimes) {
+            auto& lt = plan.lifetimes[kv.first];
+            lt.first_pass = kv.second.first_pass;
+            lt.last_pass = kv.second.last_pass;
         }
-        auto& fo_lt = plan.lifetimes[plan.final_output_resource];
-        fo_lt.first_pass = 0;
-        fo_lt.last_pass = UINT32_MAX;
-
-        struct Colored { ResourceUUID rid; uint32_t first, last; };
-        std::vector<Colored> items;
-        for (auto& kv : plan.lifetimes) {
-            if (kv.first == plan.final_output_resource) continue;
-            if (kv.second.first_pass == kv.second.last_pass) continue;
-            if (kv.second.last_pass == UINT32_MAX) continue;
-            items.push_back({kv.first, kv.second.first_pass, kv.second.last_pass});
-        }
-        std::sort(items.begin(), items.end(),
-            [](const Colored& a, const Colored& b) {
-                if (a.first != b.first) return a.first < b.first;
-                return a.last < b.last;
-            });
-
-        std::vector<uint32_t> color_end;
-        uint32_t next_color = 1;
-        for (auto& item : items) {
-            bool found = false;
-            for (uint32_t c = 0; c < (uint32_t)color_end.size(); ++c) {
-                if (color_end[c] < item.first) {
-                    plan.color_classes[item.rid] = c + 1;
-                    color_end[c] = item.last;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                plan.color_classes[item.rid] = next_color;
-                color_end.push_back(item.last);
-                ++next_color;
-            }
-        }
+        plan.color_classes = std::move(alias_result.color_classes);
     }
 
     // 8. Validate.

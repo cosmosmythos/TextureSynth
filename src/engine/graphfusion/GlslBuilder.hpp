@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -58,9 +59,34 @@ public:
         main_ << "}\n";
     }
 
+    void main_end_multi(const std::vector<uint32_t>& slot_indices,
+                        const std::function<std::string(uint32_t)>& var_for_slot) {
+        main_begin();
+        main_ << "\n";
+        for (uint32_t i = 0; i < (uint32_t)slot_indices.size(); ++i) {
+            main_ << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots["
+                  << slot_indices[i] << "])], coord, " << var_for_slot(i) << ");\n";
+        }
+        main_ << "}\n";
+    }
+
     void declare_local(const std::string& name) {
         main_begin();
         main_ << "    vec4 " << name << ";\n";
+    }
+
+    void declare_shared(uint32_t slot_count) {
+        main_begin();
+        main_ << "    shared vec4 spill_pool[" << slot_count << "];\n";
+    }
+
+    void spill_store(uint32_t slot, const std::string& reg_name) {
+        main_begin();
+        main_ << "    spill_pool[" << slot << "] = " << reg_name << ";\n";
+    }
+
+    std::string spill_load_expr(uint32_t slot) {
+        return "spill_pool[" + std::to_string(slot) + "]";
     }
 
     void declare_external(const std::string& name, std::uint32_t slot) {

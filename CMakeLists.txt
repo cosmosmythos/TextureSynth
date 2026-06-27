@@ -46,6 +46,9 @@ add_library(engine STATIC
     src/engine/graphfusion/ActivePathTracer.cpp
     src/engine/graphfusion/FusedGraphEmitter.cpp
     src/engine/graphfusion/FusedGraphCompiler.cpp
+    src/engine/register_allocation/GraphColorer.cpp
+    src/engine/register_allocation/InterferenceGraph.cpp
+    src/engine/memory_allocation/AliasColorer.cpp
 )
 target_include_directories(engine PUBLIC src)
 target_link_libraries(engine PUBLIC

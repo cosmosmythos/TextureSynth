@@ -4,6 +4,7 @@
 #include "RegisterAllocator.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <unordered_set>
@@ -43,7 +44,7 @@ public:
         return plan(dag, active_path, default_costs);
     }
 
-    // plan() with pre-computed per-node register costs (preferred).
+    // plan() with pre-computed per-node register costs (additive).
     template <typename NodeId>
     [[nodiscard]] FusionPlan<NodeId> plan(
         const dag::DAG<NodeId>& dag,
@@ -77,6 +78,44 @@ public:
 
         result.needs_split = true;
         result.groups = split_path(dag, active_path, per_node_costs);
+
+        for (const auto& group : result.groups) {
+            result.total_estimated_registers += group.estimated_registers;
+        }
+
+        return result;
+    }
+
+    // plan() with register-pressure function (preferred).
+    // pressure_fn(sub_path) returns the actual register pressure (colors_used)
+    // for a contiguous sub-range of the active path.
+    template <typename NodeId, typename PressureFn>
+    [[nodiscard]] FusionPlan<NodeId> plan(
+        const dag::DAG<NodeId>& dag,
+        const std::vector<NodeId>& active_path,
+        PressureFn pressure_fn) const
+    {
+        FusionPlan<NodeId> result;
+
+        if (active_path.empty()) {
+            return result;
+        }
+
+        if (!is_valid_path(dag, active_path)) {
+            result.valid = false;
+            return result;
+        }
+
+        // Check if entire path fits.
+        uint32_t full_pressure = pressure_fn(active_path);
+        if (full_pressure <= budget_) {
+            result.groups.push_back(make_single_group(active_path, full_pressure));
+            result.total_estimated_registers = full_pressure;
+            return result;
+        }
+
+        result.needs_split = true;
+        result.groups = split_path_pressure(dag, active_path, pressure_fn);
 
         for (const auto& group : result.groups) {
             result.total_estimated_registers += group.estimated_registers;
@@ -182,6 +221,79 @@ private:
                 group.split_point = path[best_end_idx];
             }
             group.estimated_registers = best_group_cost;
+            groups.push_back(std::move(group));
+
+            start_idx = best_end_idx + 1;
+        }
+
+        return groups;
+    }
+
+    // split_path using actual register pressure (colors_used from graph coloring).
+    // pressure_fn(sub_path) returns the register pressure for a contiguous sub-range.
+    template <typename NodeId, typename PressureFn>
+    [[nodiscard]] std::vector<FusionGroup<NodeId>> split_path_pressure(
+        const dag::DAG<NodeId>& dag,
+        const std::vector<NodeId>& path,
+        PressureFn pressure_fn) const
+    {
+        std::vector<FusionGroup<NodeId>> groups;
+        groups.reserve(path.size());
+
+        std::unordered_set<NodeId> active_path_set(path.begin(), path.end());
+
+        size_t start_idx = 0;
+        while (start_idx < path.size()) {
+            size_t best_end_idx = start_idx;
+            uint32_t best_pressure = 0;
+
+            for (size_t end_idx = start_idx; end_idx < path.size(); ++end_idx) {
+                // Compute actual register pressure for this candidate group.
+                std::vector<NodeId> sub(path.begin() + start_idx, path.begin() + end_idx + 1);
+                uint32_t pressure = pressure_fn(sub);
+
+                if (pressure > budget_) {
+                    // This group would overflow. If we haven't found any
+                    // valid group yet (end_idx == start_idx), we must include
+                    // at least one node — take it even though it overflows.
+                    if (end_idx == start_idx) {
+                        best_end_idx = end_idx;
+                        best_pressure = pressure;
+                    }
+                    break;
+                }
+
+                // Check consumer constraint:
+                // all successors of intermediate nodes inside the active path
+                // must also be inside the group.
+                bool valid = true;
+                std::unordered_set<NodeId> group_set(path.begin() + start_idx,
+                                                     path.begin() + end_idx + 1);
+                for (size_t i = start_idx; i < end_idx; ++i) {
+                    NodeId intermediate = path[i];
+                    for (NodeId succ : dag.successors(intermediate)) {
+                        if (active_path_set.count(succ) && !group_set.count(succ)) {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if (!valid) break;
+                }
+
+                if (valid) {
+                    best_end_idx = end_idx;
+                    best_pressure = pressure;
+                }
+            }
+
+            FusionGroup<NodeId> group;
+            group.id = static_cast<std::uint32_t>(groups.size());
+            group.nodes.assign(path.begin() + start_idx, path.begin() + best_end_idx + 1);
+            group.output_node = path[best_end_idx];
+            if (best_end_idx < path.size() - 1) {
+                group.split_point = path[best_end_idx];
+            }
+            group.estimated_registers = best_pressure;
             groups.push_back(std::move(group));
 
             start_idx = best_end_idx + 1;
