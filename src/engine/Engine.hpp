@@ -174,21 +174,6 @@ public:
     }
     VkFormat texture_format() const { return texture_format_; }
 
-    // Debug: chain structure + GLSL dumped after set_graph().
-    struct ChainDebugInfo {
-        uint32_t              chain_index;
-        std::vector<NodeId>   nodes;
-        uint32_t              sub_pass_count;
-        uint32_t              intermediate_count;
-        uint32_t              colors_used;
-        uint32_t              spilled_count;
-        uint32_t              shared_slots;
-        std::string           glsl;
-        std::vector<std::string> sub_pass_glsl;
-        FusedVariantKey       variant_key;
-    };
-    std::string dump_chain_debug() const;
-
     // SD-style graph default depth. Sidebar "Precision" maps here; nodes
     // with depth_mode == Auto inherit this during GraphIR resolution.
     void set_graph_default_depth(BitDepth d) {
@@ -452,8 +437,6 @@ private:
     DirtySet          dirty_set_;
 
     AsyncReadback     async_;
-
-    std::vector<ChainDebugInfo> chain_debug_;
 };
 
 } // namespace te

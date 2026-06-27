@@ -40,6 +40,7 @@ add_executable(engine_tests
     test_channel_defaults.cpp
     test_color_const.cpp
     test_blur_debug.cpp
+    test_blend_dual_input.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE

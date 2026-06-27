@@ -385,10 +385,6 @@ NB_MODULE(texturesynth_core, m) {
         .def("resource_budget_bytes", [](Engine& e) {
             return (uint64_t)e.resources().budget_bytes();
         })
-        .def("dump_chain_debug", [](Engine& e) -> std::string {
-            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
-            return e.dump_chain_debug();
-        })
         .def("get_vma_stats", [](Engine& e) {
             // Snapshot of memory telemetry (VmaStatsReport). Requires EXT_MEMORY_BUDGET_BIT for real OS-reported numbers; otherwise 80%-heuristic fallback.
             auto s = e.resources().get_vma_stats(e.ctx());

@@ -105,15 +105,6 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
             for (uint32_t t = 0; t < MAX_PASS_OUTPUTS; ++t)
                 ppc.out_storage_slots[t] = ce.sub_out_storage_slots[sp][t];
 
-            log_info("[blur-debug] dispatch chain=" + std::to_string(chain_idx)
-                     + " sp=" + std::to_string(sp)
-                     + " pass_index=" + std::to_string(ppc.pass_index)
-                     + " in_sampled[0]=" + std::to_string(ppc.in_sampled_slots[0])
-                     + " in_sampled[1]=" + std::to_string(ppc.in_sampled_slots[1])
-                     + " out_storage[0]=" + std::to_string(ppc.out_storage_slots[0])
-                     + " slot_source_count=" + std::to_string(ce.slot_source_count)
-                     + " intermediates=" + std::to_string(ce.intermediates.size()));
-
             ppc.param_ring_idx = param_write_idx_;
 
             vkCmdPushConstants(cmd, bindless_.pipeline_layout(),

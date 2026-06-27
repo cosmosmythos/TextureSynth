@@ -49,7 +49,8 @@ bool render(Engine& engine, uint64_t gen,
             int timeout_ms = 5000) {
     if (!wait_for_pipeline(engine)) return false;
     PushConstants pc{};
-    pc.resolution_x = 32; pc.resolution_y = 32;
+    pc.resolution_x = engine.output().extent().width;
+    pc.resolution_y = engine.output().extent().height;
     pc.seed = 1; pc.time = 0.0f;
     uint64_t ticket = engine.async_readback().submit(engine.ctx(), engine, pc, gen);
     if (ticket == 0) return false;

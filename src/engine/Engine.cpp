@@ -495,24 +495,6 @@ uint64_t Engine::set_graph(const Graph& graph) {
         return 0;
     }
 
-    // Dump chain debug info (GLSL + structure) before the PassPlan is consumed.
-    chain_debug_.clear();
-    for (uint32_t ci = 0; ci < (uint32_t)compile_result.pass_plan.chains.size(); ++ci) {
-        const auto& ch = compile_result.pass_plan.chains[ci];
-        ChainDebugInfo di;
-        di.chain_index        = ci;
-        di.nodes              = ch.nodes;
-        di.sub_pass_count     = ch.sub_pass_count;
-        di.intermediate_count = ch.intermediate_count;
-        di.colors_used        = ch.coloring.colors_used;
-        di.spilled_count      = (uint32_t)ch.coloring.spilled.size();
-        di.shared_slots       = ch.coloring.shared_slot_count;
-        di.glsl              = ch.glsl;
-        di.sub_pass_glsl     = ch.sub_pass_glsl;
-        di.variant_key       = ch.variant_key;
-        chain_debug_.push_back(std::move(di));
-    }
-
     current_graph_ = graph;
     current_graph_.output_node = ir_result.ir.output_node;
     current_ir_    = std::move(ir_result.ir);
@@ -609,8 +591,7 @@ uint64_t Engine::set_graph(const Graph& graph) {
         final_output_resource_ = compile_result.pass_plan.final_output_resource;
         installed_generation_  = gen;
         populate_chains_(compile_result.pass_plan);
-        log_info("PassPlan installed (cache hit), passes=" + std::to_string(passes_.size())
-                 + " generation=" + std::to_string(gen));
+
         return gen;
     }
 
@@ -1032,42 +1013,6 @@ void Engine::set_error_(EngineErrorCode code,
               + std::string(engine_phase_name(phase)) + "] "
               + last_error_record_.message
               + (failed_node ? " (node " + std::to_string(failed_node) + ")" : ""));
-}
-
-
-std::string Engine::dump_chain_debug() const {
-    std::ostringstream oss;
-    oss << "=== CHAIN DEBUG (" << chain_debug_.size() << " chains) ===\n";
-    for (const auto& di : chain_debug_) {
-        oss << "\n--- Chain " << di.chain_index << " ---\n";
-        oss << "  nodes: [";
-        for (size_t i = 0; i < di.nodes.size(); ++i) {
-            if (i) oss << ", ";
-            oss << di.nodes[i];
-        }
-        oss << "]\n";
-        oss << "  sub_pass_count=" << di.sub_pass_count
-            << " intermediates=" << di.intermediate_count
-            << " regs=" << di.colors_used
-            << " spilled=" << di.spilled_count
-            << " shared_slots=" << di.shared_slots << "\n";
-        if (!di.glsl.empty()) {
-            oss << "  --- GLSL ---\n";
-            // Indent every line
-            std::istringstream ls(di.glsl);
-            std::string line;
-            while (std::getline(ls, line)) oss << "  " << line << "\n";
-        }
-        for (uint32_t sp = 0; sp < (uint32_t)di.sub_pass_glsl.size(); ++sp) {
-            if (!di.sub_pass_glsl[sp].empty()) {
-                oss << "  --- Sub-pass " << sp << " GLSL ---\n";
-                std::istringstream ls(di.sub_pass_glsl[sp]);
-                std::string line;
-                while (std::getline(ls, line)) oss << "  " << line << "\n";
-            }
-        }
-    }
-    return oss.str();
 }
 
 
