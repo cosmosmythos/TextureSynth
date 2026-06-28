@@ -694,11 +694,9 @@ def update_params_only(force_submit: bool = False):
     if tree is None:
         return 'invalid'
 
-    # Active-node change = topology change; force full re-submit.
-    if _check_active_node_change(tree, engine):
-        from .evaluation import request_topology_update
-        request_topology_update()
-        return 'invalid'
+    # NOTE: Active-node changes are handled by _check_active_node_change()
+    # called from the timer and msgbus callbacks.  We do NOT re-check here
+    # to avoid double-triggering topology rebuilds.
 
     res = _get_resolution()
     engine.set_resolution(res, res)
@@ -753,18 +751,22 @@ def _check_active_node_change(tree, engine):
         return False
     print(f"[DIAG] _check_active_node_change: new_id={new_id} prev_id={_last_active_node_id}")
     try:
-        gen = int(engine.set_active_node(new_id))
+        # Use lightweight reroute_output() — avoids full graph rebuild, param zeroing,
+        # and resource teardown.  Falls back to set_active_node() if reroute fails.
+        gen = int(engine.reroute_output(new_id))
+        if not gen:
+            gen = int(engine.set_active_node(new_id))
     except Exception as e:
-        _tslog.error(f"set_active_node({new_id}) failed: {e}")
+        _tslog.error(f"reroute_output({new_id}) failed: {e}")
         return False
     if not gen:
-        print(f"[DIAG] _check_active_node_change: set_active_node returned 0 (node not in graph?)")
+        print(f"[DIAG] _check_active_node_change: reroute_output returned 0 (node not in graph?)")
         return False
     _last_active_node_id = new_id
     _submitted_generation = gen
     _last_pushed_param_hash = None
     _last_active_fingerprint = _active_subgraph_fingerprint(tree)
-    print(f"[DIAG] _check_active_node_change: set_active_node gen={gen} OK")
+    print(f"[DIAG] _check_active_node_change: reroute_output gen={gen} OK")
     return True
 
 

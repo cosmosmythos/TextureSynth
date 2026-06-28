@@ -141,6 +141,12 @@ public:
 
     uint64_t set_active_node(NodeId node_id);
 
+    // Lightweight output re-route: changes which node is previewed without
+    // tearing down resources, params, or bindless slots.  Returns generation
+    // (0 on failure).  Only re-fuses and recompiles chains if the active
+    // path changed; fast-path when all SPIR-V is cached.
+    uint64_t reroute_output(NodeId node_id);
+
     struct BakedImage {
         std::string name;
         uint32_t    width  = 0;

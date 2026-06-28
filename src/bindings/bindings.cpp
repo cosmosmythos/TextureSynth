@@ -42,16 +42,15 @@ static uint64_t submit_render(Engine& engine, PushConstants pc, uint64_t generat
         throw std::runtime_error("No pipeline ready. Check has_pipeline() first.");
     }
     if (generation != 0) {
-        const bool gen_ok = engine.is_generation_ready(generation);
-        const bool rev_ok = (generation == engine.current_revision()
-                             && engine.has_pipeline());
-        if (!gen_ok && !rev_ok) {
+        // Only accept the installed generation — dispatching with a stale
+        // generation would use old passes and the wrong output target.
+        if (!engine.is_generation_ready(generation)) {
             engine.set_error_record(EngineError{
                 EngineErrorCode::StaleGeneration,
-                std::string("Stale generation/revision (gen=") + std::to_string(generation)
-                + ", current=" + std::to_string(engine.installed_generation()) + ")",
+                std::string("Stale generation (gen=") + std::to_string(generation)
+                + ", installed=" + std::to_string(engine.installed_generation()) + ")",
                 0, generation, EnginePhase::Submit});
-            throw std::runtime_error("Stale generation/revision");
+            return 0;
         }
     }
     const uint64_t ticket = engine.async_readback().submit(
@@ -316,6 +315,14 @@ NB_MODULE(texturesynth_core, m) {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::GraphSubmit);
             return e.set_active_node(id);
+        })
+
+        // Lightweight output re-route: changes preview target without zeroing params
+        // or tearing down resources.  Preferred over set_active_node for node clicks.
+        .def("reroute_output", [](Engine& e, uint64_t id) -> uint64_t {
+            std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
+            check_engine_ready(e, EnginePhase::GraphSubmit);
+            return e.reroute_output(id);
         })
 
         // Synchronous readback of active node's output as numpy array (shape=[H,W,4], float32, RGBA).
