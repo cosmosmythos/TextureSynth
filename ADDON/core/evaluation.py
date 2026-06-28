@@ -14,9 +14,6 @@ _msgbus_owner = object()
 
 def request_topology_update():
     global _topology_dirty
-    import traceback
-    print(f"[DIAG] request_topology_update called:")
-    traceback.print_stack(limit=8)
     _topology_dirty = True
 
 
@@ -50,12 +47,9 @@ def _on_node_select_change():
             continue
         if new_id == engine_bridge._last_active_node_id:
             continue
-        _tslog.info(f"[DIAG] select_change: new_id={new_id} prev_id={engine_bridge._last_active_node_id}")
-        print(f"[DIAG] select_change: new_id={new_id} prev_id={engine_bridge._last_active_node_id}")
 
         # If the engine's cached graph doesn't have this node yet, request a full rebuild.
         if engine_bridge._check_active_node_change(tree, engine):
-            print(f"[DIAG] select_change: _check_active_node_change=True, dispatched")
             gen = engine_bridge._submitted_generation
             if gen and not engine.is_generation_ready(gen):
                 _compiling = True
@@ -67,7 +61,6 @@ def _on_node_select_change():
             except Exception as e:
                 _tslog.error(f"active-node dispatch exception: {e}")
         else:
-            print(f"[DIAG] select_change: _check_active_node_change=False, requesting topology rebuild")
             request_topology_update()
 
 
@@ -147,7 +140,7 @@ def _evaluation_timer():
         if tree is not None and engine_bridge._submitted_generation:
             fp = engine_bridge._active_subgraph_fingerprint(tree)
             if fp != engine_bridge._last_active_fingerprint:
-                print(f"[DIAG] timer: fingerprint changed, requesting topology rebuild")
+                _tslog.debug("fingerprint changed, requesting topology rebuild")
                 request_topology_update()
     except Exception as e:
         _tslog.error(f"topology fingerprint poll exception: {e}")
@@ -155,13 +148,11 @@ def _evaluation_timer():
     # Resubmit graph if topology changed.
     if _topology_dirty:
         _topology_dirty = False
-        print(f"[DIAG] timer: _topology_dirty=True, calling submit_graph()")
         generation = engine_bridge.submit_graph()
         if generation:
             _params_dirty = False
             _force_render = True
             _compiling = not engine.is_generation_ready(generation)
-            print(f"[DIAG] timer: submit_graph returned gen={generation} compiling={_compiling}")
             # Sync engine_bridge's active-node tracking so _check_active_node_change()
             # won't trigger another request_topology_update() on the next tick, which
             # would resubmit before compilation finishes.

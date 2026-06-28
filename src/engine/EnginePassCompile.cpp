@@ -259,17 +259,6 @@ void Engine::populate_chains_(const PassPlan& plan) {
     chain_id_of_pass_ = plan.chain_index_of_pass;
     chain_id_of_pass_.resize(passes_.size(), UINT32_MAX);
 
-    for (uint32_t i = 0; i < (uint32_t)passes_.size(); ++i) {
-        const auto& pe = passes_[i];
-        log_info("[pass-debug] pass " + std::to_string(i)
-                 + " node_id=" + std::to_string(pe.node_id)
-                 + " chain_idx=" + std::to_string(chain_id_of_pass_[i])
-                 + " out_storage[0]=" + std::to_string(pe.out_storage_slots[0])
-                 + " in_sampled[0]=" + std::to_string(pe.in_sampled_slots[0])
-                 + " in_sampled[1]=" + std::to_string(pe.in_sampled_slots[1])
-                 + " in_sampled[2]=" + std::to_string(pe.in_sampled_slots[2]));
-    }
-
     std::unordered_map<NodeId, uint32_t> pass_idx_by_node;
     pass_idx_by_node.reserve(plan.passes.size());
     for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i)

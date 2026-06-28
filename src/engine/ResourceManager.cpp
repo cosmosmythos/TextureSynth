@@ -286,13 +286,6 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
                  + " size=" + std::to_string(combined.size)
                  + " alignment=" + std::to_string(combined.alignment)
                  + " memTypeBits=" + std::to_string(combined.memoryTypeBits));
-        {
-            std::string members_str;
-            for (size_t k = 0; k < N; ++k) {
-                members_str += all_res[indices[k]].debug_name + " ";
-            }
-            log_info("Aliasing group: color=" + std::to_string(color) + " members: " + members_str);
-        }
 
         // C.3: one VmaAllocation for the whole group. Matches the VMA
         // doc's verbatim aliasing example (resource_aliasing.html):
