@@ -53,16 +53,21 @@ def _on_node_select_change():
         _tslog.info(f"[DIAG] select_change: new_id={new_id} prev_id={engine_bridge._last_active_node_id}")
         print(f"[DIAG] select_change: new_id={new_id} prev_id={engine_bridge._last_active_node_id}")
 
-        # Lightweight reroute: just changes output target, no full rebuild.
+        # If the engine's cached graph doesn't have this node yet, request a full rebuild.
         if engine_bridge._check_active_node_change(tree, engine):
-            print(f"[DIAG] select_change: reroute OK, letting timer dispatch")
+            print(f"[DIAG] select_change: _check_active_node_change=True, dispatched")
             gen = engine_bridge._submitted_generation
             if gen and not engine.is_generation_ready(gen):
                 _compiling = True
-            _force_render = True
-            # Do NOT call update_params_only() here — let the timer dispatch.
+                _force_render = True
+            else:
+                _force_render = True
+            try:
+                engine_bridge.update_params_only(force_submit=True)
+            except Exception as e:
+                _tslog.error(f"active-node dispatch exception: {e}")
         else:
-            print(f"[DIAG] select_change: reroute failed, requesting topology rebuild")
+            print(f"[DIAG] select_change: _check_active_node_change=False, requesting topology rebuild")
             request_topology_update()
 
 
