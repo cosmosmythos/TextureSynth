@@ -12,8 +12,8 @@ using ChainId = uint32_t;   // NodeId is defined in Graph.hpp
 class DirtySet {
 public:
     void mark_node(uint64_t node_id) {
-        const bool was_new = dirty_nodes_.insert(node_id).second;
-        if (!was_new) return;
+        const bool new_ = dirty_nodes_.insert(node_id).second;
+        if (!new_) return;
         // Invalidate every chain that contains this node.
         for (auto& kv : chain_members_) {
             for (NodeId n : kv.second) {

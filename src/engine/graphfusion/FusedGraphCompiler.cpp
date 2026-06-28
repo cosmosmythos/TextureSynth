@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <fstream>
+#include <queue>
 
 namespace te {
 
@@ -416,6 +418,12 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
                 chain.external_socket_masks = std::move(fused.external_socket_masks);
                 chain.internal_producer_indices = std::move(fused.internal_producer_indices);
                 chain.variant_key = build_fused_key(chain, ir, lib);
+                {
+                    std::string nodes_str;
+                    for (auto n : group.nodes) nodes_str += std::to_string(n) + "_";
+                    std::ofstream f("fused_chain_" + nodes_str + ".glsl");
+                    f << chain.glsl;
+                }
                 log_info("FusedGraphCompiler: chain [" +
                          [&]{ std::string s; for (auto n : group.nodes) s += std::to_string(n) + ","; return s; }() +
                          "] regs=" + std::to_string(chain.coloring.colors_used) +
@@ -431,7 +439,122 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         plan.chains.push_back(std::move(chain));
     }
 
-    // 6. Fill chain_index_of_pass.
+    // 6. Topologically sort the dispatch units (chains and solo passes) to ensure
+    //    that no chain or solo pass executes before its inputs have run.
+    struct DispatchUnit {
+        bool is_chain = false;
+        size_t chain_idx = 0;
+        std::vector<NodeId> nodes;
+    };
+
+    std::vector<DispatchUnit> units;
+    std::unordered_map<NodeId, size_t> node_to_unit;
+
+    // Add chains
+    for (size_t ci = 0; ci < plan.chains.size(); ++ci) {
+        DispatchUnit u;
+        u.is_chain = true;
+        u.chain_idx = ci;
+        u.nodes = plan.chains[ci].nodes;
+        units.push_back(u);
+        for (NodeId n : u.nodes) {
+            node_to_unit[n] = units.size() - 1;
+        }
+    }
+
+    // Add solo passes
+    for (size_t i = 0; i < plan.passes.size(); ++i) {
+        NodeId nid = plan.passes[i].node_id;
+        if (node_to_unit.count(nid) == 0) {
+            DispatchUnit u;
+            u.is_chain = false;
+            u.chain_idx = 0;
+            u.nodes = {nid};
+            units.push_back(u);
+            node_to_unit[nid] = units.size() - 1;
+        }
+    }
+
+    // Construct dependency graph on units
+    std::vector<std::unordered_set<size_t>> adj(units.size());
+    std::vector<size_t> in_degree(units.size(), 0);
+    for (const auto& conn : ir.connections) {
+        auto sit = node_to_unit.find(conn.src_node);
+        auto dit = node_to_unit.find(conn.dst_node);
+        if (sit != node_to_unit.end() && dit != node_to_unit.end()) {
+            size_t u_src = sit->second;
+            size_t u_dst = dit->second;
+            if (u_src != u_dst) {
+                if (adj[u_src].insert(u_dst).second) {
+                    in_degree[u_dst]++;
+                }
+            }
+        }
+    }
+
+    // Measure original minimum pass index of each unit to keep the sort stable
+    std::vector<size_t> original_min_idx(units.size(), 0);
+    for (size_t u = 0; u < units.size(); ++u) {
+        size_t min_idx = plan.passes.size();
+        for (NodeId nid : units[u].nodes) {
+            auto pit = pass_idx_by_node.find(nid);
+            if (pit != pass_idx_by_node.end()) {
+                min_idx = std::min(min_idx, (size_t)pit->second);
+            }
+        }
+        original_min_idx[u] = min_idx;
+    }
+
+    // Kahn's algorithm prioritizing original_min_idx
+    auto cmp = [&](size_t a, size_t b) {
+        return original_min_idx[a] > original_min_idx[b];
+    };
+    std::priority_queue<size_t, std::vector<size_t>, decltype(cmp)> pq(cmp);
+
+    for (size_t u = 0; u < units.size(); ++u) {
+        if (in_degree[u] == 0) {
+            pq.push(u);
+        }
+    }
+
+    std::vector<size_t> sorted_units;
+    sorted_units.reserve(units.size());
+    while (!pq.empty()) {
+        size_t u = pq.top();
+        pq.pop();
+        sorted_units.push_back(u);
+        for (size_t succ : adj[u]) {
+            in_degree[succ]--;
+            if (in_degree[succ] == 0) {
+                pq.push(succ);
+            }
+        }
+    }
+
+    // Re-order plan.passes
+    std::vector<ComputePass> new_passes;
+    new_passes.reserve(plan.passes.size());
+    std::unordered_map<NodeId, size_t> old_pass_idx_by_node;
+    for (size_t i = 0; i < plan.passes.size(); ++i) {
+        old_pass_idx_by_node[plan.passes[i].node_id] = i;
+    }
+
+    for (size_t u : sorted_units) {
+        for (NodeId nid : units[u].nodes) {
+            auto pit = old_pass_idx_by_node.find(nid);
+            if (pit != old_pass_idx_by_node.end()) {
+                new_passes.push_back(std::move(plan.passes[pit->second]));
+            }
+        }
+    }
+    plan.passes = std::move(new_passes);
+
+    // Re-fill pass_idx_by_node and chain_index_of_pass
+    pass_idx_by_node.clear();
+    for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
+        pass_idx_by_node[plan.passes[i].node_id] = i;
+    }
+
     plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
     for (size_t ci = 0; ci < plan.chains.size(); ++ci) {
         for (NodeId n : plan.chains[ci].nodes) {

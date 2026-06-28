@@ -623,6 +623,11 @@ def submit_graph():
         _submitted_generation = 0
         return 0
 
+    # DIAG: dump ALL Blender tree links (valid + invalid)
+    for link in tree.links:
+        mark = "OK" if link.is_valid else "INVALID"
+        print(f"  [{mark}] {link.from_node.name}.{link.from_socket.name} -> {link.to_node.name}.{link.to_socket.name}")
+
     # B3: drain pending ring-full retries from previous ticks.
     if _pending_image_uploads:
         for nid, (img, rw, rh) in list(_pending_image_uploads.items()):
@@ -662,6 +667,7 @@ def submit_graph():
         _tslog.error(f"set_graph exception: {e}")
         return 0
 
+    print(f"[DIAG] submit_graph: gen={generation} output_node={graph.output_node}")
     _last_active_fingerprint = _active_subgraph_fingerprint(tree)
     _submitted_generation = generation
     _last_applied_generation = 0
@@ -700,6 +706,7 @@ def update_params_only(force_submit: bool = False):
 
     fp = _active_subgraph_fingerprint(tree)
     if fp != _last_active_fingerprint:
+        print(f"[DIAG] update_params_only: fingerprint mismatch, requesting topology update")
         from .evaluation import request_topology_update
         request_topology_update()
         return 'invalid'
@@ -716,6 +723,7 @@ def update_params_only(force_submit: bool = False):
         if sig is not None and sig == _last_pushed_param_hash:
             return _poll_and_blit(engine)
 
+        print(f"[DIAG] update_params_only: pushing params (sig changed)")
         _push_params_using_stable_ids(tree, engine)
         _last_pushed_param_hash = sig
 
@@ -743,17 +751,20 @@ def _check_active_node_change(tree, engine):
     new_id = active.stable_id()
     if new_id == _last_active_node_id:
         return False
+    print(f"[DIAG] _check_active_node_change: new_id={new_id} prev_id={_last_active_node_id}")
     try:
         gen = int(engine.set_active_node(new_id))
     except Exception as e:
         _tslog.error(f"set_active_node({new_id}) failed: {e}")
         return False
     if not gen:
+        print(f"[DIAG] _check_active_node_change: set_active_node returned 0 (node not in graph?)")
         return False
     _last_active_node_id = new_id
     _submitted_generation = gen
     _last_pushed_param_hash = None
     _last_active_fingerprint = _active_subgraph_fingerprint(tree)
+    print(f"[DIAG] _check_active_node_change: set_active_node gen={gen} OK")
     return True
 
 
