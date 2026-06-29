@@ -9,6 +9,7 @@ compatibility: opencode
 
 **Goal:** — Everyone can understand and work with the codebase efficiently because it is easy to read and understand and meets the highest standards of elegance and maintainability!
 - Preserve Functionality: Never change what the code does - only how it does it. All original features, outputs, and behaviors must remain intact.
+- Senior-Level Best Practices: Improve code structure, best practices, readability, and maintainability without altering its behavior.
 - Craft logical structures devoid of unnecessary complexities
 - Proper Indentation and Formatting
 - Eliminate redundant code and abstractions
