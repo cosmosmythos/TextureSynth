@@ -42,6 +42,9 @@ add_executable(engine_tests
     test_blur_debug.cpp
     test_blend_dual_input.cpp
     test_active_node_stability.cpp
+    test_dead_node_impact.cpp
+    test_dead_node_impact2.cpp
+    test_param_stability.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE

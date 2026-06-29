@@ -524,11 +524,13 @@ uint64_t Engine::set_graph(const Graph& graph) {
         return 0;
     }
 
+    auto old_param_base_slot = std::move(param_base_slot_);
     param_base_slot_     = std::move(compile_result.param_base_slot);
     total_param_floats_  = compile_result.total_param_floats;
 
-    // Seed param SSBOs with manifest defaults (params AND float-input defaults).
-    seed_param_ssbo_defaults_();
+    // Skip re-seeding when param layout unchanged (e.g. set_active_node).
+    if (param_base_slot_ != old_param_base_slot)
+        seed_param_ssbo_defaults_();
 
     const uint64_t gen = ++compile_generation_;
 
