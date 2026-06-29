@@ -49,12 +49,6 @@ TEST(StorageFormat, GlslQualifierMatchesVkFormat) {
     EXPECT_EQ(storage_format_glsl_qualifier({ChannelFormat::RGB,  BitDepth::F16}), "rgba16f");
 }
 
-// Deprecated shim still works for migration period.
-TEST(StorageFormat, DeprecatedShimMatchesF16) {
-    EXPECT_EQ(channel_to_vk_format(ChannelFormat::Mono), VK_FORMAT_R16_SFLOAT);
-    EXPECT_EQ(channel_to_vk_format(ChannelFormat::UV),   VK_FORMAT_R16G16_SFLOAT);
-}
-
 TEST(StorageFormat, Equality) {
     StorageFormat a{ChannelFormat::Mono, BitDepth::F32};
     StorageFormat b{ChannelFormat::Mono, BitDepth::F32};

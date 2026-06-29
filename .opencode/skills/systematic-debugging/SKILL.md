@@ -1,6 +1,7 @@
 ---
 name: systematic-debugging
-description: Use when encountering any bug, running debug tests, test failure, or unexpected behavior
+description: Use when encountering any bug, running debug tests, test failure, or unexpected behavior.
+compatibility: opencode
 ---
 
 

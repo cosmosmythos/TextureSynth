@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <functional>
 #include <array>
 
 
@@ -27,8 +26,7 @@ struct ResourceUUID {
 
 struct ResourceUUIDHash {
     size_t operator()(const ResourceUUID& r) const noexcept {
-        // splitmix64: high-quality avalanche for combining two integers.
-        // Future-proof for multi-output nodes (output_index > 0).
+        // splitmix64 avalanche over node_id + output_index.
         uint64_t x = r.node_id + 0x9e3779b97f4a7c15ULL;
         x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
         x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
@@ -46,28 +44,30 @@ struct ResourceUUIDHash {
 constexpr uint32_t MAX_NODE_PARAMS = 8192;
 enum class SocketType { Float, Vec4, Sampler2D };
 
-// Channel count -- what gets stored. Orthogonal to BitDepth.
+
+// Channel axis of the format system. Orthogonal to BitDepth.
 enum class ChannelFormat : uint8_t { Mono, UV, RGB, RGBA };
 
-// Bit depth -- how precise each channel is. The second axis of the format
-// system (Substance Designer model). F8=unorm, F16/F32=float.
+
+// Precision axis of the format system.
 enum class BitDepth : uint8_t { F8, F16, F32 };
 
-// How a node's bit depth is chosen -- inheritance mode (SD-style).
+
+// How a node's bit depth is chosen — inheritance mode.
 enum class DepthMode : uint8_t {
     Auto,        // graph default depth (from sidebar)
     MatchInput,  // upstream node's resolved depth
     Absolute,    // node.absolute_depth
 };
 
-// Full storage format descriptor. Channels and depth are independent axes;
-// the full cross-product (Mono@F32, RGB@F8, etc.) is legal.
+
+// Full storage format descriptor. Channels × depth.
 struct StorageFormat {
     ChannelFormat channels = ChannelFormat::RGBA;
     BitDepth      depth    = BitDepth::F16;
-
     bool operator==(const StorageFormat&) const = default;
 };
+
 
 struct StorageFormatInfo {
     StorageFormat storage;
@@ -79,38 +79,27 @@ struct StorageFormatInfo {
     uint8_t       stored_channels;
 };
 
-const StorageFormatInfo& storage_format_info(StorageFormat fmt);
-const StorageFormatInfo* storage_format_info_table(size_t& count);
-VkFormat storage_format_to_vk(StorageFormat fmt);
-uint32_t storage_format_bytes(StorageFormat fmt);
-std::string storage_format_glsl_qualifier(StorageFormat fmt);
-bool storage_format_has_exact_vk_channels(StorageFormat fmt);
-const char* vk_format_name(VkFormat fmt);
-uint32_t vk_format_bytes(VkFormat fmt);
 
-// Deprecated shim -- calls storage_format_to_vk at fixed F16 depth.
-// New code should pass StorageFormat. Kept during incremental migration.
-inline VkFormat channel_to_vk_format(ChannelFormat fmt) {
-    return storage_format_to_vk(StorageFormat{fmt, BitDepth::F16});
-}
+[[nodiscard]] const StorageFormatInfo& storage_format_info(StorageFormat fmt);
+[[nodiscard]] const StorageFormatInfo* storage_format_info_table(size_t& count);
+[[nodiscard]] VkFormat storage_format_to_vk(StorageFormat fmt);
+[[nodiscard]] uint32_t storage_format_bytes(StorageFormat fmt);
+[[nodiscard]] std::string storage_format_glsl_qualifier(StorageFormat fmt);
+[[nodiscard]] const char* vk_format_name(VkFormat fmt);
+[[nodiscard]] uint32_t vk_format_bytes(VkFormat fmt);
 
 
+// Socket definition.
 struct Socket {
-    std::string name;   // "color", "height"
+    std::string name;
+    float default_value = 0.0f;
+    std::array<float, 4> default_vec4 = {0.0f, 0.0f, 0.0f, 0.0f};
     SocketType type = SocketType::Vec4;
     ChannelFormat format = ChannelFormat::RGBA;
-    // Float inputs: default_value is the only slot used (SSBO seed).
-    // Vec4 inputs: default_vec4 is baked into GLSL when unconnected.
-    float default_value = 0.0f;  // for SocketType::Float inputs
-    std::array<float, 4> default_vec4 = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 
-// PassKind classification (Stage 2). Lives in Graph.hpp (not
-// PassPlan.hpp) so that NodeType can use it without creating a
-// include cycle: NodeLibrary includes Graph, GraphIR includes both,
-// PassPlan includes GraphIR. See 03_pass_kind.md §2.2 step 1 for
-// the include-chain reasoning.
+// Compute/Upload/Readback. Lives here so NodeType can reference it without an include cycle.
 enum class PassKind : uint8_t {
     Compute,  // has a compute shader — dispatched normally
     Upload,   // CPU → GPU source — no shader, no dispatch
@@ -146,18 +135,10 @@ struct NodeType {
     // Empty = no compile-time variants. Populated by NodeRegistryLoader.
     std::vector<std::string> variant_flags;
 
-    // Stage 2: how this node participates in chain fusion. Set by
-    // NodeRegistryLoader from the .node.json "pass_kind" key (defaults to
-    // "compute"). Mirrored into ValidatedNode::pass_kind by the
-    // validator, then into ComputePass::kind by GraphCompiler.
-    // Stages 3-6 (chain find, chain emit, dispatch) consume this.
+    // How this node participates in chain fusion (set by NodeRegistryLoader).
     PassKind pass_kind = PassKind::Compute;
 
-    // Multi-pass: how many compute dispatches this node needs (default 1).
-    // >1 means the node is a multi-pass compute node (e.g. separable blur:
-    // pass_count=2, intermediate_count=1). The engine allocates
-    // intermediate_count temp images between sub-passes and dispatches
-    // pass_count times with different pipelines.
+    // Multi-pass: pass_count>1 allocates intermediate images between sub-passes.
     uint32_t pass_count        = 1;
     uint32_t intermediate_count = 0;
 };
@@ -167,20 +148,11 @@ struct NodeInstance {
     NodeId id = 0;
     std::string type_id;
     ChannelFormat format_override = ChannelFormat::RGBA;
-    // Optional human-readable label. When non-empty, takes precedence over the
-    // auto-generated "{type_id}_{id}" name in logs, error messages, and the
-    // ResourceManager debug_name. Phase 1d feature.
     std::string debug_name;
-    // Phase 1c: mute / bypass semantics.
-    //   muted    — skip; downstream reads this node's input[0] source instead
-    //              (validator rewires connections).
-    //   bypassed — skip; downstream gets a clear-to-zero pass (compiler emits
-    //              a no-op compute shader). Visible in the graph UI as
-    //              "turned off" without removing the node.
     bool muted    = false;
     bool bypassed = false;
     // SD-style depth inheritance. Appended last to preserve aggregate-init
-    // ordering for existing test/code sites using {id, type, fmt, name, m, b}.
+    // ordering for test/code sites using {id, type, fmt, name, m, b}.
     DepthMode depth_mode   = DepthMode::Auto;
     BitDepth  absolute_depth = BitDepth::F16;
 };

@@ -1,6 +1,7 @@
 ---
 name: glsl
 description: Use when writing, modifying, or debugging GLSL compute shaders for TextureSynth noise nodes — covers portability bugs, integer modulo, hash functions, wrapping, and GLSL spec gotchas.
+compatibility: opencode
 ---
 
 ## What I do

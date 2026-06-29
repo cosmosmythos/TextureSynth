@@ -1,9 +1,9 @@
 #include "engine/GraphIR.hpp"
 #include <algorithm>
 #include <queue>
-#include <sstream>
 #include <map>
 #include <set>
+#include <unordered_set>
 
 namespace te {
 
@@ -25,53 +25,48 @@ StorageFormat resolve_node_storage(const ValidatedNode& vn,
 }
 
 
-static bool has_node(const Graph& g, NodeId id) {
-    for (auto& n : g.nodes)
-        if (n.id == id) return true;
-    return false;
+static const NodeType* find_node_type(const Graph& g, const NodeLibrary& lib, NodeId id) {
+    for (const auto& n : g.nodes)
+        if (n.id == id) return lib.find(n.type_id);
+    return nullptr;
 }
 
 
 static bool is_muted(const std::vector<NodeInstance>& nodes, NodeId id) {
-    for (auto& n : nodes)
+    for (const auto& n : nodes)
         if (n.id == id) return n.muted;
     return false;
 }
 
 
-// Sentinel used to mark connections severed by muted-node rewire.
-// UINT64_MAX is never a valid NodeId (which starts from 0).
+// Sentinel: connection severed by muted-node rewire.
 constexpr NodeId SEVERED = ~NodeId{0};
 
 
-// Resolve the effective source of a muted node M's input[0].
-static std::pair<NodeId, uint32_t> resolve_muted_source(NodeId M, const std::vector<NodeInstance>& nodes, const std::vector<Connection>& conns) {
+[[nodiscard]] static std::pair<NodeId, uint32_t> resolve_muted_source(
+    NodeId M, const std::vector<NodeInstance>& nodes, const std::vector<Connection>& conns) {
     NodeId cur = M;
     for (size_t step = 0; step < nodes.size() + 1; ++step) {
         bool found = false;
-        // Search through ALL inputs of the muted node (not just input[0]).
-        // Find the first connected input and follow it upstream.
         std::set<uint32_t> checked_sockets;
-        for (auto& c : conns) {
+        for (const auto& c : conns) {
             if (c.dst_node != cur) continue;
-            if (checked_sockets.count(c.dst_socket)) continue;  // skip duplicate sockets
+            if (checked_sockets.count(c.dst_socket)) continue;
             checked_sockets.insert(c.dst_socket);
-            
-            if (!is_muted(nodes, c.src_node)) {
-                return {c.src_node, c.src_socket};  // found non-muted source
-            }
+            if (!is_muted(nodes, c.src_node))
+                return {c.src_node, c.src_socket};
             cur = c.src_node;
             found = true;
             break;
         }
-        if (!found) return {SEVERED, 0};  // no connections at all
+        if (!found) return {SEVERED, 0};
     }
-    return {SEVERED, 0};  // chain too deep — treat as severed
+    return {SEVERED, 0};
 }
 
 
-// Topological sort via Kahn's algorithm. Returns node IDs in evaluation order. On cycle returns false.
-static bool topo_sort_ir(
+// Kahn's topo sort. Returns false on cycle.
+[[nodiscard]] static bool topo_sort_ir(
     const std::vector<ValidatedNode>& nodes,
     const std::vector<ValidatedConnection>& conns,
     std::vector<NodeId>& order)
@@ -79,17 +74,17 @@ static bool topo_sort_ir(
     std::map<NodeId, int> in_degree;
     std::map<NodeId, std::vector<NodeId>> adj;
 
-    for (auto& n : nodes)
+    for (const auto& n : nodes)
         in_degree[n.id] = 0;
 
-    for (auto& c : conns) {
+    for (const auto& c : conns) {
         adj[c.src_node].push_back(c.dst_node);
         in_degree[c.dst_node]++;
     }
 
-    // Use a min-heap for deterministic ordering regardless of insertion order.
+    // Min-heap for deterministic ordering regardless of insertion order.
     std::priority_queue<NodeId, std::vector<NodeId>, std::greater<NodeId>> q;
-    for (auto& [id, deg] : in_degree) {
+    for (const auto& [id, deg] : in_degree) {
         if (deg == 0) q.push(id);
     }
 
@@ -117,7 +112,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     // ── 2. Duplicate node IDs ─────────────────────────────────────
     {
         std::unordered_set<NodeId> seen;
-        for (auto& n : graph.nodes) {
+        for (const auto& n : graph.nodes) {
             if (!seen.insert(n.id).second) {
                 result.error = "Duplicate node ID: " + std::to_string(n.id);
                 return result;
@@ -126,7 +121,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     }
 
     // ── 3. All node types exist in the library ────────────────────
-    for (auto& n : graph.nodes) {
+    for (const auto& n : graph.nodes) {
         if (!lib.find(n.type_id)) {
             result.error = "Unknown node type '" + n.type_id +
                            "' on node " + std::to_string(n.id);
@@ -135,7 +130,9 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     }
 
     // ── 4. Output node exists ─────────────────────────────────────
-    if (!has_node(graph, graph.output_node)) {
+    if (!find_node_type(graph, lib, graph.output_node) &&
+        !std::any_of(graph.nodes.begin(), graph.nodes.end(),
+                     [&](const NodeInstance& n){ return n.id == graph.output_node; })) {
         result.error = "Output node " + std::to_string(graph.output_node) +
                        " does not exist in graph";
         return result;
@@ -143,56 +140,43 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
 
     // ── 5. Validate all connection endpoints ──────────────────────
     for (size_t ci = 0; ci < graph.connections.size(); ++ci) {
-        auto& c = graph.connections[ci];
-        // Source node exists
-        if (!has_node(graph, c.src_node)) {
+        const auto& c = graph.connections[ci];
+        if (!std::any_of(graph.nodes.begin(), graph.nodes.end(),
+                         [&](const NodeInstance& n){ return n.id == c.src_node; })) {
             result.error = "Connection " + std::to_string(ci) +
-                           ": source node " + std::to_string(c.src_node) +
-                           " not found";
+                           ": source node " + std::to_string(c.src_node) + " not found";
             return result;
         }
-        // Destination node exists
-        if (!has_node(graph, c.dst_node)) {
+        if (!std::any_of(graph.nodes.begin(), graph.nodes.end(),
+                         [&](const NodeInstance& n){ return n.id == c.dst_node; })) {
             result.error = "Connection " + std::to_string(ci) +
-                           ": destination node " + std::to_string(c.dst_node) +
-                           " not found";
+                           ": destination node " + std::to_string(c.dst_node) + " not found";
             return result;
         }
-        // Source socket in bounds
-        const NodeType* src_type = nullptr;
-        for (auto& n : graph.nodes) {
-            if (n.id == c.src_node) { src_type = lib.find(n.type_id); break; }
-        }
+        const NodeType* src_type = find_node_type(graph, lib, c.src_node);
         if (src_type && c.src_socket >= src_type->outputs.size()) {
             result.error = "Connection " + std::to_string(ci) +
                            ": source socket " + std::to_string(c.src_socket) +
                            " out of range (node type '" + src_type->id +
-                           "' has " + std::to_string(src_type->outputs.size()) +
-                           " outputs)";
+                           "' has " + std::to_string(src_type->outputs.size()) + " outputs)";
             return result;
         }
-        // Destination socket in bounds (inputs + as_socket params)
-        const NodeType* dst_type = nullptr;
-        for (auto& n : graph.nodes) {
-            if (n.id == c.dst_node) { dst_type = lib.find(n.type_id); break; }
-        }
+        const NodeType* dst_type = find_node_type(graph, lib, c.dst_node);
         if (dst_type) {
             uint32_t total_inputs = static_cast<uint32_t>(dst_type->inputs.size());
-            for (auto& p : dst_type->params)
+            for (const auto& p : dst_type->params)
                 if (p.as_socket) total_inputs++;
             if (c.dst_socket >= total_inputs) {
                 result.error = "Connection " + std::to_string(ci) +
                                ": destination socket " + std::to_string(c.dst_socket) +
                                " out of range (node type '" + dst_type->id +
-                               "' has " + std::to_string(total_inputs) +
-                               " input slots)";
+                               "' has " + std::to_string(total_inputs) + " input slots)";
                 return result;
             }
         }
     }
 
     // ── 6. Build active subgraph (reachable from output) ──────────
-    // BFS backwards from output_node through connections.
     std::unordered_set<NodeId> reachable;
     {
         std::queue<NodeId> bfs;
@@ -200,7 +184,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         reachable.insert(graph.output_node);
         while (!bfs.empty()) {
             NodeId cur = bfs.front(); bfs.pop();
-            for (auto& c : graph.connections) {
+            for (const auto& c : graph.connections) {
                 if (c.dst_node == cur && reachable.find(c.src_node) == reachable.end()) {
                     reachable.insert(c.src_node);
                     bfs.push(c.src_node);
@@ -209,15 +193,14 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         }
     }
 
-    // Rewire connections around muted nodes (Phase 1c). Redirect outgoing connections to effective input[0] source. If severed, connection dropped. Muted nodes excluded from validated node list. Bypassed nodes stay in IR.
+    // Rewire outgoing connections from muted nodes to their effective source.
     std::vector<Connection> rewired_conns = graph.connections;
-    for (auto& n : graph.nodes) {
+    for (const auto& n : graph.nodes) {
         if (!n.muted) continue;
         auto eff = resolve_muted_source(n.id, graph.nodes, graph.connections);
         for (auto& c : rewired_conns) {
             if (c.src_node != n.id) continue;
             if (eff.first == SEVERED) {
-                // Severed: mark for removal (filtered out in step 7).
                 c.src_node = SEVERED;
             } else {
                 c.src_node   = eff.first;
@@ -227,59 +210,46 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     }
 
     // ── 7. Populate validated nodes (ALL nodes, not just reachable) ──
-    // All nodes must be in the IR so that set_active_node can switch
-    // output to any node without recompiling the graph from scratch.
+    // All nodes go into the IR so set_active_node can switch output
+    // to any node without recompiling the graph from scratch.
     GraphIR& ir = result.ir;
-    for (auto& n : graph.nodes) {
-        if (n.muted) continue;                  // rewired out
+    for (const auto& n : graph.nodes) {
+        if (n.muted) continue;
         ValidatedNode vn;
         vn.id       = n.id;
         vn.type_id  = n.type_id;
         vn.format_override = n.format_override;
         vn.depth_mode      = n.depth_mode;
         vn.absolute_depth  = n.absolute_depth;
-        // Prefer user-supplied debug_name (Phase 1d); fall back to "type_id_id"
         vn.debug_name = n.debug_name.empty()
                       ? (n.type_id + "_" + std::to_string(n.id))
                       : n.debug_name;
-        // Muted is always false here; bypassed mirrors the user's flag.
         vn.muted    = false;
         vn.bypassed = n.bypassed;
-        // Stage 2: pass_kind is type-level, looked up from NodeLibrary (authoritative), not mirrored on NodeInstance.
-        if (auto* nt = lib.find(n.type_id)) {
+        if (auto* nt = lib.find(n.type_id))
             vn.pass_kind = nt->pass_kind;
-        }
         ir.nodes.push_back(vn);
     }
 
-    // Build node_index up front as authoritative validated-node-IDs set when filtering connections. Both endpoints must be in ir.nodes -- excludes edges to muted/rewired-out nodes.
-    for (size_t i = 0; i < ir.nodes.size(); ++i) {
+    // Build node_index for connection filtering — both endpoints must exist.
+    for (size_t i = 0; i < ir.nodes.size(); ++i)
         ir.node_index[ir.nodes[i].id] = i;
-    }
 
-    // Populate validated connections (both endpoints in ir.nodes, and
-    // the source isn't the severed sentinel from rewire).
-    for (auto& c : rewired_conns) {
-        if (c.src_node == SEVERED) continue;                                // severed
-        if (!ir.node_index.count(c.src_node)) continue;               // not in IR
-        if (!ir.node_index.count(c.dst_node)) continue;               // not in IR
+    for (const auto& c : rewired_conns) {
+        if (c.src_node == SEVERED) continue;
+        if (!ir.node_index.count(c.src_node)) continue;
+        if (!ir.node_index.count(c.dst_node)) continue;
         ir.connections.push_back({c.src_node, c.src_socket,
                                   c.dst_node, c.dst_socket});
     }
 
-    // If the user's output_node is muted, follow the rewire to its effective
-    // source (the non-muted node feeding its input[0]). Otherwise the
-    // engine would try to read back an image for a node that was excluded
-    // from ir.nodes, yielding white/garbage.
-    //
-    // When the rewire is SEVERED (muted node has no input[0] connection),
-    // the original output_node is excluded from ir.nodes.  Fall back to the
-    // first available node in the IR (topologically earliest = a source).
+    // If output_node is muted, follow rewire to effective source.
+    // If severed, fall back to first IR node.
     {
         NodeId on = graph.output_node;
         while (is_muted(graph.nodes, on)) {
             auto eff = resolve_muted_source(on, graph.nodes, graph.connections);
-            if (eff.first == SEVERED) break;  // severed -- fall through below
+            if (eff.first == SEVERED) break;
             on = eff.first;
         }
         if (!ir.node_index.empty() && !ir.node_index.count(on)) {
@@ -297,16 +267,13 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
         return result;
     }
 
-    // node_index was built in step 7 to serve as authoritative validated-node-IDs set for filtering ir.connections
-
     result.success = true;
     return result;
 }
 
 
-// SD-style depth inheritance resolution. Walks eval_order so MatchInput
-// can read the upstream node's already-resolved depth. Called by the
-// engine after it stamps graph_default_depth onto the IR.
+// Resolve BitDepth inheritance in eval_order.
+// Called after graph_default_depth is set.
 void resolve_node_depths(GraphIR& ir) {
     for (NodeId nid : ir.eval_order) {
         auto it = ir.node_index.find(nid);
@@ -320,9 +287,8 @@ void resolve_node_depths(GraphIR& ir) {
                 BitDepth picked = ir.graph_default_depth;
                 for (const auto& c : ir.connections) {
                     if (c.dst_node != nid) continue;
-                    if (auto* src = ir.find(c.src_node)) {
+                    if (auto* src = ir.find(c.src_node))
                         picked = src->resolved_depth;
-                    }
                     break;
                 }
                 vn.resolved_depth = picked;

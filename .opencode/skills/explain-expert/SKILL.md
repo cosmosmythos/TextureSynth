@@ -1,8 +1,8 @@
 ---
 name: explain-expert
-description: Use when the primary goal is understanding rather than execution — when the agent or user needs a summary, explanation, conceptual breakdown, deep dive, architecture walkthrough, codebase analysis, system design review, or detailed understanding of how something works.
+description: Use when the goal is simplified understanding rather than execution — when the user or agent needs a summary, explanation, conceptual breakdown, deep dive, architecture walkthrough, codebase analysis, system design review, or detailed understanding of how something works.
+compatibility: opencode
 ---
-
 
 ## What I do
 - Assume the user or engineer has zero context about our codebase and questionable taste.
@@ -17,14 +17,13 @@ description: Use when the primary goal is understanding rather than execution �
 - Help the reader build a mental model they can reuse later.
 
 ## When to use me
+**Announce at start:** — for example: "I'll explain ..."
 - When the audience has little or no prior context.
 - When the user asks for an explanation, walkthrough, or deep dive into a concept, system, codebase, or decision.
 - When a topic is complex, layered, or has important tradeoffs that should be unpacked clearly.
 - When a clear mental model is needed, not just a surface-level summary.
 - When the user or engineer is asking “why” or “how,” not just “what” it does.
 - When the explanation would benefit from examples or step-by-step reasoning.
-
-**Announce at start:** — for example: "Let me explain this..."
 
 ## Checklist Summary
 

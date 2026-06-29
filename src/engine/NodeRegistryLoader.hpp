@@ -1,6 +1,6 @@
 #pragma once
 #include "engine/NodeLibrary.hpp"
-#include "engine/Graph.hpp"   // PassKind
+#include "engine/Graph.hpp"
 #include <string>
 
 namespace te {

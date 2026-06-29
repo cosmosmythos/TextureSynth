@@ -1,6 +1,7 @@
 ---
 name: dox-enforce
 description: Use BEFORE any file edit, create, or delete. Enforces DOX framework — reads the AGENTS.md chain before editing and runs closeout after.
+compatibility: opencode
 ---
 
 # DOX Enforcement

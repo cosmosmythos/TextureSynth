@@ -41,6 +41,7 @@ add_executable(engine_tests
     test_color_const.cpp
     test_blur_debug.cpp
     test_blend_dual_input.cpp
+    test_active_node_stability.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE

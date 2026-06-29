@@ -4,7 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_set>
-#include <nlohmann/json.hpp>   // header-only
+#include <nlohmann/json.hpp>
 
 namespace te {
 namespace fs = std::filesystem;

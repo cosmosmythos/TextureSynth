@@ -52,11 +52,6 @@ std::string storage_format_glsl_qualifier(StorageFormat fmt) {
     return storage_format_info(fmt).glsl_qualifier;
 }
 
-bool storage_format_has_exact_vk_channels(StorageFormat fmt) {
-    const auto& info = storage_format_info(fmt);
-    return info.logical_channels == info.stored_channels;
-}
-
 const char* vk_format_name(VkFormat fmt) {
     for (const auto& info : kStorageFormats) {
         if (info.vk_format == fmt) return info.vk_name;
