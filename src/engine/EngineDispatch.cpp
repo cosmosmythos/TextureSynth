@@ -281,7 +281,23 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
     for (size_t cid = 0; cid < chain_execs_.size(); ++cid) {
         bool chain_dirty = dirty_set_.is_chain_dirty(static_cast<ChainId>(cid));
         if (!chain_dirty) continue;
-
+        // Barrier: ensure prior dispatches' storage writes to cross-chain input
+        // images are visible as sampled reads in this chain.  Without this,
+        // the consumer chain may read stale/undefined data from producer chains.
+        const auto& ce_pre = chain_execs_[cid];
+        for (uint32_t k = 0; k < ce_pre.slot_source_count; ++k) {
+            const auto& src = ce_pre.slot_sources[k];
+            uint32_t pass_idx = ce_pre.member_pass_indices[src.member_idx];
+            if (pass_idx >= passes_.size()) continue;
+            const auto& inp = passes_[pass_idx].input_resources[src.input_index];
+            if (inp.node_id == 0) continue;
+            auto* r = resources_.get(inp);
+            if (!r) continue;
+            if (r->layout == VK_IMAGE_LAYOUT_GENERAL &&
+                !dirty_set_.is_dirty(inp.node_id))
+                continue;
+            barrier_compute_write_to_sampled(cmd, r->image);
+        }
         const size_t tail_i = chain_execs_[cid].tail_pass_index;
         bool tail_has_final = false;
         if (tail_i < passes_.size()) {
