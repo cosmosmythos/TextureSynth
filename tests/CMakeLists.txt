@@ -46,6 +46,7 @@ add_executable(engine_tests
     test_dead_node_impact2.cpp
     test_param_stability.cpp
     test_blender_graph_dump.cpp
+    test_blend002_corruption.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE

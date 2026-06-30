@@ -83,17 +83,15 @@ FusedVariantKey build_fused_key(const Chain& chain,
 // Compute the complete split_after vector for chain boundaries.
 //
 // Every chain produces VkImage output only at its tail node (imageStore).
-// Two complementary rules ensure cross-chain Sampler2D edges work:
+// Two complementary rules ensure cross-chain texture reads work:
 //   Rule 1 — Sampler2D consumer: split BEFORE it.
 //     Consumer reads from VkImage, so it must be in a different chain from
 //     the producer. (Static, per-node.)
-//   Rule 2 — Cross-chain Sampler2D producer: split AFTER it.
-//     Producer must be a tail to imageStore. Rule 1 only guarantees the
-//     consumer is in a different chain — it does NOT guarantee the producer
-//     is the tail. A chain [A,B,C] only imageStores from C. If both A and
-//     B feed downstream via Sampler2D, Rule 1 handles neither being tails.
-//     (Iterative: adding a split can push nodes into new chains, revealing
-//     new cross-chain edges.)
+//   Rule 2 — Cross-chain producer: split AFTER it.
+//     Any off-chain consumer (Sampler2D texture() or Vec4 texelFetch) reads
+//     the producer's VRAM image. Only tails imageStore, so the producer must
+//     be a tail. Rule 1 only splits before the consumer — it does NOT make
+//     intermediate nodes tails. (Iterative until stable.)
 std::vector<size_t> compute_chain_splits(
     const std::vector<NodeId>& path,
     const GraphIR& ir,
@@ -123,15 +121,13 @@ std::vector<size_t> compute_chain_splits(
     split_after.erase(std::unique(split_after.begin(), split_after.end()),
                       split_after.end());
 
-    // Rule 2: cross-chain Sampler2D producers must be tails.
-    // Build path-position lookup for O(1) access.
+    // Rule 2: cross-chain producers must be tails (Sampler2D and Vec4 texelFetch).
     std::unordered_map<NodeId, size_t> path_pos;
     path_pos.reserve(path.size());
     for (size_t i = 0; i < path.size(); ++i)
         path_pos[path[i]] = i;
 
     for (;;) {
-        // Map each node to its current sub-path index.
         std::vector<size_t> bounds = {0};
         for (size_t sa : split_after) bounds.push_back(sa + 1);
         bounds.push_back(path.size());
@@ -142,18 +138,12 @@ std::vector<size_t> compute_chain_splits(
             for (size_t i = bounds[sub]; i < bounds[sub + 1]; ++i)
                 node_to_sub[path[i]] = sub;
 
-        // Find cross-chain Sampler2D edges where the producer is not a tail.
         std::vector<size_t> new_splits;
         for (const auto& conn : ir.connections) {
             auto src_it = node_to_sub.find(conn.src_node);
             auto dst_it = node_to_sub.find(conn.dst_node);
             if (src_it == node_to_sub.end() || dst_it == node_to_sub.end()) continue;
             if (src_it->second == dst_it->second) continue;
-
-            const auto* dst_inst = ir.find(conn.dst_node);
-            const auto* dst_type = dst_inst ? lib.find(dst_inst->type_id) : nullptr;
-            if (!dst_type || conn.dst_socket >= dst_type->inputs.size()) continue;
-            if (dst_type->inputs[conn.dst_socket].type != SocketType::Sampler2D) continue;
 
             size_t src_pos = path_pos[conn.src_node];
             if (std::find(split_after.begin(), split_after.end(), src_pos)

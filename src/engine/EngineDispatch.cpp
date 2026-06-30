@@ -3,8 +3,14 @@
 #include "engine/Logging.hpp"
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 
 namespace te {
+
+namespace { const bool _ts_dbg = []{
+    const char* e = std::getenv("TS_DEBUG_BLEND002");
+    return e && e[0]=='1';
+}(); }
 
 void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
                                     uint32_t gx, uint32_t gy, size_t chain_idx) {
@@ -50,6 +56,12 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
     for (uint32_t o = 0; o < tail.output_count; ++o) {
         auto* r = resources_.get(tail.output_resources[o]);
         if (!r) continue;
+        if (_ts_dbg) {
+            log_info("[tsdbg] TAIL WRITE chain node=" + std::to_string(r->node_id)
+                + "_o" + std::to_string(r->output_index)
+                + " alias_grp=" + std::to_string(r->alias_group_id)
+                + " vkimg=" + std::to_string((uint64_t)r->image));
+        }
         transition_output_to_general(cmd, r->image, r->layout, r->alias_group_id);
         r->layout = VK_IMAGE_LAYOUT_GENERAL;
         if (r->alias_group_id > 0)
@@ -280,6 +292,40 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
     // its consumer chains, regardless of pass-index order.
     for (size_t cid = 0; cid < chain_execs_.size(); ++cid) {
         bool chain_dirty = dirty_set_.is_chain_dirty(static_cast<ChainId>(cid));
+        if (_ts_dbg) {
+            const auto& ce_d = chain_execs_[cid];
+            std::string m = "[tsdbg] chain " + std::to_string(cid)
+                + " dirty=" + (chain_dirty?"1":"0")
+                + " bypassed=" + (ce_d.bypassed?"1":"0")
+                + " slot_source_count=" + std::to_string(ce_d.slot_source_count);
+            log_info(m);
+            for (uint32_t k = 0; k < ce_d.slot_source_count; ++k) {
+                const auto& ss = ce_d.slot_sources[k];
+                uint32_t pi = ce_d.member_pass_indices[ss.member_idx];
+                if (pi >= passes_.size()) continue;
+                const auto& inp = passes_[pi].input_resources[ss.input_index];
+                auto* r = resources_.get(inp);
+                uint32_t live_slot = passes_[pi].in_sampled_slots[ss.input_index];
+                std::string s = "[tsdbg]   in[" + std::to_string(k)
+                    + "] node=" + std::to_string(inp.node_id)
+                    + "_o" + std::to_string(inp.output_index)
+                    + " alias_grp=" + std::to_string(r ? r->alias_group_id : 0)
+                    + " alias_gen=" + std::to_string(r ? r->alias_gen : 0)
+                    + " grp_cur_gen=" + std::to_string(
+                        (r && r->alias_group_id && r->alias_group_id <= resources_.alias_pools().size())
+                            ? resources_.alias_pools()[r->alias_group_id - 1].current_gen : 0)
+                    + " valid_mem=" + (
+                        (r && r->alias_group_id && r->alias_group_id <= resources_.alias_pools().size()
+                         && r->alias_gen < resources_.alias_pools()[r->alias_group_id - 1].current_gen)
+                            ? "0_STALE" : "1")
+                    + " is_dirty=" + (r && r->is_dirty ? "1":"0")
+                    + " prod_dirty=" + (dirty_set_.is_dirty(inp.node_id) ? "1":"0")
+                    + " layout=" + std::to_string(r ? (uint32_t)r->layout : 0)
+                    + " live_sampled_slot=" + std::to_string(live_slot)
+                    + " vkimg=" + std::to_string((uint64_t)(r ? r->image : VK_NULL_HANDLE));
+                log_info(s);
+            }
+        }
         if (!chain_dirty) continue;
         // Barrier: ensure prior dispatches' storage writes to cross-chain input
         // images are visible as sampled reads in this chain.  Without this,
@@ -296,6 +342,10 @@ bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& p
             if (r->layout == VK_IMAGE_LAYOUT_GENERAL &&
                 !dirty_set_.is_dirty(inp.node_id))
                 continue;
+            if (_ts_dbg) {
+                log_info("[tsdbg]   -> BARRIER fired for in node=" + std::to_string(inp.node_id)
+                    + " vkimg=" + std::to_string((uint64_t)r->image));
+            }
             barrier_compute_write_to_sampled(cmd, r->image);
         }
         const size_t tail_i = chain_execs_[cid].tail_pass_index;

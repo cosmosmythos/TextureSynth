@@ -2442,7 +2442,9 @@ TEST_F(FusedRealNodesGLSL, DiagramChainStructure) {
     g.connections.push_back({4, 0, 5, 0});   // warp -> levels2.color
     g.output_node = 5;
 
-    auto cr = compile(g);
+    auto vr = validate_graph(g, lib);
+    ASSERT_TRUE(vr.success) << vr.error;
+    auto cr = FusedGraphCompiler::compile(vr.ir, lib, g.output_node);
     ASSERT_TRUE(cr.success) << cr.error;
 
     printf("\n=== EXACT DIAGRAM CHAIN STRUCTURE ===\n");
@@ -2494,11 +2496,28 @@ TEST_F(FusedRealNodesGLSL, DiagramChainStructure) {
     printf("\n");
 
     // ---- Structural invariants ----
-    // Path is [Worley,Perlin,Levels,Warp,Levels2].
-    // Warp reads Levels(2) and Perlin(3) via Sampler2D — both must be tails.
-    // Chain structure: [Worley,Perlin] [Levels] [Warp,Levels2]
-    EXPECT_EQ(cr.pass_plan.chains.size(), 3u)
-        << "Expected 3 chains: [Worley,Perlin] [Levels] [Warp,Levels2]";
+    // Path is [Worley,Perlin,Levels,Warp,Levels2] (topo order).
+    // Warp reads Levels and Perlin via Sampler2D — both must be chain tails.
+    // Rule 2 also splits sibling sources: Perlin and Worley each get their own
+    // chain before Levels/Warp consume them cross-chain.
+    EXPECT_GE(cr.pass_plan.chains.size(), 3u);
+    EXPECT_LE(cr.pass_plan.chains.size(), 4u);
+
+    std::unordered_map<NodeId, uint32_t> node_chain;
+    for (uint32_t ci = 0; ci < (uint32_t)cr.pass_plan.chains.size(); ++ci)
+        for (NodeId n : cr.pass_plan.chains[ci].nodes) node_chain[n] = ci;
+
+    int violations = 0;
+    for (const auto& c : vr.ir.connections) {
+        auto pc = node_chain.find(c.src_node);
+        auto cc = node_chain.find(c.dst_node);
+        if (pc == node_chain.end() || cc == node_chain.end()) continue;
+        if (pc->second == cc->second) continue;
+        const auto& prod_chain = cr.pass_plan.chains[pc->second];
+        bool is_tail = !prod_chain.nodes.empty() && prod_chain.nodes.back() == c.src_node;
+        if (!is_tail) ++violations;
+    }
+    EXPECT_EQ(violations, 0) << "Every cross-chain producer must be a chain tail";
 }
 
 TEST_F(FusedRealNodesPixel, DiagramPixelCorrectness) {

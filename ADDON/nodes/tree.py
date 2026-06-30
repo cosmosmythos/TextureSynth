@@ -145,7 +145,7 @@ def replace_socket(socket, new_type, new_name=None):
 # -- Node Tree
 
 class TextureSynthTree(bpy.types.NodeTree):
-    """Custom node tree for procedural texture authoring."""
+    """Create and edit textures using nodes."""
     bl_idname = 'TextureSynthTreeType'
     bl_label = "TextureSynth Nodes"
     bl_icon = 'TEXTURE'
