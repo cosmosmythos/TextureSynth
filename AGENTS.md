@@ -88,7 +88,7 @@ This forces MSVC to recompile ALL .cpp files in the target. It does NOT touch `b
 ---
 
 ## 3. ADDON Architecture: Do Not Duplicate
-A complete Blender 4.2+ extension exists at `ADDON/` in the repo root.
+A complete Blender 4.3+ extension exists at `ADDON/` in the repo root.
 **🚫 DO NOT create `src/texturesynth_addon/` or `src/blender_addon/`. Always `ls ADDON/` first.**
 
 ---
@@ -280,6 +280,7 @@ TextureSynth is a node-based Vulkan procedural-texture engine with a Python/Blen
 | [`src/engine/AGENTS.md`](src/engine/AGENTS.md) | Vulkan compute engine core (Graph→IR→PassPlan→dispatch→readback) | Pipeline stages flow strictly Graph → GraphIR → PassPlan → PassExec → dispatch |
 | [`src/engine/graphfusion/AGENTS.md`](src/engine/graphfusion/AGENTS.md) | Chain fusion: DAG→Planner→Emitter→FusedGraphCompiler | Fused path must be bit-identical to the unfused reference per-node |
 | [`src/engine/register_allocation/AGENTS.md`](src/engine/register_allocation/AGENTS.md) | Graph-coloring register allocator for fused shader chains | Interval graphs are perfect; linear scan is optimal for our DAG liveness |
+| [`src/engine/memory_allocation/AGENTS.md`](src/engine/memory_allocation/AGENTS.md) | VRAM image aliasing: format-aware interval coloring for VkImage memory sharing | Non-overlapping lifetimes with compatible storage formats share physical memory |
 | [`ADDON/AGENTS.md`](ADDON/AGENTS.md) | Blender 4.3+ extension (`ADDON/`): register order, nodes/operators/panels, engine bridge | `cpp_module` loads `.pyd` from wheel; never create `src/*_addon/` |
 | [`shader_assets/AGENTS.md`](shader_assets/AGENTS.md) | Node manifests (`*.node.json`), GLSL node fns, common GLSL | Every node GLSL follows the `vec4 node_<name>(vec2 uv, ...)` signature contract |
 | [`tests/AGENTS.md`](tests/AGENTS.md) | C++ gtest suite + Python pytest suite against the binding | C++ tests need `-DBUILD_TESTS:BOOL=ON`; Python tests skip if Vulkan init fails |
@@ -291,7 +292,8 @@ AGENTS.md  (this file — global rules: cache, style, gotchas, DOX)
 ├── src/AGENTS.md
 │   └── src/engine/AGENTS.md
 │       ├── src/engine/graphfusion/AGENTS.md
-│       └── src/engine/register_allocation/AGENTS.md
+│       ├── src/engine/register_allocation/AGENTS.md
+│       └── src/engine/memory_allocation/AGENTS.md
 ├── ADDON/AGENTS.md
 ├── shader_assets/AGENTS.md
 ├── tests/AGENTS.md

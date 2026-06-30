@@ -9,7 +9,7 @@ Plus shared GLSL includes under `glsl/`.
 Loaded by `NodeRegistryLoader` (C++) at `Engine::init(nodes_dir, glsl_dir)`. The Blender addon's node factory reads the same manifests to generate Python node classes.
 
 ## Ownership
-- `nodes/` — manifests + node GLSL + `README.md` (signature contract) + `format_nodes.{bat,py}` (clang-format runner).
+- `nodes/` — manifests + node GLSL + `README.md` (signature contract) + `format_nodes.{bat,py}` (JSON manifest formatter for `*.node.json`).
 - `glsl/` — shared includes: `noise_common.glsl`, `blend_common.glsl`, `color_common.glsl`, `sampling_common.glsl`, `remap.glsl`.
 - `gather_glsl.bat`, `gather_json.bat` — collect sources for embedding/shipping.
 - `Houdini_Generated.c` — generated Houdini export (large, vendored).
@@ -26,13 +26,13 @@ Loaded by `NodeRegistryLoader` (C++) at `Engine::init(nodes_dir, glsl_dir)`. The
 - **`pass_kind`** (`nodes/README.md` §pass_kind): `compute` (default), `upload` (CPU→GPU source), `readback` (GPU→CPU terminal). Old values (`pure_pixel`, `boundary`, `reduction`, `feedback`, `debug_preview`) map to `compute` for back-compat.
 - **`variant_flags`** in a manifest → `NodeType::variant_flags` → `ShaderVariantKey` specialization constants. Only set on nodes that genuinely need compile-time variants.
 - **Format post-process**: unconditional for all nodes. The GLSL compiler folds the raw output into the requested channel format (Mono → `vec4(r,0,0,1)`, UV → `vec4(r,g,0,1)`, RGB → `vec4(r,g,b,1)`, RGBA → passthrough). No opt-in flag needed.
-- **Blend node HDR contract**: `blend.glsl` applies NO outer clamp on the result. Arithmetic modes (`ts_b_add`/`ts_b_subtract`/`ts_b_mul`/`ts_b_divide`) are unclamped — outputs may exceed 1.0 or go negative (true HDR). Contrast modes (Burn/Dodge/Overlay/HardLight/etc.) self-bound to [0,1] for [0,1] inputs, so they stay well-behaved without an outer clamp. Only `mask` is clamped to [0,1] (it is a factor, not a color). F16/F32 storage and RGBA32F readback carry HDR values end-to-end. **Do not re-add an outer `clamp(r,0,1)`** — it would defeat the HDR arithmetic modes.
-- **Blend mode enum ladder**: `BLEND_MODES` order in `ADDON/nodes/specialized/blend.py` MUST match the `if (m == N)` integers in `blend.glsl` and `max` in `blend.node.json`. The contrast-family helpers (`ts_b_linBurn`, `ts_b_linDodge`, `ts_b_harmony`) are kept in `blend_common.glsl` even though Linear Dodge/Harmony are not exposed as modes — Linear Light (`ts_b_linLight`) calls `ts_b_linBurn`/`ts_b_linDodge` internally.
+- **Blend node HDR contract**: `blend.glsl` applies NO outer clamp on the result. Arithmetic modes (`ts_blend_add`/`ts_blend_sub`/`ts_blend_mul`/`ts_blend_divide`) are unclamped — outputs may exceed 1.0 or go negative (true HDR). Contrast modes (Burn/Dodge/Overlay/HardLight/etc.) self-bound to [0,1] for [0,1] inputs, so they stay well-behaved without an outer clamp. Only `mask` is clamped to [0,1] (it is a factor, not a color). F16/F32 storage and RGBA32F readback carry HDR values end-to-end. **Do not re-add an outer `clamp(r,0,1)`** — it would defeat the HDR arithmetic modes.
+- **Blend mode enum ladder**: `BLEND_MODES` order in `ADDON/nodes/specialized/blend.py` MUST match the `if (m == N)` integers in `blend.glsl` and `max` in `blend.node.json`.
 - **Manifest ↔ factory parity**: adding a node means (1) new `*.node.json` + `*.glsl` here, (2) the engine picks it up automatically via `NodeRegistryLoader`, (3) the Blender factory generates a class automatically. No C++ or Python node code for standard nodes.
 - **Multi-pass nodes** (`pass_count > 1`): the manifest declares `"pass_count": N` and `"intermediate_count": M` in the `.node.json`. The engine creates singleton chains with sub-pass GLSL. GLSL must NOT use `sampler2D` local variables or pass bindless samplers as function args — `sampler2D(u_sampled[...], samp)` must appear at each `texture()` call site. Use `#define` macros to avoid repetition. The specialization constant `ts_pass_index` (`layout(constant_id = 0)`) distinguishes sub-passes at compile time. The GLSL compiler eliminates the inactive branch.
 
 ## Work Guidance
-- Format GLSL with `nodes/format_nodes.bat` (wraps clang-format; config in `format_nodes.py`).
+- Format `.node.json` manifests with `nodes/format_nodes.bat` (JSON pretty-printer; config in `format_nodes.py`).
 - Noise primitives live in `glsl/noise_common.glsl` (PCG hash family, gradient tables, etc.). New noise nodes should reuse these, not re-derive hashes.
 - When editing a common include, grep all `nodes/*.glsl` for `#include`/usage — many node fns depend on the shared headers.
 

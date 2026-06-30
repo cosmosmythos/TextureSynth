@@ -180,7 +180,7 @@ def _evaluation_timer():
             _tslog.debug(f"dispatch state={state}")
         except Exception as e:
             _tslog.error(f"dispatch exception: {e}")
-    return 0.016
+        return 0.016
 
         if state == 'landed':
             _force_render = False

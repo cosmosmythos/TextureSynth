@@ -175,111 +175,58 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
     }
 
     // 3b. Detect boundaries that force chain splits:
-    // 1) Sampler2D: source must be in a different chain (materialized as VRAM image).
-    // 2) Multi-pass nodes (pass_count > 1): must be singleton chains (need intermediates).
-    // 3) Independent sources: if consecutive path nodes have no dependency edge,
-    //    they produce independent outputs that can't share a single output slot.
-    //    Force split AFTER the predecessor so each source gets its own chain.
+    //   - Multi-pass nodes (pass_count > 1): singleton chains only.
+    //   - Sampler2D inputs: consumer must be in a different chain from its source.
     std::vector<size_t> split_after;
-    {
-        std::unordered_set<NodeId> pset(path.nodes.begin(), path.nodes.end());
-        for (size_t di = 0; di < path.nodes.size(); ++di) {
-            NodeId dst = path.nodes[di];
-            const auto* dn = ir.find(dst);
-            const auto* dt = dn ? lib.find(dn->type_id) : nullptr;
-            if (!dt) continue;
+    for (size_t di = 0; di < path.nodes.size(); ++di) {
+        const auto* inst = ir.find(path.nodes[di]);
+        const auto* type = inst ? lib.find(inst->type_id) : nullptr;
+        if (!type) continue;
 
-            // Multi-pass nodes must be singleton chains — they need
-            // intermediate images between sub-passes and can't fuse with
-            // other nodes. Split both before AND after the multi-pass node.
-            if (dt->pass_count > 1 && di > 0) {
-                split_after.push_back(di - 1);
-            }
-            if (dt->pass_count > 1 && di + 1 < path.nodes.size()) {
-                split_after.push_back(di);
-            }
-
-        // Sampler2D split: the source node's output must be materialized
-        // as a VRAM image so the consumer chain can sample it via TSTexture.
-        // Split BOTH before and after the source to isolate it into its own
-        // chain — the source becomes the chain tail, guaranteeing its output
-        // gets a VRAM image slot. Without the before-split, two independent
-        // sources from different branches can land in the same chain, and
-        // only the tail's output gets a VRAM image (the other is lost).
-        for (uint32_t s = 0; s < dt->inputs.size(); ++s) {
-            if (dt->inputs[s].type != SocketType::Sampler2D) continue;
-            for (const auto& c : ir.connections) {
-                if (c.dst_node == dst && c.dst_socket == s && pset.count(c.src_node)) {
-                    auto sit = std::find(path.nodes.begin(), path.nodes.end(), c.src_node);
-                    if (sit != path.nodes.end()) {
-                        size_t si = static_cast<size_t>(sit - path.nodes.begin());
-                        split_after.push_back(si);       // split after source
-                        if (si > 0) split_after.push_back(si - 1);  // split before source
-                    }
-                    break;
-                }
-            }
-        }
+        if (type->pass_count > 1) {
+            if (di > 0)                split_after.push_back(di - 1);
+            if (di + 1 < path.nodes.size()) split_after.push_back(di);
         }
 
-        std::sort(split_after.begin(), split_after.end());
-        split_after.erase(std::unique(split_after.begin(), split_after.end()),
-                          split_after.end());
+        bool has_sampler = false;
+        for (const auto& inp : type->inputs)
+            if (inp.type == SocketType::Sampler2D) { has_sampler = true; break; }
+        if (has_sampler && di > 0)
+            split_after.push_back(di - 1);
     }
+    std::sort(split_after.begin(), split_after.end());
+    split_after.erase(std::unique(split_after.begin(), split_after.end()),
+                      split_after.end());
 
     // 4. Build DAG from active path and plan fusion groups.
-    // Use REAL graph edges from ir.connections, not synthetic linear
-    // adjacency. The consumer-constraint check in split_path relies on
-    // dag.successors() returning actual fan-out edges to detect when an
-    // intermediate node has a downstream consumer outside its group.
-    // Linear-adjacency edges hide fan-out and let invalid groups form.
-    std::unordered_set<NodeId> path_set(path.nodes.begin(), path.nodes.end());
-    dag::DAG<NodeId>::NodeList dag_nodes(path.nodes.begin(), path.nodes.end());
-    dag::DAG<NodeId>::EdgeList dag_edges;
-    for (const auto& c : ir.connections) {
-        if (path_set.count(c.src_node) && path_set.count(c.dst_node)) {
-            dag_edges.push_back({c.src_node, c.dst_node});
-        }
-    }
-    dag::DAG<NodeId> dag(std::move(dag_nodes), std::move(dag_edges));
+    // Use REAL graph edges from ir.connections (not synthetic linear adjacency)
+    // so the planner's consumer-constraint check sees true fan-out.
+    auto build_dag = [&](const std::vector<NodeId>& nodes) {
+        std::unordered_set<NodeId> node_set(nodes.begin(), nodes.end());
+        dag::DAG<NodeId>::NodeList dnodes(nodes.begin(), nodes.end());
+        dag::DAG<NodeId>::EdgeList dedges;
+        for (const auto& c : ir.connections)
+            if (node_set.count(c.src_node) && node_set.count(c.dst_node))
+                dedges.push_back({c.src_node, c.dst_node});
+        return dag::DAG<NodeId>(std::move(dnodes), std::move(dedges));
+    };
 
-    // If Sampler2D boundaries exist, split the active path into sub-paths
-    // and plan each independently. This ensures the source node becomes a
-    // chain tail (its output is materialized as a VRAM image) so the
-    // consumer chain can sample it as a TSTexture.
     auto plan_chain_group = [&](ActivePath& sub_path) {
-        std::unordered_set<NodeId> sub_set(sub_path.nodes.begin(), sub_path.nodes.end());
-        dag::DAG<NodeId>::NodeList sub_dag_nodes(sub_path.nodes.begin(), sub_path.nodes.end());
-        dag::DAG<NodeId>::EdgeList sub_dag_edges;
-        for (const auto& c : ir.connections) {
-            if (sub_set.count(c.src_node) && sub_set.count(c.dst_node))
-                sub_dag_edges.push_back({c.src_node, c.dst_node});
-        }
-        dag::DAG<NodeId> sub_dag(std::move(sub_dag_nodes), std::move(sub_dag_edges));
-
-        // Phase 2: compute actual register pressure for each candidate group.
-        // This replaces additive cost with graph-coloring-based pressure,
-        // allowing the planner to see that register reuse keeps pressure low.
+        auto sub_dag = build_dag(sub_path.nodes);
         auto pressure_fn = [&](const std::vector<NodeId>& range) -> uint32_t {
             std::vector<ResourceUUID> ext_outputs;
             if (!range.empty()) {
-                NodeId tail = range.back();
-                const auto* tail_inst = ir.find(tail);
-                if (tail_inst) {
-                    const auto* tail_type = lib.find(tail_inst->type_id);
-                    if (tail_type) {
-                        for (uint32_t i = 0; i < tail_type->outputs.size(); ++i)
-                            ext_outputs.push_back(ResourceUUID{tail, i});
-                    }
-                }
+                const auto* t = ir.find(range.back());
+                const auto* tt = t ? lib.find(t->type_id) : nullptr;
+                if (tt)
+                    for (uint32_t i = 0; i < tt->outputs.size(); ++i)
+                        ext_outputs.push_back(ResourceUUID{range.back(), i});
             }
             auto intervals = register_allocation::LivenessAnalysis::compute_intervals(
                 range, ir.connections, ext_outputs);
-            auto coloring = register_allocation::GraphColorer::color_linear_scan(
-                intervals, range, DEFAULT_REG_BUDGET);
-            return coloring.colors_used;
+            return register_allocation::GraphColorer::color_linear_scan(
+                intervals, range, DEFAULT_REG_BUDGET).colors_used;
         };
-
         fusion::FusionPlanner planner(DEFAULT_REG_BUDGET);
         return planner.plan(sub_dag, sub_path.nodes, pressure_fn);
     };
@@ -316,12 +263,12 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         chain.nodes = group.nodes;
 
         // Check if this is a singleton multi-pass node.
-        bool is_multipass = (group.nodes.size() == 1);
         const NodeType* mp_type = nullptr;
-        if (is_multipass) {
-            const auto* mp_inst = ir.find(group.nodes[0]);
-            mp_type = mp_inst ? lib.find(mp_inst->type_id) : nullptr;
-            if (!mp_type || mp_type->pass_count <= 1) is_multipass = false;
+        bool is_multipass = false;
+        if (group.nodes.size() == 1) {
+            const auto* inst = ir.find(group.nodes[0]);
+            mp_type = inst ? lib.find(inst->type_id) : nullptr;
+            is_multipass = mp_type && mp_type->pass_count > 1;
         }
 
         // Compute param offsets and base slot.
@@ -349,11 +296,12 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         }
         chain.total_params = running_offset;
 
-        // Phase 1c: chain is bypassed if any member node is bypassed.
+        // Chain is bypassed if any member node is bypassed.
         chain.bypassed = false;
         for (NodeId nid : group.nodes) {
-            if (auto* vn = ir.find(nid)) {
-                if (vn->bypassed) { chain.bypassed = true; break; }
+            if (auto* vn = ir.find(nid); vn && vn->bypassed) {
+                chain.bypassed = true;
+                break;
             }
         }
 
@@ -365,7 +313,6 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             chain.sub_pass_variant_keys.resize(mp_type->pass_count);
 
             const auto* inst = ir.find(group.nodes[0]);
-            const uint32_t inputs_n = (uint32_t)mp_type->inputs.size();
             uint32_t param_socket_count = 0;
             for (auto& p : mp_type->params) if (p.as_socket) ++param_socket_count;
 
@@ -387,21 +334,14 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             group_path.nodes = group.nodes;
 
             // Compute register allocation for this chain.
-            // Liveness analysis maps each node output to a [start, end] interval.
-            // Graph coloring assigns register colors to non-overlapping values.
             {
                 std::vector<ResourceUUID> ext_outputs;
-                if (!group.nodes.empty()) {
-                    NodeId tail = group.nodes.back();
-                    const auto* tail_inst = ir.find(tail);
-                    if (tail_inst) {
-                        const auto* tail_type = lib.find(tail_inst->type_id);
-                        if (tail_type) {
-                            for (uint32_t i = 0; i < tail_type->outputs.size(); ++i)
-                                ext_outputs.push_back(ResourceUUID{tail, i});
-                        }
-                    }
-                }
+                NodeId tail = group.nodes.back();
+                const auto* tail_inst = ir.find(tail);
+                const auto* tail_type = tail_inst ? lib.find(tail_inst->type_id) : nullptr;
+                if (tail_type)
+                    for (uint32_t i = 0; i < tail_type->outputs.size(); ++i)
+                        ext_outputs.push_back(ResourceUUID{tail, i});
                 auto intervals = register_allocation::LivenessAnalysis::compute_intervals(
                     group.nodes, ir.connections, ext_outputs);
                 chain.coloring = register_allocation::GraphColorer::color_linear_scan(
@@ -478,55 +418,43 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         return result;
     }
 
-    // Compute active_resources: the set of node outputs that need a VRAM image.
-    // Single source of truth — the consumer graph. A resource needs an image
-    // iff at least one of:
-    //   (a) it's the final preview output (record_final_blit_ reads it);
-    //   (b) its producer is a solo pass (chain_index_of_pass == UINT32_MAX) —
-    //       dispatched as its own compute pass, must write to an image;
-    //   (c) at least one consumer reads it from a DIFFERENT chain — cross-chain
-    //       consumers texelFetch, and shader registers are invisible across
-    //       dispatches. In-chain consumers read registers and do NOT force
-    //       an image.
-    // The old "chain tail gets an image" heuristic is a special case of (c)
-    // (a tail's output always feeds a downstream chain or the final output)
-    // and is subsumed by this scan.
+    // 9. Compute active_resources: node outputs that need a VRAM image.
+    // A resource needs an image iff:
+    //   (a) it's the final preview output;
+    //   (b) its producer is a solo pass (not in any chain);
+    //   (c) at least one consumer is in a DIFFERENT chain.
     {
         std::unordered_map<NodeId, uint32_t> node_to_chain;
-        node_to_chain.reserve(plan.passes.size());
         for (uint32_t ci = 0; ci < (uint32_t)plan.chains.size(); ++ci)
             for (NodeId n : plan.chains[ci].nodes)
                 node_to_chain[n] = ci;
 
-        // (a)
         plan.active_resources.insert(plan.final_output_resource);
 
+        auto get_chain = [&](NodeId id) -> uint32_t {
+            auto it = node_to_chain.find(id);
+            return it != node_to_chain.end() ? it->second : UINT32_MAX;
+        };
+
         for (const auto& pass : plan.passes) {
-            uint32_t producer_chain = node_to_chain.count(pass.node_id)
-                ? node_to_chain[pass.node_id] : UINT32_MAX;
-            // (b) solo passes always materialize their output.
+            uint32_t producer_chain = get_chain(pass.node_id);
             if (producer_chain == UINT32_MAX) {
                 for (const auto& rid : pass.output_resources)
                     plan.active_resources.insert(rid);
                 continue;
             }
-            // (c) chain member: only materialize if some consumer is
-            //     outside this chain.
             for (const auto& rid : pass.output_resources) {
                 for (const auto& other : plan.passes) {
                     if (other.node_id == pass.node_id) continue;
-                    uint32_t consumer_chain = node_to_chain.count(other.node_id)
-                        ? node_to_chain[other.node_id] : UINT32_MAX;
-                    if (consumer_chain == producer_chain) continue;
-                    bool consumed = false;
+                    if (get_chain(other.node_id) == producer_chain) continue;
                     for (const auto& in : other.input_resources) {
-                        if (in == rid) { consumed = true; break; }
-                    }
-                    if (consumed) {
-                        plan.active_resources.insert(rid);
-                        break;
+                        if (in == rid) {
+                            plan.active_resources.insert(rid);
+                            goto next_resource;
+                        }
                     }
                 }
+                next_resource:;
             }
         }
     }

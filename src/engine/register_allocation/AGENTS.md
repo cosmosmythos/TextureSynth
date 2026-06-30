@@ -29,8 +29,10 @@ Graph coloring reuses registers across non-overlapping lifetimes:
 ## 4. Architecture / Data Flow
 
 ### Integration Connections:
-- `te::fusion::FusionPlanner` (in [FusionPlanner.hpp](../graphfusion/FusionPlanner.hpp)): queries `register_allocation` to check if a chain fits the register budget before fusing.
-- `te::glsl::GlslBuilder` (in [GlslBuilder.hpp](../graphfusion/GlslBuilder.hpp)): maps each local variable to `r[color]` instead of `_local_0`, `_local_1`, etc.
+- `te::FusedGraphCompiler` (in [FusedGraphCompiler.cpp](../graphfusion/FusedGraphCompiler.cpp)): the actual consumer. Calls `GraphColorer::color_linear_scan()` at lines ~276-279 (builds pressure lambda for FusionPlanner) and ~405-408 (populates `chain.coloring`).
+- `te::FusedGraphEmitter` (in [FusedGraphEmitter.cpp](../graphfusion/FusedGraphEmitter.cpp)): reads `ColoringResult::assignment` and maps each local variable to `r[color]` via `GlslBuilder::declare_local()`.
+
+Note: `FusionPlanner` does NOT query `register_allocation` directly. It uses `te::reg::RegisterAllocator` (the additive/heuristic allocator in `graphfusion/RegisterAllocator.hpp`) for budget checking. The graph-coloring module is invoked only by `FusedGraphCompiler`.
 
 ### Pipeline:
 ```
@@ -57,7 +59,7 @@ ColoringResult { assignment, colors_used, spilled }
 ## 5. Algorithm Details
 
 ### 5.1 Liveness Analysis (LivenessAnalysis.cpp)
-Three-pass backward scan over topological order:
+Three-pass forward scan over topological order:
 1. Create intervals at each source definition site.
 2. Extend intervals at each consumer (read) site to max consumer step.
 3. Pin external outputs (chain tail, final output) to end-of-sequence.
@@ -65,9 +67,9 @@ Three-pass backward scan over topological order:
 Complexity: O(N + E) where N = nodes, E = connections.
 
 ### 5.2 Interference Graph (InterferenceGraph.cpp)
-Sweep-line O(N^2) overlap test. For chains < 50 nodes this is fine. The graph is undirected: `add_edge(a,b)` and `add_edge(b,a)`.
+Sorted-pair O(N^2) overlap test with early break. For chains < 50 nodes this is fine. The graph is undirected: `add_edge(a,b)` and `add_edge(b,a)`. (Code comment at line 82-83 notes a true sweep-line could reduce to O(N log N + E).)
 
-### 5.3 Chaitin-Briggs — Optimistic Graph Coloring (GraphColorer.cpp:34-104)
+### 5.3 Chaitin-Briggs — Optimistic Graph Coloring (GraphColorer.cpp:34-104) (Defined, not currently invoked in production)
 
 **Simplify phase**: while graph non-empty:
 1. If any node has degree < K (budget), remove it and push onto stack. (Guaranteed colorable: at most K-1 neighbors already colored when popped.)
@@ -84,7 +86,7 @@ Select:    pop in reverse, assign colors greedily
 Spill:     only if truly uncolorable during Select (not during Simplify)
 ```
 
-### 5.4 Linear Scan — Greedy Interval Coloring (GraphColorer.cpp:126-215)
+### 5.4 Linear Scan — Greedy Interval Coloring (GraphColorer.cpp:126-222) (sole production path)
 
 From Poletto & Sarkar (1999), adapted for DAG topological order:
 
@@ -97,6 +99,8 @@ From Poletto & Sarkar (1999), adapted for DAG topological order:
    d. Else: **spill** the active interval with the latest end (frees register for shorter-lived current interval).
 
 **Lifetime holes**: Linear scan handles them via the Expire step — when an interval ends, its register returns to the free pool. No explicit "hole" tracking needed. The second-chance variants (not implemented here) would re-assign freed registers to new intervals without requiring a new register.
+
+**Shared memory slot assignment** (after step 3): spilled resources get sequential shared-memory slot IDs (`spilled_assignment[rid] = next_shared_slot++`) and a total `shared_slot_count`. These are consumed by `GlslBuilder` to emit `shared vec4 spilled_X` declarations and store/load instructions.
 
 ### 5.5 Register Coalescing (Future Work)
 George & Appel's iterated register coalescing: two variables can share a register if they don't interfere AND coalescing doesn't increase the graph's chromatic number (i.e., their neighbors don't form a clique). In TextureSynth, this applies when node A's output feeds only node B and neither interferes with B's other inputs — A and B's outputs could potentially share a register.
@@ -206,7 +210,7 @@ void main() {
 ---
 
 ## 9. Verification
-- Standalone unit test `TestRegAlloc.cpp`: defines various graph topologies (linear, fan-out/fan-in, branches), runs liveness + interference + coloring, verifies no overlapping variables share a color and that color count matches theoretical minimum (chromatic number = max clique for interval graphs).
+- `tests/test_aliasing.cpp:722-787` (`SharedMemorySpilling` test case): exercises `GraphColorer::color_linear_scan` with 60 overlapping intervals and budget=48, verifying 12 spills, shared slot assignment, and GlslBuilder shared-memory emission.
 
 ## 10. Child DOX Index
 None — this is a leaf module with no subdirectories.

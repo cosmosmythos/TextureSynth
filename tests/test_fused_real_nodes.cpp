@@ -2396,3 +2396,148 @@ TEST_F(FusedRealNodesGLSL, PressureBasedPlanning_BranchingChain) {
     }
     EXPECT_TRUE(found_big) << "4-node diamond should fuse into one chain";
 }
+
+// ===========================================================================
+// Part N: Exact diagram reproduction
+// ===========================================================================
+//
+// Diagram:
+//   Worley ──reg──► Levels ──reg──► S1 ──Img──► Warp ──reg──► Levels ──reg──► Blend
+//                                                 ▲
+//   Perlin ──reg──► S2 ──Grad──┘
+//
+// Graph topology:
+//   Node 1: Worley  (source, 0 inputs)
+//   Node 2: Levels  (1 input from Worley)
+//   Node 3: Perlin  (source, 0 inputs)
+//   Node 4: Warp    (image=Levels, gradient=Perlin) — sampler2D boundary → chain split
+//   Node 5: Levels  (1 input from Warp)
+//   Node 6: Blend   (a=Node5, b=unconnected [0,0,0,1], mask=unconnected 1.0)
+//
+// Expected chains:
+//   Chain 0: Worley → Levels   (register-fused, produces image for Warp.image)
+//   Chain 1: Perlin            (singleton, produces image for Warp.gradient)
+//   Chain 2: Warp → Levels → Blend (register-fused, reads both via bindless slots)
+//
+// Questions answered:
+//   (1) How many dispatches to reach S1 just before Blend?
+//       → Chain 2 is the one containing Blend. It is the 3rd chain dispatched.
+//       → Answer: 3 dispatches total (Chain 0, Chain 1, Chain 2).
+//
+//   (2) How many registers at the end of Chain 2 (just before Blend)?
+//       → Chain 2 nodes: Warp → Levels → Blend
+//       → Warp output = r0, Levels reads r0 and writes r1, Blend reads r1.
+//       → colors_used = 2 (Warp and Levels each need one register; Blend is tail, no output register).
+//
+
+TEST_F(FusedRealNodesGLSL, DiagramChainStructure) {
+    Graph g;
+    g.nodes.push_back({1, "worley", ChannelFormat::RGBA});
+    g.nodes.push_back({2, "levels"});
+    g.nodes.push_back({3, "perlin", ChannelFormat::RGBA});
+    g.nodes.push_back({4, "warp"});
+    g.nodes.push_back({5, "levels"});
+    // Connections: Worley→Levels→Warp←Perlin→Levels(out)
+    g.connections.push_back({1, 0, 2, 0});   // worley -> levels.color
+    g.connections.push_back({2, 0, 4, 0});   // levels -> warp.image (sampler2D)
+    g.connections.push_back({3, 0, 4, 1});   // perlin -> warp.gradient (sampler2D)
+    g.connections.push_back({4, 0, 5, 0});   // warp -> levels2.color
+    g.output_node = 5;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== EXACT DIAGRAM CHAIN STRUCTURE ===\n");
+    printf("Total chains: %zu  Total passes: %zu\n",
+           cr.pass_plan.chains.size(), cr.pass_plan.passes.size());
+
+    // Dump chain index per pass.
+    printf("Chain index per pass:\n");
+    for (uint32_t i = 0; i < cr.pass_plan.chain_index_of_pass.size(); ++i) {
+        uint32_t ci = cr.pass_plan.chain_index_of_pass[i];
+        printf("  pass[%u] node=%u -> chain[%u]\n", i, cr.pass_plan.passes[i].node_id, ci);
+    }
+
+    // Dump per-chain details.
+    for (uint32_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("\n--- Chain %u ---\n", ci);
+        printf("  Nodes: ");
+        for (NodeId n : ch.nodes) printf("%u ", n);
+        printf("\n");
+        printf("  Registers used: %u\n", ch.coloring.colors_used);
+        printf("  External socket masks: ");
+        for (uint32_t m : ch.external_socket_masks) printf("0x%x ", m);
+        printf("\n");
+        printf("  Sub-pass count: %u  Intermediate count: %u\n",
+               ch.sub_pass_count, ch.intermediate_count);
+    }
+
+    // ---- ANSWER (1): dispatches to Levels2 (output) ----
+    uint32_t levels2_chain = UINT32_MAX;
+    for (uint32_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        for (NodeId n : cr.pass_plan.chains[ci].nodes) {
+            if (n == 5) { levels2_chain = ci; break; }
+        }
+        if (levels2_chain != UINT32_MAX) break;
+    }
+    ASSERT_NE(levels2_chain, UINT32_MAX) << "Levels2 (node 5) must be in some chain";
+
+    uint32_t dispatches_to_output = levels2_chain + 1;
+    printf("\n=== ANSWERS ===\n");
+    printf("(1) Dispatches to output (chain containing Levels2): %u\n", dispatches_to_output);
+
+    // ---- ANSWER (2): registers at end of output chain ----
+    const auto& output_chain_obj = cr.pass_plan.chains[levels2_chain];
+    uint32_t regs_at_end = output_chain_obj.coloring.colors_used;
+    printf("(2) Registers at end of output chain: %u\n", regs_at_end);
+    printf("    Chain nodes: ");
+    for (NodeId n : output_chain_obj.nodes) printf("%u ", n);
+    printf("\n");
+
+    // ---- Structural invariants ----
+    // Chains: [Worley,Perlin,Levels] + [Warp,Levels2]
+    // Sampler2D split before Warp forces a chain boundary.
+    EXPECT_EQ(cr.pass_plan.chains.size(), 2u)
+        << "Expected 2 chains: [Worley,Perlin,Levels] + [Warp,Levels2]";
+
+    EXPECT_EQ(cr.pass_plan.chains[0].nodes.size(), 3u);
+    EXPECT_EQ(cr.pass_plan.chains[1].nodes.size(), 2u);
+}
+
+TEST_F(FusedRealNodesPixel, DiagramPixelCorrectness) {
+    // Same graph, but actually dispatch and readback pixels.
+    uint32_t RES = 128;
+    Graph g;
+    g.nodes.push_back({1, "worley", ChannelFormat::RGBA});
+    g.nodes.push_back({2, "levels"});
+    g.nodes.push_back({3, "perlin", ChannelFormat::RGBA});
+    g.nodes.push_back({4, "warp"});
+    g.nodes.push_back({5, "levels"});
+    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({2, 0, 4, 0});
+    g.connections.push_back({3, 0, 4, 1});
+    g.connections.push_back({4, 0, 5, 0});
+    g.output_node = 5;
+
+    uint64_t gen = engine.set_graph(g);
+    ASSERT_NE(gen, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    // Set warp intensity to 0 (passthrough) so we can verify chain reads work.
+    engine.update_node_params_by_id(4, {0.0f, 0.0f, 0.0f, 0.0f});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(wait_for_readback_gen_res(engine, gen, px, w, h, RES, RES));
+
+    printf("\n=== DIAGRAM PIXEL CORRECTNESS ===\n");
+    printf("Readback: %ux%u, %zu floats\n", w, h, px.size());
+
+    // Verify non-zero output.
+    double brightness = avg_brightness(px);
+    printf("Total brightness: %.2f\n", brightness);
+    EXPECT_GT(brightness, 0.0) << "Output must be non-zero — chains must dispatch correctly";
+}

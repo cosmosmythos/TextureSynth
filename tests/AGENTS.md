@@ -18,7 +18,7 @@ Two independent test suites:
 - **Python tests auto-skip on no-GPU**: `conftest.py` calls `Engine.init()`; if Vulkan init fails the whole session skips (not fails). Do not remove this guard — headless CI without a GPU depends on it.
 - **Python import path**: `conftest.py` inserts `build/Release` into `sys.path` so `import texturesynth_core` works without installing the wheel. The binding must be built first (`-DBUILD_PYTHON_BINDINGS=ON`).
 - **Asset paths**: `TEXTURESYNTH_TEST_ASSET_DIR` (C++) and `assets` fixture (Python) resolve to the repo root. Tests read `shader_assets/{nodes,glsl}` and `tests/texturesynth_test.png`.
-- **Validation**: C++ tests compile with `TS_TESTS_ENABLE_VALIDATION=1` (see `tests/CMakeLists.txt:43`) — Vulkan validation layers are active in the test build.
+- **Validation**: C++ tests compile with `TS_TESTS_ENABLE_VALIDATION=1` (see `tests/CMakeLists.txt:58`) — Vulkan validation layers are active in the test build.
 - **One VkInstance per process** (root §5): the Python session fixture creates exactly one `Engine` and shuts it down at teardown. C++ tests should construct/destroy their own `Engine` per case and call `shutdown()`.
 
 ## Work Guidance
@@ -27,7 +27,7 @@ Two independent test suites:
 - Cache dirs: Python uses `tests/python/cache/shader` (gitignored). Do not point tests at `build/_deps/` (root §2 cache trap).
 
 ## Verification
-- C++: `ctest --test-dir build -C Release` (or run `engine_tests` directly). GoogleTest discovery is wired via `gtest_discover_tests` in `tests/CMakeLists.txt:48`.
+- C++: `ctest --test-dir build -C Release` (or run `engine_tests` directly). GoogleTest discovery is wired via `gtest_discover_tests` in `tests/CMakeLists.txt:63`.
 - Python: `pytest tests/python/` from repo root. Config in repo-root `pytest.ini`.
 
 ## Child DOX Index

@@ -8,8 +8,9 @@ All C++20 source for TextureSynth. Three build targets defined in the root `CMak
 
 ## Ownership
 - `src/engine/` — the engine lib (has its own AGENTS.md).
-- `src/bindings/bindings.cpp` — the single nanobind source file exposing `Engine`, `Graph`, `NodeLibrary`, `PushConstants`, `EngineError` to Python.
+- `src/bindings/bindings.cpp` — the single nanobind source file exposing `Engine`, `Graph`, `NodeLibrary`, `PushConstants`, `EngineError`, plus enums (`EngineErrorCode`, `EnginePhase`, `ChannelFormat`, `BitDepth`, `DepthMode`, `SocketType`), structs (`Socket`, `NodeParam`, `NodeType`, `PassTiming`), and `set_log_callback` to Python.
 - `src/viewer/` — GLFW + ImGui + RenderDoc app (`main.cpp`, `Window`, `Swapchain`, `Renderer`, `ImGuiLayer`, `RenderDocCapture`).
+- `src/cpp_copy.bat` — utility script that dumps all `.cpp`/`.hpp` into a single text file.
 - `src/viewer/third_party/renderdoc_app.h` — vendored header; NOT linked to renderdoc.dll (loaded at runtime via `GetModuleHandleA`).
 
 ## Local Contracts
@@ -21,7 +22,7 @@ All C++20 source for TextureSynth. Three build targets defined in the root `CMak
 - **ndarray ownership** (root §5 gotcha): return numpy arrays backed by `nb::capsule(new[], delete[])`. Never back them with a stack `std::vector` — it dangles after return (see `poll_readback` in `bindings.cpp:68`).
 - **One VkInstance per process**: both `viewer/main.cpp` and the binding create an `Engine`; only one may be live at a time. `shutdown()` is mandatory before a second `init()`.
 - **PushConstants.seed is uint32** (root §5): pass `int` from Python, never `float`.
-- **Viewer shader copy**: `CMakeLists.txt:77-81` copies `shader_assets/` next to the exe post-build. Editing shaders in `shader_assets/` is enough; no manual copy.
+- **Viewer shader copy**: `CMakeLists.txt:80-85` copies `shader_assets/` next to the exe post-build. Editing shaders in `shader_assets/` is enough; no manual copy.
 
 ## Work Guidance
 - Before adding a binding: (1) confirm the C++ method exists on `Engine`, (2) add the nanobind def in `bindings.cpp`, (3) mirror the lock+ready pattern.
@@ -36,3 +37,5 @@ All C++20 source for TextureSynth. Three build targets defined in the root `CMak
 ## Child DOX Index
 - [`engine/AGENTS.md`](engine/AGENTS.md) — Vulkan compute engine core.
   - [`engine/graphfusion/AGENTS.md`](engine/graphfusion/AGENTS.md) — chain fusion subsystem.
+  - [`engine/register_allocation/AGENTS.md`](engine/register_allocation/AGENTS.md) — graph-coloring register allocator for fused shader chains.
+  - [`engine/memory_allocation/AGENTS.md`](engine/memory_allocation/AGENTS.md) — VRAM image aliasing (format-aware interval coloring).
