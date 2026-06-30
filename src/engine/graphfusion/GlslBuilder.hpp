@@ -49,12 +49,12 @@ public:
         main_ << "    vec2 uv;\n";
         main_ << "    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));\n";
         main_ << "    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));\n";
-        main_ << "    vec4 _result = vec4(0.0);\n\n";
+        main_ << "    vec4 _result = vec4(0.0);\n";
     }
 
     void main_end(const std::string& output_expr) {
         main_begin();
-        main_ << "\n    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, "
+        main_ << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, "
               << output_expr << ");\n";
         main_ << "}\n";
     }
@@ -62,7 +62,6 @@ public:
     void main_end_multi(const std::vector<uint32_t>& slot_indices,
                         const std::function<std::string(uint32_t)>& var_for_slot) {
         main_begin();
-        main_ << "\n";
         for (uint32_t i = 0; i < (uint32_t)slot_indices.size(); ++i) {
             main_ << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots["
                   << slot_indices[i] << "])], coord, " << var_for_slot(i) << ");\n";
@@ -134,7 +133,7 @@ public:
 
     void comment(const std::string& text) {
         main_begin();
-        main_ << "\n    // " << text << '\n';
+        main_ << "    // " << text << '\n';
     }
 
     [[nodiscard]] std::string build() const {

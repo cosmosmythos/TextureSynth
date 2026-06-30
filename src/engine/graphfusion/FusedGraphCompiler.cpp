@@ -518,9 +518,76 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
     }
 
     // 8. Compute lifetimes and color classes via AliasColorer.
+    //    Extend cross-chain resource lifetimes so two resources consumed by the
+    //    same chain dispatch cannot share an alias VkImage.
     {
-        auto alias_result = memory_allocation::AliasColorer::compute(
-            plan.passes, plan.final_output_resource, ir, lib);
+        // Compute basic lifetimes from passes.
+        std::unordered_map<ResourceUUID, memory_allocation::AliasLifetime, ResourceUUIDHash> lifetimes;
+        for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
+            const auto& pass = plan.passes[i];
+            for (const auto& rid : pass.output_resources) {
+                auto& lt = lifetimes[rid];
+                if (lt.first_pass == UINT32_MAX) lt.first_pass = i;
+                lt.last_pass = i;
+            }
+            for (const auto& rid : pass.input_resources) {
+                if (rid.node_id == 0) continue;
+                auto& lt = lifetimes[rid];
+                lt.last_pass = i;
+                if (lt.first_pass == UINT32_MAX) lt.first_pass = 0;
+            }
+        }
+        auto& fo_lt = lifetimes[plan.final_output_resource];
+        fo_lt.first_pass = 0;
+        fo_lt.last_pass = UINT32_MAX;
+
+        // Build pass-index lookup for each node.
+        std::unordered_map<NodeId, uint32_t> node_to_pass_idx;
+        node_to_pass_idx.reserve(plan.passes.size());
+        for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i)
+            node_to_pass_idx[plan.passes[i].node_id] = i;
+
+        // Extend cross-chain resource lifetimes to cover the consuming chain.
+        for (const auto& chain : plan.chains) {
+            // Find chain's last pass index.
+            uint32_t chain_last = 0;
+            for (NodeId n : chain.nodes) {
+                auto it = node_to_pass_idx.find(n);
+                if (it != node_to_pass_idx.end())
+                    chain_last = std::max(chain_last, it->second);
+            }
+            // Collect chain member IDs.
+            std::unordered_set<NodeId> chain_nodes(chain.nodes.begin(), chain.nodes.end());
+            // Scan cross-chain inputs.
+            for (NodeId n : chain.nodes) {
+                auto pit = node_to_pass_idx.find(n);
+                if (pit == node_to_pass_idx.end()) continue;
+                const auto& pe = plan.passes[pit->second];
+                for (const auto& rid : pe.input_resources) {
+                    if (rid.node_id == 0) continue;
+                    if (chain_nodes.count(rid.node_id)) continue;
+                    // Cross-chain input: extend lifetime to chain's last pass.
+                    auto lit = lifetimes.find(rid);
+                    if (lit != lifetimes.end() && lit->second.last_pass != UINT32_MAX)
+                        lit->second.last_pass = std::max(lit->second.last_pass, chain_last);
+                }
+            }
+        }
+
+        // Resolve formats.
+        std::unordered_map<ResourceUUID, StorageFormat, ResourceUUIDHash> formats;
+        for (const auto& vn : ir.nodes) {
+            const auto* type = lib.find(vn.type_id);
+            if (!type) continue;
+            const uint32_t num_outputs = std::max(1u, (uint32_t)type->outputs.size());
+            for (uint32_t oid = 0; oid < num_outputs; ++oid) {
+                ResourceUUID rid{vn.id, oid};
+                formats[rid] = resolve_node_storage(vn, lib, oid);
+            }
+        }
+
+        auto alias_result = memory_allocation::AliasColorer::compute_from_lifetimes(
+            lifetimes, formats);
         plan.lifetimes.reserve(alias_result.lifetimes.size());
         for (const auto& kv : alias_result.lifetimes) {
             auto& lt = plan.lifetimes[kv.first];

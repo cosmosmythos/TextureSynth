@@ -13,7 +13,7 @@ All files under `src/engine/memory_allocation/`. Namespace: `te::memory_allocati
 ## Local Contracts
 - **Format compatibility**: two resources can alias only if `storage_format_bytes(a) == storage_format_bytes(b)`. A Mono@F32 (4 bytes/pixel) never shares with RGBA@F32 (16 bytes/pixel).
 - **Color 0 = pinned**: final output, single-pass resources, and UINT32_MAX lifetimes are excluded from aliasing.
-- **Input**: `ComputePass` vector + `GraphIR` + `NodeLibrary` (for format resolution). Or pre-computed lifetimes + formats for testing.
+- **Input**: `ComputePass` vector + `GraphIR` + `NodeLibrary` (for format resolution). Or pre-computed lifetimes + formats for testing. Lifetimes passed to `compute_from_lifetimes()` MUST be extended for cross-chain consumers (see `FusedGraphCompiler.cpp` step 8) — raw pass-level lifetimes are insufficient because a chain dispatch reads all cross-chain inputs simultaneously.
 - **Output**: `AliasColoringResult` with `color_classes` map, `lifetimes` map, and `groups_created` count.
 - **Consumed by**: `ResourceManager::allocate_for_graph()` uses `color_classes` to decide which VkImages share memory.
 

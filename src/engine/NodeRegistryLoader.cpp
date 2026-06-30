@@ -50,6 +50,29 @@ PassKind NodeRegistryLoader::parse_pass_kind(const std::string& s) {
 }
 
 
+// Normalize CRLF → LF and strip blank lines from GLSL content.
+static std::string clean_glsl(std::string s) {
+    // Normalize CRLF → LF.
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\r' && i + 1 < s.size() && s[i + 1] == '\n') { ++i; out += '\n'; }
+        else out += s[i];
+    }
+    // Strip blank lines.
+    std::istringstream ss(out);
+    std::ostringstream filtered;
+    std::string line;
+    while (std::getline(ss, line)) {
+        // Trim trailing \r (already handled above, but defensive).
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+        bool blank = true;
+        for (char c : line) { if (c != ' ' && c != '\t') { blank = false; break; } }
+        if (!blank) filtered << line << '\n';
+    }
+    return filtered.str();
+}
+
 // Resolve includes once per node, dedup symbols globally via #ifndef guards.
 static std::string assemble_glsl(const json& manifest,
                                  const fs::path& shader_path,
@@ -64,10 +87,10 @@ static std::string assemble_glsl(const json& manifest,
                 continue;
             }
             // Guards in the file prevent duplicate-symbol errors when multiple nodes pull the same include — final shader still gets the body once per #include site. For now, emit once by relying on the guard macros.
-            out << slurp(p) << "\n";
+            out << clean_glsl(slurp(p)) << "\n";
         }
     }
-    out << slurp(shader_path) << "\n";
+    out << clean_glsl(slurp(shader_path)) << "\n";
     return out.str();
 }
 
