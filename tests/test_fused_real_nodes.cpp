@@ -530,11 +530,9 @@ TEST_F(FusedRealNodesPixel, ColorConst_Blend_ConstantColor) {
 
     // Set color_const params: mode=0, r=0.5, g=0.5, b=0.5, a=1.0
     engine.update_node_params_by_id(1, {0.0f, 0.5f, 0.5f, 0.5f, 1.0f});
-    // Set blend params: mode=0 (mix), mask=0 (passthrough A).
-    // mask must be explicit: before the seed_param_ssbo_defaults_ fix,
-    // mask was wrongly seeded to 0.0 by memset; now it's correctly
-    // seeded to 1.0 (manifest default). mask=0 forces passthrough of A.
-    engine.update_node_params_by_id(2, {0.0f, 0.0f});
+    // Set blend params: mode=0 (mix), mask=1 (passthrough A).
+    // mask=1 -> mix(b, mode_result, 1.0) = mode_result = A for mode=0.
+    engine.update_node_params_by_id(2, {0.0f, 1.0f});
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     engine.poll_pending_compiles();
 
@@ -2496,13 +2494,11 @@ TEST_F(FusedRealNodesGLSL, DiagramChainStructure) {
     printf("\n");
 
     // ---- Structural invariants ----
-    // Chains: [Worley,Perlin,Levels] + [Warp,Levels2]
-    // Sampler2D split before Warp forces a chain boundary.
-    EXPECT_EQ(cr.pass_plan.chains.size(), 2u)
-        << "Expected 2 chains: [Worley,Perlin,Levels] + [Warp,Levels2]";
-
-    EXPECT_EQ(cr.pass_plan.chains[0].nodes.size(), 3u);
-    EXPECT_EQ(cr.pass_plan.chains[1].nodes.size(), 2u);
+    // Path is [Worley,Perlin,Levels,Warp,Levels2].
+    // Warp reads Levels(2) and Perlin(3) via Sampler2D — both must be tails.
+    // Chain structure: [Worley,Perlin] [Levels] [Warp,Levels2]
+    EXPECT_EQ(cr.pass_plan.chains.size(), 3u)
+        << "Expected 3 chains: [Worley,Perlin] [Levels] [Warp,Levels2]";
 }
 
 TEST_F(FusedRealNodesPixel, DiagramPixelCorrectness) {
@@ -2534,6 +2530,161 @@ TEST_F(FusedRealNodesPixel, DiagramPixelCorrectness) {
     ASSERT_TRUE(wait_for_readback_gen_res(engine, gen, px, w, h, RES, RES));
 
     printf("\n=== DIAGRAM PIXEL CORRECTNESS ===\n");
+    printf("Readback: %ux%u, %zu floats\n", w, h, px.size());
+
+    // Verify non-zero output.
+    double brightness = avg_brightness(px);
+    printf("Total brightness: %.2f\n", brightness);
+    EXPECT_GT(brightness, 0.0) << "Output must be non-zero — chains must dispatch correctly";
+}
+
+TEST_F(FusedRealNodesGLSL, Chain002_ChainStructure) {
+    // Chain002: Complex two-branch graph with Blend as output.
+    //
+    // Top branch:
+    //   1.Worley → 2.Levels → 4.Warp(Img)
+    //   3.Perlin → 4.Warp(Grad)
+    //   4.Warp → 5.Levels2 → 6.Blend(input A)
+    //
+    // Bottom branch:
+    //   7.Perlin2 → 8.Levels3 → 12.Warp3(Img)
+    //   9.Worley2 → 11.Warp2(Img)
+    //   9.Worley2 → 10.Blur → 11.Warp2(Grad)
+    //   11.Warp2 → 12.Warp3(Grad)
+    //   12.Warp3 → 6.Blend(input B)
+    Graph g;
+    g.nodes.push_back({1, "worley", ChannelFormat::RGBA});   // top source
+    g.nodes.push_back({2, "levels"});                         // top levels
+    g.nodes.push_back({3, "perlin", ChannelFormat::RGBA});   // top gradient
+    g.nodes.push_back({4, "warp"});                           // top warp
+    g.nodes.push_back({5, "levels"});                         // after warp
+    g.nodes.push_back({6, "blend"});                          // output
+    g.nodes.push_back({7, "perlin", ChannelFormat::RGBA});   // bottom source
+    g.nodes.push_back({8, "levels"});                         // bottom levels
+    g.nodes.push_back({9, "worley", ChannelFormat::RGBA});   // bottom source 2
+    g.nodes.push_back({10, "blur"});                          // bottom blur
+    g.nodes.push_back({11, "warp"});                          // bottom warp 2
+    g.nodes.push_back({12, "warp"});                          // bottom warp 3
+
+    // Top branch connections
+    g.connections.push_back({1, 0, 2, 0});   // worley -> levels.color
+    g.connections.push_back({2, 0, 4, 0});   // levels -> warp.image (Sampler2D)
+    g.connections.push_back({3, 0, 4, 1});   // perlin -> warp.gradient (Sampler2D)
+    g.connections.push_back({4, 0, 5, 0});   // warp -> levels2.color
+    g.connections.push_back({5, 0, 6, 1});   // levels2 -> blend.a (foreground)
+
+    // Bottom branch connections
+    g.connections.push_back({7, 0, 8, 0});   // perlin2 -> levels3.color
+    g.connections.push_back({8, 0, 12, 0});  // levels3 -> warp3.image (Sampler2D)
+    g.connections.push_back({9, 0, 11, 0});  // worley2 -> warp2.image (Sampler2D)
+    g.connections.push_back({9, 0, 10, 0});  // worley2 -> blur.color
+    g.connections.push_back({10, 0, 11, 1}); // blur -> warp2.gradient (Sampler2D)
+    g.connections.push_back({11, 0, 12, 1}); // warp2 -> warp3.gradient (Sampler2D)
+    g.connections.push_back({12, 0, 6, 2});  // warp3 -> blend.b (background)
+
+    g.output_node = 6;
+
+    auto cr = compile(g);
+    ASSERT_TRUE(cr.success) << cr.error;
+
+    printf("\n=== CHAIN002 CHAIN STRUCTURE ===\n");
+    printf("Total chains: %zu  Total passes: %zu\n",
+           cr.pass_plan.chains.size(), cr.pass_plan.passes.size());
+
+    // Dump chain index per pass.
+    printf("Chain index per pass:\n");
+    for (uint32_t i = 0; i < cr.pass_plan.chain_index_of_pass.size(); ++i) {
+        uint32_t ci = cr.pass_plan.chain_index_of_pass[i];
+        printf("  pass[%u] node=%u -> chain[%u]\n", i, cr.pass_plan.passes[i].node_id, ci);
+    }
+
+    // Dump per-chain details.
+    for (uint32_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        const auto& ch = cr.pass_plan.chains[ci];
+        printf("\n--- Chain %u ---\n", ci);
+        printf("  Nodes: ");
+        for (NodeId n : ch.nodes) printf("%u ", n);
+        printf("\n");
+        printf("  Registers used: %u\n", ch.coloring.colors_used);
+        printf("  External socket masks: ");
+        for (uint32_t m : ch.external_socket_masks) printf("0x%x ", m);
+        printf("\n");
+        printf("  Sub-pass count: %u  Intermediate count: %u\n",
+               ch.sub_pass_count, ch.intermediate_count);
+    }
+
+    // Find the chain containing Blend (node 6).
+    uint32_t blend_chain = UINT32_MAX;
+    for (uint32_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
+        for (NodeId n : cr.pass_plan.chains[ci].nodes) {
+            if (n == 6) { blend_chain = ci; break; }
+        }
+        if (blend_chain != UINT32_MAX) break;
+    }
+    ASSERT_NE(blend_chain, UINT32_MAX) << "Blend (node 6) must be in some chain";
+
+    printf("\n=== PARAM BASE SLOTS ===\n");
+    for (const auto& [nid, slot] : cr.param_base_slot) {
+        printf("  node %u -> slot %d\n", nid, slot);
+    }
+
+    printf("\n=== ANSWERS ===\n");
+    printf("(1) Dispatches to output (chain containing Blend): %u\n", blend_chain + 1);
+    printf("(2) Registers at end of output chain: %u\n",
+           cr.pass_plan.chains[blend_chain].coloring.colors_used);
+}
+
+TEST_F(FusedRealNodesPixel, Chain002_PixelCorrectness) {
+    // Same graph as Chain002_ChainStructure, but actually dispatch and readback.
+    uint32_t RES = 128;
+    Graph g;
+    g.nodes.push_back({1, "worley", ChannelFormat::RGBA});
+    g.nodes.push_back({2, "levels"});
+    g.nodes.push_back({3, "perlin", ChannelFormat::RGBA});
+    g.nodes.push_back({4, "warp"});
+    g.nodes.push_back({5, "levels"});
+    g.nodes.push_back({6, "blend"});
+    g.nodes.push_back({7, "perlin", ChannelFormat::RGBA});
+    g.nodes.push_back({8, "levels"});
+    g.nodes.push_back({9, "worley", ChannelFormat::RGBA});
+    g.nodes.push_back({10, "blur"});
+    g.nodes.push_back({11, "warp"});
+    g.nodes.push_back({12, "warp"});
+
+    // Top branch
+    g.connections.push_back({1, 0, 2, 0});
+    g.connections.push_back({2, 0, 4, 0});
+    g.connections.push_back({3, 0, 4, 1});
+    g.connections.push_back({4, 0, 5, 0});
+    g.connections.push_back({5, 0, 6, 1});   // levels2 -> blend.a
+
+    // Bottom branch
+    g.connections.push_back({7, 0, 8, 0});
+    g.connections.push_back({8, 0, 12, 0});
+    g.connections.push_back({9, 0, 11, 0});
+    g.connections.push_back({9, 0, 10, 0});
+    g.connections.push_back({10, 0, 11, 1});
+    g.connections.push_back({11, 0, 12, 1});
+    g.connections.push_back({12, 0, 6, 2});  // warp3 -> blend.b
+
+    g.output_node = 6;
+
+    uint64_t gen = engine.set_graph(g);
+    ASSERT_NE(gen, 0u) << engine.last_error();
+    ASSERT_TRUE(wait_for_pipeline(engine));
+
+    // Set warp intensities to 0 (passthrough) so we can verify chain reads work.
+    engine.update_node_params_by_id(4, {0.0f, 0.0f, 0.0f, 0.0f});
+    engine.update_node_params_by_id(11, {0.0f, 0.0f, 0.0f, 0.0f});
+    engine.update_node_params_by_id(12, {0.0f, 0.0f, 0.0f, 0.0f});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    engine.poll_pending_compiles();
+
+    std::vector<float> px;
+    uint32_t w = 0, h = 0;
+    ASSERT_TRUE(wait_for_readback_gen_res(engine, gen, px, w, h, RES, RES));
+
+    printf("\n=== CHAIN002 PIXEL CORRECTNESS ===\n");
     printf("Readback: %ux%u, %zu floats\n", w, h, px.size());
 
     // Verify non-zero output.

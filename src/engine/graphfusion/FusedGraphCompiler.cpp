@@ -68,18 +68,111 @@ FusedVariantKey build_fused_key(const Chain& chain,
         }
         k.param_socket_masks.push_back(mask);
         k.input_counts.push_back(static_cast<uint32_t>(type->inputs.size()));
-        if (inst) {
-            const ChannelFormat resolved_fmt = resolve_node_storage(*inst, lib).channels;
-            feature |= (static_cast<uint32_t>(resolved_fmt) & 0x7u) << shift;
-            shift += 3;
-            feature |= (static_cast<uint32_t>(inst->resolved_depth) & 0x3u) << shift;
-            shift += 2;
-        }
+        const ChannelFormat resolved_fmt = resolve_node_storage(*inst, lib).channels;
+        feature |= (static_cast<uint32_t>(resolved_fmt) & 0x7u) << shift;
+        shift += 3;
+        feature |= (static_cast<uint32_t>(inst->resolved_depth) & 0x3u) << shift;
+        shift += 2;
     }
     k.feature_flags = feature;
     k.external_socket_masks = chain.external_socket_masks;
     k.internal_producer_indices = chain.internal_producer_indices;
     return k;
+}
+
+// Compute the complete split_after vector for chain boundaries.
+//
+// Every chain produces VkImage output only at its tail node (imageStore).
+// Two complementary rules ensure cross-chain Sampler2D edges work:
+//   Rule 1 — Sampler2D consumer: split BEFORE it.
+//     Consumer reads from VkImage, so it must be in a different chain from
+//     the producer. (Static, per-node.)
+//   Rule 2 — Cross-chain Sampler2D producer: split AFTER it.
+//     Producer must be a tail to imageStore. Rule 1 only guarantees the
+//     consumer is in a different chain — it does NOT guarantee the producer
+//     is the tail. A chain [A,B,C] only imageStores from C. If both A and
+//     B feed downstream via Sampler2D, Rule 1 handles neither being tails.
+//     (Iterative: adding a split can push nodes into new chains, revealing
+//     new cross-chain edges.)
+std::vector<size_t> compute_chain_splits(
+    const std::vector<NodeId>& path,
+    const GraphIR& ir,
+    const NodeLibrary& lib)
+{
+    std::vector<size_t> split_after;
+
+    // Rule 1: split before Sampler2D consumers and multi-pass singletons.
+    for (size_t i = 0; i < path.size(); ++i) {
+        const auto* inst = ir.find(path[i]);
+        const auto* type = inst ? lib.find(inst->type_id) : nullptr;
+        if (!type) continue;
+
+        if (type->pass_count > 1) {
+            if (i > 0)              split_after.push_back(i - 1);
+            if (i + 1 < path.size()) split_after.push_back(i);
+        }
+
+        const bool needs_sampler_split = std::any_of(
+            type->inputs.begin(), type->inputs.end(),
+            [](const Socket& s) { return s.type == SocketType::Sampler2D; });
+        if (needs_sampler_split && i > 0)
+            split_after.push_back(i - 1);
+    }
+
+    std::sort(split_after.begin(), split_after.end());
+    split_after.erase(std::unique(split_after.begin(), split_after.end()),
+                      split_after.end());
+
+    // Rule 2: cross-chain Sampler2D producers must be tails.
+    // Build path-position lookup for O(1) access.
+    std::unordered_map<NodeId, size_t> path_pos;
+    path_pos.reserve(path.size());
+    for (size_t i = 0; i < path.size(); ++i)
+        path_pos[path[i]] = i;
+
+    for (;;) {
+        // Map each node to its current sub-path index.
+        std::vector<size_t> bounds = {0};
+        for (size_t sa : split_after) bounds.push_back(sa + 1);
+        bounds.push_back(path.size());
+
+        std::unordered_map<NodeId, size_t> node_to_sub;
+        node_to_sub.reserve(path.size());
+        for (size_t sub = 0; sub + 1 < bounds.size(); ++sub)
+            for (size_t i = bounds[sub]; i < bounds[sub + 1]; ++i)
+                node_to_sub[path[i]] = sub;
+
+        // Find cross-chain Sampler2D edges where the producer is not a tail.
+        std::vector<size_t> new_splits;
+        for (const auto& conn : ir.connections) {
+            auto src_it = node_to_sub.find(conn.src_node);
+            auto dst_it = node_to_sub.find(conn.dst_node);
+            if (src_it == node_to_sub.end() || dst_it == node_to_sub.end()) continue;
+            if (src_it->second == dst_it->second) continue;
+
+            const auto* dst_inst = ir.find(conn.dst_node);
+            const auto* dst_type = dst_inst ? lib.find(dst_inst->type_id) : nullptr;
+            if (!dst_type || conn.dst_socket >= dst_type->inputs.size()) continue;
+            if (dst_type->inputs[conn.dst_socket].type != SocketType::Sampler2D) continue;
+
+            size_t src_pos = path_pos[conn.src_node];
+            if (std::find(split_after.begin(), split_after.end(), src_pos)
+                == split_after.end()) {
+                new_splits.push_back(src_pos);
+            }
+        }
+
+        if (new_splits.empty()) break;
+
+        split_after.insert(split_after.end(),
+                           new_splits.begin(), new_splits.end());
+        std::sort(split_after.begin(), split_after.end());
+        split_after.erase(
+            std::unique(split_after.begin(), split_after.end()),
+            split_after.end());
+    }
+
+    return split_after;
 }
 
 } // namespace
@@ -174,33 +267,12 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         return result;
     }
 
-    // 3b. Detect boundaries that force chain splits:
-    //   - Multi-pass nodes (pass_count > 1): singleton chains only.
-    //   - Sampler2D inputs: consumer must be in a different chain from its source.
-    std::vector<size_t> split_after;
-    for (size_t di = 0; di < path.nodes.size(); ++di) {
-        const auto* inst = ir.find(path.nodes[di]);
-        const auto* type = inst ? lib.find(inst->type_id) : nullptr;
-        if (!type) continue;
+    // 4. Compute chain split positions (unified — replaces old 3b + 3c).
+    auto split_after = compute_chain_splits(path.nodes, ir, lib);
 
-        if (type->pass_count > 1) {
-            if (di > 0)                split_after.push_back(di - 1);
-            if (di + 1 < path.nodes.size()) split_after.push_back(di);
-        }
-
-        bool has_sampler = false;
-        for (const auto& inp : type->inputs)
-            if (inp.type == SocketType::Sampler2D) { has_sampler = true; break; }
-        if (has_sampler && di > 0)
-            split_after.push_back(di - 1);
-    }
-    std::sort(split_after.begin(), split_after.end());
-    split_after.erase(std::unique(split_after.begin(), split_after.end()),
-                      split_after.end());
-
-    // 4. Build DAG from active path and plan fusion groups.
+    // 5. Build DAG from active path and plan fusion groups.
     // Use REAL graph edges from ir.connections (not synthetic linear adjacency)
-    // so the planner's consumer-constraint check sees true fan-out.
+    // so the planner sees true fan-out for register-pressure estimation.
     auto build_dag = [&](const std::vector<NodeId>& nodes) {
         std::unordered_set<NodeId> node_set(nodes.begin(), nodes.end());
         dag::DAG<NodeId>::NodeList dnodes(nodes.begin(), nodes.end());
@@ -250,7 +322,7 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         fusion_plan = plan_chain_group(path);
     }
 
-    // 5. Emit fused GLSL for each fusion group and create Chain entries.
+    // 6. Emit fused GLSL for each fusion group and create Chain entries.
     // Map node_id -> pass index for chain_index_of_pass.
     std::unordered_map<NodeId, uint32_t> pass_idx_by_node;
     pass_idx_by_node.reserve(plan.passes.size());
@@ -371,17 +443,66 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         plan.chains.push_back(std::move(chain));
     }
 
-    // 6. Fill chain_index_of_pass.
-    plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
-    for (size_t ci = 0; ci < plan.chains.size(); ++ci) {
-        for (NodeId n : plan.chains[ci].nodes) {
-            auto it = pass_idx_by_node.find(n);
-            if (it != pass_idx_by_node.end())
-                plan.chain_index_of_pass[it->second] = (uint32_t)ci;
+    // 7. Topologically sort chains by cross-chain dependency edges.
+    //    Without this, dispatch order is determined by first-member-pass index,
+    //    which can put a consumer chain before its producer in diamond topologies.
+    {
+        const uint32_t N = static_cast<uint32_t>(plan.chains.size());
+        std::vector<std::vector<uint32_t>> adj(N);   // producer -> consumer
+        std::vector<uint32_t> indeg(N, 0);
+
+        // Map node_id -> chain_index for this plan.
+        std::unordered_map<NodeId, uint32_t> node_to_chain;
+        for (uint32_t ci = 0; ci < N; ++ci)
+            for (NodeId n : plan.chains[ci].nodes)
+                node_to_chain[n] = ci;
+
+        // Scan IR connections for cross-chain edges.
+        for (const auto& c : ir.connections) {
+            auto pit = node_to_chain.find(c.src_node);
+            auto cit = node_to_chain.find(c.dst_node);
+            if (pit == node_to_chain.end() || cit == node_to_chain.end()) continue;
+            uint32_t from = pit->second, to = cit->second;
+            if (from != to) {
+                adj[from].push_back(to);
+                ++indeg[to];
+            }
         }
+
+        // Kahn's algorithm.
+        std::vector<uint32_t> sorted;
+        sorted.reserve(N);
+        std::vector<uint32_t> q;
+        for (uint32_t i = 0; i < N; ++i)
+            if (indeg[i] == 0) q.push_back(i);
+        while (!q.empty()) {
+            uint32_t cur = q.back(); q.pop_back();
+            sorted.push_back(cur);
+            for (uint32_t nb : adj[cur])
+                if (--indeg[nb] == 0) q.push_back(nb);
+        }
+
+        if (sorted.size() == N) {
+            // Reorder chains and rebuild chain_index_of_pass.
+            std::vector<Chain> reordered(N);
+            for (uint32_t i = 0; i < N; ++i)
+                reordered[i] = std::move(plan.chains[sorted[i]]);
+            plan.chains = std::move(reordered);
+
+            // Rebuild pass_idx_by_node (still valid from step 6).
+            plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
+            for (uint32_t ci = 0; ci < N; ++ci) {
+                for (NodeId n : plan.chains[ci].nodes) {
+                    auto it = pass_idx_by_node.find(n);
+                    if (it != pass_idx_by_node.end())
+                        plan.chain_index_of_pass[it->second] = ci;
+                }
+            }
+        }
+        // If sorted.size() != N, cycle detected — leave order unchanged.
     }
 
-    // 6b. Emit per-node GLSL for passes not in any chain.
+    // 7b. Emit per-node GLSL for passes not in any chain.
     for (uint32_t i = 0; i < (uint32_t)plan.passes.size(); ++i) {
         if (plan.chain_index_of_pass[i] != UINT32_MAX) continue;
         auto& pass = plan.passes[i];
@@ -396,7 +517,7 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
                                             pass.input_resources);
     }
 
-    // 7. Compute lifetimes and color classes via AliasColorer.
+    // 8. Compute lifetimes and color classes via AliasColorer.
     {
         auto alias_result = memory_allocation::AliasColorer::compute(
             plan.passes, plan.final_output_resource, ir, lib);
@@ -409,7 +530,7 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         plan.color_classes = std::move(alias_result.color_classes);
     }
 
-    // 8. Validate.
+    // 9. Validate.
     if (next_slot > static_cast<int>(MAX_NODE_PARAMS)) {
         result.success = false;
         result.error = "Param budget exceeded: graph needs "
@@ -418,7 +539,7 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         return result;
     }
 
-    // 9. Compute active_resources: node outputs that need a VRAM image.
+    // 10. Compute active_resources: node outputs that need a VRAM image.
     // A resource needs an image iff:
     //   (a) it's the final preview output;
     //   (b) its producer is a solo pass (not in any chain);

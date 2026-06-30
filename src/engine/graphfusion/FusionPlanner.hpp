@@ -77,7 +77,7 @@ public:
         }
 
         result.needs_split = true;
-        result.groups = split_path(dag, active_path, per_node_costs);
+        result.groups = split_path(active_path, per_node_costs);
 
         for (const auto& group : result.groups) {
             result.total_estimated_registers += group.estimated_registers;
@@ -115,7 +115,7 @@ public:
         }
 
         result.needs_split = true;
-        result.groups = split_path_pressure(dag, active_path, pressure_fn);
+        result.groups = split_path_pressure(active_path, pressure_fn);
 
         for (const auto& group : result.groups) {
             result.total_estimated_registers += group.estimated_registers;
@@ -165,7 +165,6 @@ private:
 
     template <typename NodeId>
     [[nodiscard]] std::vector<FusionGroup<NodeId>> split_path(
-        const dag::DAG<NodeId>& dag,
         const std::vector<NodeId>& path,
         const std::vector<std::uint32_t>& per_node_costs) const
     {
@@ -173,7 +172,6 @@ private:
         groups.reserve(path.size());
 
         reg::RegisterAllocator allocator(budget_);
-        std::unordered_set<NodeId> active_path_set(path.begin(), path.end());
 
         size_t start_idx = 0;
         while (start_idx < path.size()) {
@@ -190,27 +188,8 @@ private:
 
                 (void)allocator.add_node(reg::NodeRegCost{cost, 0, 0, 0, 0});
 
-                // Check group validity:
-                // For all intermediate nodes (start_idx <= i < end_idx),
-                // their successors in the active path must be inside the group.
-                bool valid = true;
-                std::unordered_set<NodeId> group_set(path.begin() + start_idx, path.begin() + end_idx + 1);
-
-                for (size_t i = start_idx; i < end_idx; ++i) {
-                    NodeId intermediate = path[i];
-                    for (NodeId succ : dag.successors(intermediate)) {
-                        if (active_path_set.count(succ) && !group_set.count(succ)) {
-                            valid = false;
-                            break;
-                        }
-                    }
-                    if (!valid) break;
-                }
-
-                if (valid) {
-                    best_end_idx = end_idx;
-                    best_group_cost = allocator.used();
-                }
+                best_end_idx = end_idx;
+                best_group_cost = allocator.used();
             }
 
             FusionGroup<NodeId> group;
@@ -233,14 +212,11 @@ private:
     // pressure_fn(sub_path) returns the register pressure for a contiguous sub-range.
     template <typename NodeId, typename PressureFn>
     [[nodiscard]] std::vector<FusionGroup<NodeId>> split_path_pressure(
-        const dag::DAG<NodeId>& dag,
         const std::vector<NodeId>& path,
         PressureFn pressure_fn) const
     {
         std::vector<FusionGroup<NodeId>> groups;
         groups.reserve(path.size());
-
-        std::unordered_set<NodeId> active_path_set(path.begin(), path.end());
 
         size_t start_idx = 0;
         while (start_idx < path.size()) {
@@ -263,27 +239,8 @@ private:
                     break;
                 }
 
-                // Check consumer constraint:
-                // all successors of intermediate nodes inside the active path
-                // must also be inside the group.
-                bool valid = true;
-                std::unordered_set<NodeId> group_set(path.begin() + start_idx,
-                                                     path.begin() + end_idx + 1);
-                for (size_t i = start_idx; i < end_idx; ++i) {
-                    NodeId intermediate = path[i];
-                    for (NodeId succ : dag.successors(intermediate)) {
-                        if (active_path_set.count(succ) && !group_set.count(succ)) {
-                            valid = false;
-                            break;
-                        }
-                    }
-                    if (!valid) break;
-                }
-
-                if (valid) {
-                    best_end_idx = end_idx;
-                    best_pressure = pressure;
-                }
+                best_end_idx = end_idx;
+                best_pressure = pressure;
             }
 
             FusionGroup<NodeId> group;

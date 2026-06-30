@@ -274,32 +274,32 @@ void Engine::record_barriers_(VkCommandBuffer cmd, const PushConstants&) {
 bool Engine::record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& pc,
                                      uint32_t gx, uint32_t gy) {
     bool final_pass_was_dirty = false;
-    std::vector<uint8_t> chain_dispatched(chain_execs_.size(), 0);
 
+    // Phase 1: Dispatch all chains in chain_execs_ index order (topologically sorted
+    // by FusedGraphCompiler). This ensures a producer chain always dispatches before
+    // its consumer chains, regardless of pass-index order.
+    for (size_t cid = 0; cid < chain_execs_.size(); ++cid) {
+        bool chain_dirty = dirty_set_.is_chain_dirty(static_cast<ChainId>(cid));
+        if (!chain_dirty) continue;
+
+        const size_t tail_i = chain_execs_[cid].tail_pass_index;
+        bool tail_has_final = false;
+        if (tail_i < passes_.size()) {
+            const auto& tail_pe = passes_[tail_i];
+            tail_has_final = (std::find(tail_pe.output_resources.begin(),
+                              tail_pe.output_resources.end(),
+                              final_output_resource_) != tail_pe.output_resources.end());
+        }
+        if (tail_has_final) final_pass_was_dirty = true;
+        record_chain_dispatch_(cmd, pc, gx, gy, cid);
+    }
+
+    // Phase 2: Dispatch non-chain (solo) passes in pass-index order.
     for (size_t i = 0; i < passes_.size(); ++i) {
         auto& pe = passes_[i];
         bool is_chain_member = (i < chain_id_of_pass_.size() &&
                                 chain_id_of_pass_[i] != UINT32_MAX);
-        if (is_chain_member) {
-            ChainId cid = (ChainId)chain_id_of_pass_[i];
-            if (!chain_dispatched[cid]) {
-                chain_dispatched[cid] = 1;
-                bool chain_dirty = dirty_set_.is_chain_dirty(cid);
-                if (chain_dirty) {
-                    const size_t tail_i = chain_execs_[cid].tail_pass_index;
-                    bool tail_has_final = false;
-                    if (tail_i < passes_.size()) {
-                        const auto& tail_pe = passes_[tail_i];
-                        tail_has_final = (std::find(tail_pe.output_resources.begin(),
-                                          tail_pe.output_resources.end(),
-                                          final_output_resource_) != tail_pe.output_resources.end());
-                    }
-                    if (tail_has_final) final_pass_was_dirty = true;
-                    record_chain_dispatch_(cmd, pc, gx, gy, cid);
-                }
-            }
-            continue;
-        }
+        if (is_chain_member) continue;
         if (!dirty_set_.is_dirty(pe.node_id)) continue;
 
         if (!pe.bypassed) {

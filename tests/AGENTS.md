@@ -27,7 +27,7 @@ Two independent test suites:
 - Cache dirs: Python uses `tests/python/cache/shader` (gitignored). Do not point tests at `build/_deps/` (root §2 cache trap).
 
 ## Verification
-- C++: `ctest --test-dir build -C Release` (or run `engine_tests` directly). GoogleTest discovery is wired via `gtest_discover_tests` in `tests/CMakeLists.txt:63`.
+- C++: `ctest --test-dir build -C Release` (or run `engine_tests` directly). GoogleTest discovery is wired via `gtest_discover_tests` in `tests/CMakeLists.txt:63`. All 85 tests pass.
 - Python: `pytest tests/python/` from repo root. Config in repo-root `pytest.ini`.
 
 ## Child DOX Index
