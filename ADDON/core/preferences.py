@@ -20,7 +20,8 @@ def _on_log_level_change(self, context):
 
 
 class TextureSynthPreferences(AddonPreferences):
-    bl_idname = __package__ or "texturesynth"
+    # Blender 4.3+ extensions: bl_idname must match the module path in bpy.context.preferences.addons
+    bl_idname = "bl_ext.user_default.texturesynth"
 
     log_level: EnumProperty(
         name="Log level",
