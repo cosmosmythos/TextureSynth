@@ -43,7 +43,6 @@ add_library(engine STATIC
     src/engine/EngineParams.cpp
     src/engine/EnginePassCompile.cpp
     src/engine/StorageFormat.cpp
-    src/engine/graphfusion/ActivePathTracer.cpp
     src/engine/graphfusion/FusedGraphEmitter.cpp
     src/engine/graphfusion/FusedGraphCompiler.cpp
     src/engine/register_allocation/GraphColorer.cpp

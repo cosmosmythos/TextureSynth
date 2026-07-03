@@ -2,10 +2,41 @@
 #include "engine/Graph.hpp"
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
-#include "engine/graphfusion/ActivePathTracer.hpp"
 #include "engine/graphfusion/FusedGraphEmitter.hpp"
+#include <queue>
+#include <unordered_set>
 
 using namespace te;
+
+namespace {
+
+// Replaces ActivePathTracer::trace(): filters ir.eval_order to nodes
+// reachable backward from active_node.
+std::vector<NodeId> trace_active(const GraphIR& ir, NodeId active_node) {
+    std::unordered_map<NodeId, std::vector<NodeId>> consumers;
+    for (const auto& c : ir.connections)
+        consumers[c.dst_node].push_back(c.src_node);
+
+    std::unordered_set<NodeId> ancestors;
+    std::queue<NodeId> q;
+    q.push(active_node);
+    ancestors.insert(active_node);
+    while (!q.empty()) {
+        NodeId cur = q.front(); q.pop();
+        auto it = consumers.find(cur);
+        if (it == consumers.end()) continue;
+        for (NodeId src : it->second) {
+            if (ancestors.insert(src).second)
+                q.push(src);
+        }
+    }
+
+    std::vector<NodeId> result;
+    for (NodeId n : ir.eval_order)
+        if (ancestors.count(n))
+            result.push_back(n);
+    return result;
+}
 
 namespace {
 
@@ -61,9 +92,9 @@ TEST(FusedGraphEmitter, LinearChain) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
 
-    auto path = ActivePathTracer::trace(r.ir, 3, lib);
+    auto path = trace_active(r.ir, 3);
     std::unordered_map<NodeId, int> param_map;
-    for (auto n : path.nodes) param_map[n] = 0;
+    for (auto n : path) param_map[n] = 0;
     auto result = emit_fused_subgraph(path, r.ir, lib, 0, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;
@@ -91,9 +122,9 @@ TEST(FusedGraphEmitter, ExternalInputs) {
     ASSERT_TRUE(r.success) << r.error;
 
     // Select blend node (socket 1 is unconnected Vec4 = baked constant)
-    auto path = ActivePathTracer::trace(r.ir, 3, lib);
+    auto path = trace_active(r.ir, 3);
     std::unordered_map<NodeId, int> param_map;
-    for (auto n : path.nodes) param_map[n] = 0;
+    for (auto n : path) param_map[n] = 0;
     auto result = emit_fused_subgraph(path, r.ir, lib, 0, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;
@@ -108,7 +139,7 @@ TEST(FusedGraphEmitter, ExternalInputs) {
 
 TEST(FusedGraphEmitter, EmptyPathReturnsError) {
     auto lib = make_lib();
-    ActivePath empty_path;
+    std::vector<NodeId> empty_path;
     GraphIR ir;
     auto result = emit_fused_subgraph(empty_path, ir, lib, 0, {});
     EXPECT_FALSE(result.ok());
@@ -125,9 +156,9 @@ TEST(FusedGraphEmitter, ParamsEmitted) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
 
-    auto path = ActivePathTracer::trace(r.ir, 2, lib);
+    auto path = trace_active(r.ir, 2);
     std::unordered_map<NodeId, int> param_map;
-    for (auto n : path.nodes) param_map[n] = 5;
+    for (auto n : path) param_map[n] = 5;
     auto result = emit_fused_subgraph(path, r.ir, lib, 5, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;
@@ -178,9 +209,9 @@ TEST(FusedGraphEmitter, FloatInputReadsSSBO) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
 
-    auto path = ActivePathTracer::trace(r.ir, 2, lib);
+    auto path = trace_active(r.ir, 2);
     std::unordered_map<NodeId, int> param_map;
-    for (auto n : path.nodes) param_map[n] = 0;
+    for (auto n : path) param_map[n] = 0;
     auto result = emit_fused_subgraph(path, r.ir, lib, 0, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;
@@ -221,11 +252,11 @@ TEST(FusedGraphEmitter, CrossChainGroupInput) {
 
     // Manually create a path that simulates a chain group split:
     // group = [2, 3, 4] — node 5 is NOT in the group
-    ActivePath group_path;
-    group_path.nodes = {2, 3, 4};
+    std::vector<NodeId> group_path;
+    group_path = {2, 3, 4};
 
     std::unordered_map<NodeId, int> param_map;
-    for (auto n : group_path.nodes) param_map[n] = 0;
+    for (auto n : group_path) param_map[n] = 0;
     auto result = emit_fused_subgraph(group_path, r.ir, lib, 0, param_map);
 
     ASSERT_TRUE(result.ok()) << result.error;

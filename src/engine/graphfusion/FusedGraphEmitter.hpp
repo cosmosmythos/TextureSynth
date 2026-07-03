@@ -1,11 +1,11 @@
 #pragma once
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
-#include "engine/graphfusion/ActivePathTracer.hpp"
 #include "engine/register_allocation/GraphColorer.hpp"
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace te {
 
@@ -20,11 +20,12 @@ struct FusedResult {
 };
 
 // Emit fused GLSL for a chain of nodes.
+// nodes: topologically ordered node IDs in the chain.
 // global_param_slots: maps each node_id to its absolute SSBO slot.
 // chain_base_slot: the minimum global slot among all chain nodes (pc.param_base_slot).
 // coloring: if non-null, use r[color] naming instead of _local_N.
 FusedResult emit_fused_subgraph(
-    const ActivePath& path,
+    const std::vector<NodeId>& nodes,
     const GraphIR& ir,
     const NodeLibrary& lib,
     uint32_t chain_base_slot,

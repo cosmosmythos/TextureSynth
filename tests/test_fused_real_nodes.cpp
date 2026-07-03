@@ -4,7 +4,7 @@
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
-#include "engine/graphfusion/ActivePathTracer.hpp"
+#include <queue>
 #include "engine/graphfusion/FusedGraphEmitter.hpp"
 #include "engine/graphfusion/FusedGraphCompiler.hpp"
 #include "test_assets.hpp"
@@ -15,6 +15,29 @@
 #include <set>
 
 using namespace te;
+
+// Replaces ActivePathTracer::trace(): filters ir.eval_order to nodes
+// reachable backward from active_node.
+std::vector<NodeId> trace_active(const GraphIR& ir, NodeId active_node) {
+    std::unordered_map<NodeId, std::vector<NodeId>> consumers;
+    for (const auto& c : ir.connections)
+        consumers[c.dst_node].push_back(c.src_node);
+    std::unordered_set<NodeId> ancestors;
+    std::queue<NodeId> q;
+    q.push(active_node);
+    ancestors.insert(active_node);
+    while (!q.empty()) {
+        NodeId cur = q.front(); q.pop();
+        auto it = consumers.find(cur);
+        if (it == consumers.end()) continue;
+        for (NodeId src : it->second)
+            if (ancestors.insert(src).second) q.push(src);
+    }
+    std::vector<NodeId> result;
+    for (NodeId n : ir.eval_order)
+        if (ancestors.count(n)) result.push_back(n);
+    return result;
+}
 
 // ============================================================================
 // Real-node graph-fusion tests.
@@ -103,7 +126,7 @@ protected:
         auto r = validate_graph(g, lib);
         EXPECT_TRUE(r.success) << r.error;
         if (!r.success) return "";
-        auto path = ActivePathTracer::trace(r.ir, g.output_node, lib);
+        auto path = trace_active(r.ir, g.output_node);
         auto result = emit_fused_subgraph(path, r.ir, lib, 0, {});
         EXPECT_TRUE(result.ok()) << result.error;
         return result.source;
@@ -351,7 +374,7 @@ TEST_F(FusedRealNodesGLSL, NoExternalInputs_LinearChain) {
 
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
-    auto path = ActivePathTracer::trace(r.ir, 2, lib);
+    auto path = trace_active(r.ir, 2);
     auto result = emit_fused_subgraph(path, r.ir, lib, 0, {});
     ASSERT_TRUE(result.ok()) << result.error;
     // 0 external inputs — Float mask reads SSBO inline (ConstSrc), no ext slot
@@ -371,7 +394,7 @@ TEST_F(FusedRealNodesGLSL, ExternalInputs_BlendUnconnected) {
 
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
-    auto path = ActivePathTracer::trace(r.ir, 2, lib);
+    auto path = trace_active(r.ir, 2);
     auto result = emit_fused_subgraph(path, r.ir, lib, 0, {});
     ASSERT_TRUE(result.ok()) << result.error;
     // 0 external inputs — Float mask and Vec4 b are both baked/inline

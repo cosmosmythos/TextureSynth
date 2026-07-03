@@ -4,7 +4,7 @@
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
-#include "engine/graphfusion/ActivePathTracer.hpp"
+#include <queue>
 #include "engine/graphfusion/FusedGraphCompiler.hpp"
 #include "engine/graphfusion/FusedGraphEmitter.hpp"
 #include "engine/graphfusion/FusionPlanner.hpp"
@@ -14,6 +14,29 @@
 #include <fstream>
 
 using namespace te;
+
+// Replaces ActivePathTracer::trace(): filters ir.eval_order to nodes
+// reachable backward from active_node.
+std::vector<NodeId> trace_active(const GraphIR& ir, NodeId active_node) {
+    std::unordered_map<NodeId, std::vector<NodeId>> consumers;
+    for (const auto& c : ir.connections)
+        consumers[c.dst_node].push_back(c.src_node);
+    std::unordered_set<NodeId> ancestors;
+    std::queue<NodeId> q;
+    q.push(active_node);
+    ancestors.insert(active_node);
+    while (!q.empty()) {
+        NodeId cur = q.front(); q.pop();
+        auto it = consumers.find(cur);
+        if (it == consumers.end()) continue;
+        for (NodeId src : it->second)
+            if (ancestors.insert(src).second) q.push(src);
+    }
+    std::vector<NodeId> result;
+    for (NodeId n : ir.eval_order)
+        if (ancestors.count(n)) result.push_back(n);
+    return result;
+}
 
 namespace {
 NodeLibrary load_real_lib() {
@@ -148,9 +171,9 @@ TEST(ReproBlendPreview, ChainStructure_AccessibleNodes) {
     auto r = validate_graph(ug.g, lib);
     ASSERT_TRUE(r.success) << r.error;
 
-    auto path = ActivePathTracer::trace(r.ir, ug.Sh, lib);
-    std::cout << "=== Active path (" << path.nodes.size() << " nodes) ===" << std::endl;
-    for (NodeId n : path.nodes) {
+    auto path = trace_active(r.ir, ug.Sh);
+    std::cout << "=== Active path (" << path.size() << " nodes) ===" << std::endl;
+    for (NodeId n : path) {
         const auto* inst = r.ir.find(n);
         const auto* type = inst ? lib.find(inst->type_id) : nullptr;
         std::cout << "  [" << n << "] " << (type ? type->id : "?") << std::endl;

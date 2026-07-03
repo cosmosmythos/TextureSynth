@@ -4,6 +4,7 @@
 #include <map>
 #include <set>
 #include <unordered_set>
+#include <functional>
 
 namespace te {
 
@@ -65,38 +66,95 @@ constexpr NodeId SEVERED = ~NodeId{0};
 }
 
 
-// Kahn's topo sort. Returns false on cycle.
+// Backward DFS from output_node. Produces a topological order of all nodes
+// reachable from output (post-order traversal: dependencies before dependents).
+// Unreachable nodes are appended at the end (topologically safe, no consumers).
+// Returns false on cycle.
 [[nodiscard]] static bool topo_sort_ir(
     const std::vector<ValidatedNode>& nodes,
     const std::vector<ValidatedConnection>& conns,
+    NodeId output_node,
     std::vector<NodeId>& order)
 {
-    std::map<NodeId, int> in_degree;
-    std::map<NodeId, std::vector<NodeId>> adj;
+    // adjacency: dst -> [src, src, ...] (backward edges for upstream traversal)
+    std::unordered_map<NodeId, std::vector<NodeId>> adj;
+    for (const auto& c : conns)
+        adj[c.dst_node].push_back(c.src_node);
 
+    // 0=unvisited, 1=visiting (in recursion stack), 2=visited
+    std::unordered_map<NodeId, uint8_t> state;
+    state.reserve(nodes.size());
     for (const auto& n : nodes)
-        in_degree[n.id] = 0;
+        state[n.id] = 0;
 
-    for (const auto& c : conns) {
-        adj[c.src_node].push_back(c.dst_node);
-        in_degree[c.dst_node]++;
-    }
+    std::vector<NodeId> reachable;
+    bool has_cycle = false;
 
-    // Min-heap for deterministic ordering regardless of insertion order.
-    std::priority_queue<NodeId, std::vector<NodeId>, std::greater<NodeId>> q;
-    for (const auto& [id, deg] : in_degree) {
-        if (deg == 0) q.push(id);
-    }
+    std::function<void(NodeId)> dfs = [&](NodeId id) {
+        auto it = state.find(id);
+        if (it == state.end()) return;       // not in IR
+        if (it->second == 2) return;         // already done
+        if (it->second == 1) { has_cycle = true; return; } // cycle
+        it->second = 1;                      // mark visiting
 
-    while (!q.empty()) {
-        NodeId cur = q.top(); q.pop();
-        order.push_back(cur);
-        for (NodeId next : adj[cur]) {
-            if (--in_degree[next] == 0) q.push(next);
+        auto adj_it = adj.find(id);
+        if (adj_it != adj.end())
+            for (NodeId src : adj_it->second)
+                dfs(src);
+
+        it->second = 2;                      // mark visited
+        reachable.push_back(id);             // post-order: deps before this node
+    };
+
+    dfs(output_node);
+
+    if (has_cycle) return false;
+
+    order = std::move(reachable);
+
+    // Append unreachable nodes (no path from output).
+    // They're topologically safe at the end — nothing downstream depends on them.
+    // We need them in ir.nodes for set_active_node to work without recompilation.
+    for (const auto& n : nodes) {
+        if (state[n.id] == 2) continue;     // already in order (reachable)
+        if (state[n.id] == 0) {
+            // Unvisited: not reachable from output. Still check for self-loops
+            // or internal cycles by running Kahn's on this connected component.
+            // (Cycles in unreachable code are still invalid graphs.)
         }
+        order.push_back(n.id);
     }
 
-    return order.size() == nodes.size();
+    // Validate unreachable components have no cycles (Kahn's on unreachable subset).
+    {
+        std::unordered_set<NodeId> reachable_set(order.begin(),
+            order.begin() + static_cast<std::ptrdiff_t>(reachable.size()));
+        std::map<NodeId, int> in_deg;
+        std::map<NodeId, std::vector<NodeId>> u_adj;
+        for (const auto& n : nodes) {
+            if (reachable_set.count(n.id)) continue;
+            in_deg[n.id] = 0;
+        }
+        for (const auto& c : conns) {
+            if (!reachable_set.count(c.src_node) && !reachable_set.count(c.dst_node)) {
+                u_adj[c.src_node].push_back(c.dst_node);
+                in_deg[c.dst_node]++;
+            }
+        }
+        std::priority_queue<NodeId, std::vector<NodeId>, std::greater<NodeId>> q;
+        for (const auto& [id, deg] : in_deg)
+            if (deg == 0) q.push(id);
+        uint32_t count = 0;
+        while (!q.empty()) {
+            NodeId cur = q.top(); q.pop();
+            ++count;
+            for (NodeId next : u_adj[cur])
+                if (--in_deg[next] == 0) q.push(next);
+        }
+        if (count != in_deg.size()) return false; // cycle in unreachable component
+    }
+
+    return true;
 }
 
 
@@ -262,7 +320,7 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     }
 
     // ── 8. Topological sort (cycle detection) ─────────────────────
-    if (!topo_sort_ir(ir.nodes, ir.connections, ir.eval_order)) {
+    if (!topo_sort_ir(ir.nodes, ir.connections, ir.output_node, ir.eval_order)) {
         result.error = "Active subgraph contains a cycle";
         return result;
     }

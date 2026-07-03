@@ -4,7 +4,7 @@
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
-#include "engine/graphfusion/ActivePathTracer.hpp"
+#include <queue>
 #include "engine/graphfusion/FusedGraphCompiler.hpp"
 #include "engine/graphfusion/FusedGraphEmitter.hpp"
 #include "engine/graphfusion/RegisterAllocator.hpp"
@@ -14,6 +14,29 @@
 #include <iostream>
 
 using namespace te;
+
+// Replaces ActivePathTracer::trace(): filters ir.eval_order to nodes
+// reachable backward from active_node.
+std::vector<NodeId> trace_active(const GraphIR& ir, NodeId active_node) {
+    std::unordered_map<NodeId, std::vector<NodeId>> consumers;
+    for (const auto& c : ir.connections)
+        consumers[c.dst_node].push_back(c.src_node);
+    std::unordered_set<NodeId> ancestors;
+    std::queue<NodeId> q;
+    q.push(active_node);
+    ancestors.insert(active_node);
+    while (!q.empty()) {
+        NodeId cur = q.front(); q.pop();
+        auto it = consumers.find(cur);
+        if (it == consumers.end()) continue;
+        for (NodeId src : it->second)
+            if (ancestors.insert(src).second) q.push(src);
+    }
+    std::vector<NodeId> result;
+    for (NodeId n : ir.eval_order)
+        if (ancestors.count(n)) result.push_back(n);
+    return result;
+}
 
 // RESEARCH TEST: probe whether the 12-node graph could fit in ONE chain
 // instead of splitting into 3, and what register cost the engine estimates.
@@ -61,14 +84,14 @@ TEST(ResearchRegisterPressure, UserGraphCostEstimate) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
 
-    auto path = ActivePathTracer::trace(r.ir, 12, lib);
-    std::cout << "\n=== Active path: " << path.nodes.size() << " nodes ===" << std::endl;
+    auto path = trace_active(r.ir, 12);
+    std::cout << "\n=== Active path: " << path.size() << " nodes ===" << std::endl;
     std::cout << "Engine-estimated total register cost: " << path.estimated_registers
               << " (budget is " << reg::RegisterAllocator::DEFAULT_BUDGET << ")" << std::endl;
 
     std::cout << "\n=== Per-node costs (estimate_cost heuristic) ===" << std::endl;
     uint32_t sum = 0;
-    for (NodeId n : path.nodes) {
+    for (NodeId n : path) {
         const auto* inst = r.ir.find(n);
         const auto* type = inst ? lib.find(inst->type_id) : nullptr;
         if (!type) continue;
@@ -153,7 +176,7 @@ TEST(ResearchRegisterPressure, GpuActuallyAcceptsSingleChain) {
     // Emit the entire path as a single shader (bypass FusedGraphCompiler's split)
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success);
-    auto path = ActivePathTracer::trace(r.ir, 12, lib);
+    auto path = trace_active(r.ir, 12);
     auto single = emit_fused_subgraph(path, r.ir, lib, 0, {});
     ASSERT_TRUE(single.ok()) << single.error;
 

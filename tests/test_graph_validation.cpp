@@ -42,7 +42,9 @@ NodeLibrary make_library() {
     NodeLibrary lib;
     lib.add_public(make_type("source",      0, 1));
     lib.add_public(make_type("passthrough", 1, 1));
+    lib.add_public(make_type("passthrough2", 2, 1));
     lib.add_public(make_type("blend",       2, 1));
+    lib.add_public(make_type("blend3",      3, 1));
     lib.add_public(make_type("with_socket_param", 1, 1, 2, 1));
     return lib;
 }
@@ -828,6 +830,74 @@ TEST(CompilePipeline, MutedOutputNodeWithWrongIdStillCompiles) {
         EXPECT_FALSE(pass.shader_glsl.empty())
             << "pass for node " << pass.node_id
             << " has empty GLSL when muted ID used as active";
+    }
+}
+
+// Reproduces the user's 12-node graph and dumps eval_order.
+// Node mapping (topology is what matters for topo sort):
+//   source = noise generators (Perlin, Worley)
+//   passthrough = single-input transforms (Blur, Invert, Levels, Warp)
+//   blend = Blend node (2 inputs)
+//
+// Graph connections:
+//   Worley(1) -> Blur(2) -> Invert(3) -> Warp(4) -> Blend(9)
+//   Perlin.001(8) -> Levels(5) -> Warp(4)
+//   Worley.001(10) -> Invert.001(11) -> Warp.001(7) -> Invert.002(12) -> Blend(9)
+//   Perlin(6) -> Warp.001(7)
+TEST(GraphValidation, UserGraph12Nodes_DumpEvalOrder) {
+    auto lib = make_library();
+    Graph g;
+
+    // Nodes (using generic types — topology is what matters)
+    g.nodes.push_back({1,  "source"});       // Worley (Cellular)
+    g.nodes.push_back({2,  "passthrough"});  // Blur.001 (1 input)
+    g.nodes.push_back({3,  "passthrough2"}); // Invert (2 inputs: Mask, Color)
+    g.nodes.push_back({4,  "passthrough2"}); // Warp (2 inputs: Image, Gradient)
+    g.nodes.push_back({5,  "passthrough"});  // Levels (1 input)
+    g.nodes.push_back({6,  "source"});       // Perlin Noise
+    g.nodes.push_back({7,  "passthrough2"}); // Warp.001 (2 inputs: Image, Gradient)
+    g.nodes.push_back({8,  "source"});       // Perlin Noise.001
+    g.nodes.push_back({9,  "blend3"});       // Blend (OUTPUT, 3 inputs: Mask, A, B)
+    g.nodes.push_back({10, "source"});       // Worley (Cellular).001
+    g.nodes.push_back({11, "passthrough2"}); // Invert.001 (2 inputs: Mask, Color)
+    g.nodes.push_back({12, "passthrough2"}); // Invert.002 (2 inputs: Mask, Color)
+
+    // Connections (src_node, src_socket, dst_node, dst_socket)
+    g.connections.push_back({1,  0, 2,  0}); // Worley -> Blur
+    g.connections.push_back({2,  0, 3,  1}); // Blur -> Invert (Color socket)
+    g.connections.push_back({3,  0, 4,  1}); // Invert -> Warp (Gradient socket)
+    g.connections.push_back({5,  0, 4,  0}); // Levels -> Warp (Image socket)
+    g.connections.push_back({6,  0, 7,  1}); // Perlin -> Warp.001 (Gradient socket)
+    g.connections.push_back({8,  0, 5,  0}); // Perlin.001 -> Levels
+    g.connections.push_back({4,  0, 9,  2}); // Warp -> Blend (B socket)
+    g.connections.push_back({10, 0, 11, 1}); // Worley.001 -> Invert.001 (Color socket)
+    g.connections.push_back({11, 0, 7,  0}); // Invert.001 -> Warp.001 (Image socket)
+    g.connections.push_back({7,  0, 12, 1}); // Warp.001 -> Invert.002 (Color socket)
+    g.connections.push_back({12, 0, 9,  1}); // Invert.002 -> Blend (A socket)
+
+    g.output_node = 9;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+
+    // Dump eval_order
+    printf("eval_order (size=%zu):", r.ir.eval_order.size());
+    for (size_t i = 0; i < r.ir.eval_order.size(); ++i)
+        printf(" %llu", (unsigned long long)r.ir.eval_order[i]);
+    printf("\n");
+
+    // Verify all 12 nodes are present
+    EXPECT_EQ(r.ir.eval_order.size(), 12u);
+
+    // Verify topological correctness: for every connection, src appears before dst
+    auto idx_of = [&](NodeId id) -> int {
+        for (size_t i = 0; i < r.ir.eval_order.size(); ++i)
+            if (r.ir.eval_order[i] == id) return (int)i;
+        return -1;
+    };
+    for (const auto& c : g.connections) {
+        EXPECT_LT(idx_of(c.src_node), idx_of(c.dst_node))
+            << "node " << c.src_node << " must come before " << c.dst_node;
     }
 }
 

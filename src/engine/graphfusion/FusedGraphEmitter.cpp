@@ -44,7 +44,7 @@ std::string local_var_name_fallback(size_t node_index, uint32_t output_socket, u
 }
 
 std::string colored_var_name(
-    const ActivePath& path,
+    const std::vector<NodeId>& nodes,
     size_t node_index,
     uint32_t output_socket,
     uint32_t output_count,
@@ -52,7 +52,7 @@ std::string colored_var_name(
 {
     if (!coloring) return local_var_name_fallback(node_index, output_socket, output_count);
 
-    NodeId node_id = path.nodes[node_index];
+    NodeId node_id = nodes[node_index];
     ResourceUUID rid{node_id, output_socket};
     auto it = coloring->assignment.find(rid);
     if (it != coloring->assignment.end()) {
@@ -65,7 +65,7 @@ std::string colored_var_name(
 } // namespace
 
 FusedResult emit_fused_subgraph(
-    const ActivePath& path,
+    const std::vector<NodeId>& nodes,
     const GraphIR& ir,
     const NodeLibrary& lib,
     uint32_t chain_base_slot,
@@ -74,21 +74,21 @@ FusedResult emit_fused_subgraph(
     const std::unordered_set<ResourceUUID, ResourceUUIDHash>* active_resources)
 {
     FusedResult result;
-    if (path.nodes.empty()) {
-        result.error = "empty path";
+    if (nodes.empty()) {
+        result.error = "empty nodes";
         return result;
     }
 
     std::unordered_map<NodeId, size_t> node_to_index;
-    node_to_index.reserve(path.nodes.size());
-    for (size_t i = 0; i < path.nodes.size(); ++i)
-        node_to_index[path.nodes[i]] = i;
+    node_to_index.reserve(nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i)
+        node_to_index[nodes[i]] = i;
 
     const ConnByDst conns = index_connections(ir);
 
     StorageFormat tail_sf{ChannelFormat::RGBA, BitDepth::F16};
     {
-        NodeId tail_id = path.nodes.back();
+        NodeId tail_id = nodes.back();
         const auto* tail_inst = ir.find(tail_id);
         if (tail_inst) {
             tail_sf.channels = resolve_node_storage(*tail_inst, lib).channels;
@@ -104,7 +104,7 @@ FusedResult emit_fused_subgraph(
     std::vector<NodeEmit> emits;
     uint32_t next_ext = 0;
 
-    for (NodeId id : path.nodes) {
+    for (NodeId id : nodes) {
         const ValidatedNode* inst = ir.find(id);
         const NodeType* type = inst ? lib.find(inst->type_id) : nullptr;
         if (!inst || !type) {
@@ -231,12 +231,12 @@ FusedResult emit_fused_subgraph(
 
         // Declare output locals (skip if already declared — register reuse).
         if (ne.output_count <= 1) {
-            std::string var = colored_var_name(path, i, 0, 1, coloring);
+            std::string var = colored_var_name(nodes, i, 0, 1, coloring);
             if (declared_vars.insert(var).second)
                 builder.declare_local(var);
         } else {
             for (uint32_t o = 0; o < ne.output_count; ++o) {
-                std::string var = colored_var_name(path, i, o, ne.output_count, coloring);
+                std::string var = colored_var_name(nodes, i, o, ne.output_count, coloring);
                 if (declared_vars.insert(var).second)
                     builder.declare_local(var);
             }
@@ -253,7 +253,7 @@ FusedResult emit_fused_subgraph(
 
             if (std::holds_alternative<RegSrc>(ne.input_srcs[s])) {
                 auto reg = std::get<RegSrc>(ne.input_srcs[s]);
-                NodeId src_node = path.nodes[reg.local_index];
+                NodeId src_node = nodes[reg.local_index];
                 const ValidatedNode* src_inst = ir.find(src_node);
                 const NodeType* src_type = src_inst ? lib.find(src_inst->type_id) : nullptr;
                 uint32_t src_out_count = src_type ? static_cast<uint32_t>(src_type->outputs.size()) : 1;
@@ -273,7 +273,7 @@ FusedResult emit_fused_subgraph(
                     if (is_float_input) var += ".r";
                     args.push_back(std::move(var));
                 } else {
-                    std::string var = colored_var_name(path, reg.local_index, reg.output_socket, src_out_count, coloring);
+                    std::string var = colored_var_name(nodes, reg.local_index, reg.output_socket, src_out_count, coloring);
                     if (is_float_input) var += ".r";
                     args.push_back(std::move(var));
                 }
@@ -318,29 +318,29 @@ FusedResult emit_fused_subgraph(
 
         // Emit the function call.
         if (ne.output_count <= 1) {
-            builder.call_and_assign(colored_var_name(path, i, 0, 1, coloring),
+            builder.call_and_assign(colored_var_name(nodes, i, 0, 1, coloring),
                                     "node_" + type->id, args);
             // Spill store: if this output is spilled, write to shared memory.
             if (coloring) {
-                ResourceUUID rid{path.nodes[i], 0};
+                ResourceUUID rid{nodes[i], 0};
                 auto sit = coloring->spilled_assignment.find(rid);
                 if (sit != coloring->spilled_assignment.end()) {
-                    builder.spill_store(sit->second, colored_var_name(path, i, 0, 1, coloring));
+                    builder.spill_store(sit->second, colored_var_name(nodes, i, 0, 1, coloring));
                 }
             }
         } else {
             for (uint32_t o = 0; o < ne.output_count; ++o) {
-                args.push_back(colored_var_name(path, i, o, ne.output_count, coloring));
+                args.push_back(colored_var_name(nodes, i, o, ne.output_count, coloring));
             }
             builder.call_void("node_" + type->id, args);
             // Spill store for multi-output nodes.
             if (coloring) {
                 for (uint32_t o = 0; o < ne.output_count; ++o) {
-                    ResourceUUID rid{path.nodes[i], o};
+                    ResourceUUID rid{nodes[i], o};
                     auto sit = coloring->spilled_assignment.find(rid);
                     if (sit != coloring->spilled_assignment.end()) {
                         builder.spill_store(sit->second,
-                            colored_var_name(path, i, o, ne.output_count, coloring));
+                            colored_var_name(nodes, i, o, ne.output_count, coloring));
                     }
                 }
             }
@@ -350,8 +350,8 @@ FusedResult emit_fused_subgraph(
         // nodes in the chain see the formatted value (e.g. Mono zeroes G/B).
         if (ne.format_override != ChannelFormat::RGBA) {
             std::string var = (ne.output_count <= 1)
-                ? colored_var_name(path, i, 0, 1, coloring)
-                : colored_var_name(path, i, 0, ne.output_count, coloring);
+                ? colored_var_name(nodes, i, 0, 1, coloring)
+                : colored_var_name(nodes, i, 0, ne.output_count, coloring);
             static const char* fn_for[] = {
                 "_fmt_mono", "_fmt_uv", "_fmt_rgb", "_fmt_rgba"
             };
@@ -364,13 +364,13 @@ FusedResult emit_fused_subgraph(
     // Compute the tail variable name for imageStore output.
     const auto& tail = emits.back();
     if (tail.output_count <= 1) {
-        std::string tail_var = colored_var_name(path, emits.size() - 1, 0, 1, coloring);
+        std::string tail_var = colored_var_name(nodes, emits.size() - 1, 0, 1, coloring);
         builder.main_end(tail_var);
     } else {
         // Multi-output tail: only write outputs that are in active_resources.
         size_t tail_idx = emits.size() - 1;
         uint32_t oc = tail.output_count;
-        NodeId tail_node = path.nodes[tail_idx];
+        NodeId tail_node = nodes[tail_idx];
         std::vector<uint32_t> materialized;
         for (uint32_t o = 0; o < oc; ++o) {
             ResourceUUID rid{tail_node, o};
@@ -378,14 +378,14 @@ FusedResult emit_fused_subgraph(
                 materialized.push_back(o);
         }
         if (materialized.size() == 1 && materialized[0] == 0) {
-            std::string tail_var = colored_var_name(path, tail_idx, 0, 1, coloring);
+            std::string tail_var = colored_var_name(nodes, tail_idx, 0, 1, coloring);
             builder.main_end(tail_var);
         } else if (materialized.empty()) {
             builder.main_end("vec4(0.0)");
         } else {
             builder.main_end_multi(materialized,
                 [&, tail_idx, oc](uint32_t mi) -> std::string {
-                    return colored_var_name(path, tail_idx, materialized[mi], oc, coloring);
+                    return colored_var_name(nodes, tail_idx, materialized[mi], oc, coloring);
                 });
         }
     }

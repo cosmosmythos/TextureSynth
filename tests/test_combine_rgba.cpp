@@ -5,7 +5,7 @@
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
 #include "engine/GraphCompiler.hpp"
-#include "engine/graphfusion/ActivePathTracer.hpp"
+
 #include "engine/graphfusion/FusedGraphEmitter.hpp"
 #include "engine/graphfusion/FusedGraphCompiler.hpp"
 #include "test_assets.hpp"

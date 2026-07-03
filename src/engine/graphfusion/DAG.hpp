@@ -91,65 +91,6 @@ public:
         return result;
     }
 
-    [[nodiscard]] NodeList topological_sort() const {
-        std::unordered_map<NodeId, std::uint32_t, Hash, KeyEqual> indegree;
-        indegree.reserve(nodes_.size());
-
-        for (const auto& node : nodes_) {
-            indegree.emplace(node, 0U);
-        }
-
-        for (const auto& [_, targets] : outgoing_) {
-            for (const auto& to : targets) {
-                auto it = indegree.find(to);
-                if (it != indegree.end()) {
-                    ++it->second;
-                }
-            }
-        }
-
-        std::queue<NodeId> ready;
-        for (const auto& node : nodes_) {
-            if (indegree.at(node) == 0U) {
-                ready.push(node);
-            }
-        }
-
-        NodeList ordered;
-        ordered.reserve(nodes_.size());
-
-        while (!ready.empty()) {
-            NodeId current = ready.front();
-            ready.pop();
-            ordered.push_back(current);
-
-            const auto it = outgoing_.find(current);
-            if (it == outgoing_.end()) {
-                continue;
-            }
-
-            for (const auto& next : it->second) {
-                auto indegree_it = indegree.find(next);
-                if (indegree_it == indegree.end()) {
-                    continue;
-                }
-                if (--indegree_it->second == 0U) {
-                    ready.push(next);
-                }
-            }
-        }
-
-        if (ordered.size() != nodes_.size()) {
-            return {};
-        }
-
-        return ordered;
-    }
-
-    [[nodiscard]] bool is_acyclic() const {
-        return topological_sort().size() == nodes_.size();
-    }
-
     [[nodiscard]] NodeList reachable_from(const NodeId& start) const {
         return breadth_first_search(start, false);
     }

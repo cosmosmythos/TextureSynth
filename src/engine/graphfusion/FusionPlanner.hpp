@@ -128,7 +128,7 @@ private:
     // Validate that every node in `path` exists in `dag` and that the path
     // respects a topological order (no node appears before one of its
     // ancestors in the DAG). The path is NOT required to be a linear chain --
-    // active paths from ActivePathTracer are topological orderings of a
+    // active paths are topological orderings of a
     // sub-DAG, which may include siblings and fan-out. Requiring direct
     // edges between consecutive path[i-1] -> path[i] was wrong: it rejected
     // valid fan-out graphs (e.g. two noise sources feeding a blend).

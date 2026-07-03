@@ -1,5 +1,4 @@
 #include "engine/graphfusion/FusedGraphCompiler.hpp"
-#include "engine/graphfusion/ActivePathTracer.hpp"
 #include "engine/graphfusion/FusedGraphEmitter.hpp"
 #include "engine/graphfusion/FusionPlanner.hpp"
 #include "engine/graphfusion/DAG.hpp"
@@ -232,9 +231,11 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
     }
     plan.final_output_resource = {ir.output_node, ir.output_socket};
 
-    // 3. Trace active path.
-    auto path = ActivePathTracer::trace(ir, active_node_id, lib);
-    if (path.nodes.empty()) {
+    // 3. Active path = ir.eval_order (topologically sorted by backward DFS).
+    //    ir.eval_order contains all nodes reachable from the output — exactly
+    //    the nodes that need to be compiled and dispatched.
+    const auto& active_path = ir.eval_order;
+    if (active_path.empty()) {
         // No active path — fall back to per-node passes with no chains.
         plan.chain_index_of_pass.assign(plan.passes.size(), UINT32_MAX);
         // Emit per-node GLSL so passes have valid shader source.
@@ -258,7 +259,7 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
     }
 
     // 4. Compute chain split positions (unified — replaces old 3b + 3c).
-    auto split_after = compute_chain_splits(path.nodes, ir, lib);
+    auto split_after = compute_chain_splits(active_path, ir, lib);
 
     // 5. Build DAG from active path and plan fusion groups.
     // Use REAL graph edges from ir.connections (not synthetic linear adjacency)
@@ -273,8 +274,8 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
         return dag::DAG<NodeId>(std::move(dnodes), std::move(dedges));
     };
 
-    auto plan_chain_group = [&](ActivePath& sub_path) {
-        auto sub_dag = build_dag(sub_path.nodes);
+    auto plan_chain_group = [&](const std::vector<NodeId>& sub_path) {
+        auto sub_dag = build_dag(sub_path);
         auto pressure_fn = [&](const std::vector<NodeId>& range) -> uint32_t {
             std::vector<ResourceUUID> ext_outputs;
             if (!range.empty()) {
@@ -290,26 +291,25 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
                 intervals, range, DEFAULT_REG_BUDGET).colors_used;
         };
         fusion::FusionPlanner planner(DEFAULT_REG_BUDGET);
-        return planner.plan(sub_dag, sub_path.nodes, pressure_fn);
+        return planner.plan(sub_dag, sub_path, pressure_fn);
     };
 
     fusion::FusionPlan<NodeId> fusion_plan;
     if (!split_after.empty()) {
         std::vector<size_t> bounds = {0};
         for (size_t sa : split_after) bounds.push_back(sa + 1);
-        bounds.push_back(path.nodes.size());
+        bounds.push_back(active_path.size());
 
         for (size_t b = 0; b < bounds.size() - 1; ++b) {
             size_t lo = bounds[b], hi = bounds[b + 1];
             if (lo >= hi) continue;
-            ActivePath sub;
-            sub.nodes.assign(path.nodes.begin() + lo, path.nodes.begin() + hi);
+            std::vector<NodeId> sub(active_path.begin() + lo, active_path.begin() + hi);
             auto sub_plan = plan_chain_group(sub);
             for (auto& g : sub_plan.groups)
                 fusion_plan.groups.push_back(std::move(g));
         }
     } else {
-        fusion_plan = plan_chain_group(path);
+        fusion_plan = plan_chain_group(active_path);
     }
 
     // 6. Emit fused GLSL for each fusion group and create Chain entries.
@@ -392,8 +392,7 @@ CompileGraphResult FusedGraphCompiler::compile(const GraphIR& ir,
             chain.glsl = pass.shader_glsl;
         } else {
             // Fused chain: emit single fused GLSL.
-            ActivePath group_path;
-            group_path.nodes = group.nodes;
+            const auto& group_path = group.nodes;
 
             // Compute register allocation for this chain.
             {

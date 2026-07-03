@@ -20,7 +20,6 @@ add_executable(engine_tests
     test_mask_node.cpp
     test_timestamps.cpp
     inspect_perlin_invert.cpp
-    test_active_path_tracer.cpp
     test_fused_graph_emitter.cpp
     test_fused_graph_compiler.cpp
     test_fused_graph_activation.cpp

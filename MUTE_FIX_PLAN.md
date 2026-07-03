@@ -8,7 +8,7 @@ Three root causes, three fixes. No band-aids.
 
 **Root cause:** `Engine.cpp:406` passes `graph.output_node` (raw, potentially muted ID) instead of `ir_result.ir.output_node` (corrected during validation).
 
-**Effect:** Muted node ID reaches `ActivePathTracer::trace()` → node not found in IR → empty path → all passes get `shader_glsl = ""` → shaderc error `#version: compute shaders require...` → red node.
+**Effect:** Muted node ID not found in eval_order → empty path → all passes get `shader_glsl = ""` → shaderc error `#version: compute shaders require...` → red node.
 
 **Fix:**
 - `src/engine/Engine.cpp:406` — change `graph.output_node` to `ir_result.ir.output_node`
