@@ -12,7 +12,6 @@ The distributable Blender extension (`id = "texturesynth"`, `blender_manifest.to
 - `operators/` — `update`, `connect`, `output_targets`, `bake`.
 - `panels/` — `sidebar` UI. Registers Scene-level properties (`texturesynth_resolution`, `texturesynth_precision`).
 - `utils/` — `dll_loader` (wheel DLL search), `node_utils`, `rna`.
-- `shader_assets/` — runtime shader cache directory (`shader_cache/` populated by `cpp_module.py`).
 - `wheels/` — destination for the CI-built wheel (`.gitkeep` only in repo).
 
 ## Local Contracts
@@ -35,6 +34,7 @@ The distributable Blender extension (`id = "texturesynth"`, `blender_manifest.to
 
 ## Work Guidance
 - After edits: clean Python cache (root §6) — only under `ADDON/`.
+- If `ADDON/shader_assets/` exists, delete it — it's a runtime artifact, never checked in. Same rule as `__pycache__`.
 - Blender MCP can run Python in a live Blender for testing node behavior — useful for graph-building/debug work.
 - New node with custom UI: add a module under `nodes/specialized/`, append its name to `_MODULE_NAMES`, export the required symbols.
 - Dynamic (non-specialized) nodes are generated from the C++ `NodeLibrary` via `engine.node_library().all()` when the engine is available. Falls back to reading `shader_assets/nodes/*.node.json` when the engine is unavailable.

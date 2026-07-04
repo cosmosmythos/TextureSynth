@@ -172,8 +172,9 @@ On bash-capable systems, the `blender-addon` OpenCode skill (`.opencode/skills/b
 **🧹 Clean Python Cache (Run after tests/before handoff):**
 ```powershell
 Get-ChildItem -Path .\ADDON -Recurse -Directory -Filter __pycache__ -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+if (Test-Path .\ADDON\shader_assets) { Remove-Item -LiteralPath .\ADDON\shader_assets -Recurse -Force }
 ```
-*(Do not clean `__pycache__` outside `ADDON/` like `tests/python/`, `build/`, or `shader_assets/`)*
+*(Do not clean `__pycache__` outside `ADDON/` like `tests/python/`, `build/`, or root `shader_assets/`)*
 
 ---
 

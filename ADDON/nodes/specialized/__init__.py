@@ -9,7 +9,6 @@ _MODULE_NAMES = (
     "image",
     "levels",
     "output",
-    "repeat",
 )
 
 

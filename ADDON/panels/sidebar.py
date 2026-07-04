@@ -34,9 +34,6 @@ class TEXTURESYNTH_PT_sidebar(bpy.types.Panel):
 
         layout.operator("texturesynth.update", icon='FILE_REFRESH')
 
-        layout.separator()
-        layout.operator("texturesynth.repeat_add", icon='LOOP_FORWARDS', text="Add Repeat Zone")
-
 
 classes = (
     TEXTURESYNTH_PT_sidebar,
