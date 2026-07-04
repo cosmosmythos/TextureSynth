@@ -2,7 +2,9 @@
 #include "engine/EngineBarriers.hpp"
 #include "engine/Logging.hpp"
 #include "engine/NodeRegistryLoader.hpp"
-#include "engine/graphfusion/FusedGraphCompiler.hpp"
+#include "engine/graphfusion/FusionGroup.hpp"
+#include "engine/graphfusion/FusionGroupEmitter.hpp"
+#include "engine/graphfusion/FusedGroupCompiler.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -488,13 +490,6 @@ uint64_t Engine::set_graph(const Graph& graph) {
     ir_result.ir.graph_default_depth = graph_default_depth_;
     resolve_node_depths(ir_result.ir);
 
-    auto compile_result = FusedGraphCompiler::compile(ir_result.ir, node_lib_, ir_result.ir.output_node);
-    if (!compile_result.success) {
-        set_error_(EngineErrorCode::GraphCompile, compile_result.error,
-                   EnginePhase::GraphSubmit);
-        return 0;
-    }
-
     current_graph_ = graph;
     current_graph_.output_node = ir_result.ir.output_node;
     current_ir_    = std::move(ir_result.ir);
@@ -515,117 +510,55 @@ uint64_t Engine::set_graph(const Graph& graph) {
     res_sampled_slot_.clear();
     res_storage_slot_.clear();
 
+    // Allocate images for all nodes (no aliasing — FusionGroup manages its own outputs).
     std::string rerr;
     if (!resources_.allocate_for_graph(ctx_, current_ir_, node_lib_, output_w_, output_h_,
-                                        texture_format_, &rerr,
-                                        &compile_result.pass_plan.color_classes,
-                                        &compile_result.pass_plan.active_resources)) {
+                                        texture_format_, &rerr)) {
         set_error_(EngineErrorCode::GraphCompile, rerr, EnginePhase::GraphSubmit);
         return 0;
     }
 
-    auto old_param_base_slot = std::move(param_base_slot_);
-    param_base_slot_     = std::move(compile_result.param_base_slot);
-    total_param_floats_  = compile_result.total_param_floats;
+    // FusionGroup pipeline: group -> split -> merge -> external inputs -> compile -> populate.
+    auto ctx = fusion::build_context(current_ir_, node_lib_);
+    auto bundle = fusion::group_nodes(current_ir_, ctx);
+    fusion::split_at_sampler2d_sources(bundle, ctx);
+    fusion::merge_groups(bundle, ctx);
+    fusion::compute_external_inputs(bundle, ctx);
+    auto compiled = fusion::compile_groups(bundle, current_ir_, ctx);
+    if (!compiled.ok() || compiled.groups.empty()) {
+        set_error_(EngineErrorCode::GraphCompile,
+                   compiled.ok() ? "empty fusion groups" : compiled.error,
+                   EnginePhase::GraphSubmit);
+        return 0;
+    }
+    if (!populate_groups_(compiled, current_ir_)) {
+        set_error_(EngineErrorCode::GraphCompile,
+                   "populate_groups_ failed", EnginePhase::GraphSubmit);
+        return 0;
+    }
 
-    // Skip re-seeding when param layout unchanged (e.g. set_active_node).
+    // Param layout from FusionContext.
+    auto old_param_base_slot = std::move(param_base_slot_);
+    param_base_slot_.clear();
+    total_param_floats_ = 0;
+    for (auto& [nid, base] : ctx.param_base) {
+        param_base_slot_[nid] = static_cast<int>(base);
+        auto fi = ctx.float_inputs.find(nid);
+        auto pc = ctx.param_count.find(nid);
+        if (fi != ctx.float_inputs.end() && pc != ctx.param_count.end()) {
+            uint32_t end = base + fi->second + pc->second;
+            if (end > static_cast<uint32_t>(total_param_floats_))
+                total_param_floats_ = static_cast<int>(end);
+        }
+    }
     if (param_base_slot_ != old_param_base_slot)
         seed_param_ssbo_defaults_();
 
+    final_output_resource_ = {current_ir_.output_node, 0};
     const uint64_t gen = ++compile_generation_;
+    installed_generation_ = gen;
 
-    for (auto& pp : pending_passes_) if (pp.fut.valid()) pp.fut.wait();
-    pending_passes_.clear();
-
-    const auto& cip = compile_result.pass_plan.chain_index_of_pass;
-
-    // Step 3: Check per-node cache (skip chain-member passes — their shader lives in the chain).
-    bool all_cached = true;
-    std::vector<std::vector<uint32_t>> cached_spv(compile_result.pass_plan.passes.size());
-    for (size_t i = 0; i < compile_result.pass_plan.passes.size(); ++i) {
-        const auto& pass = compile_result.pass_plan.passes[i];
-        if (pass.kind != PassKind::Compute) continue;
-        if (i < cip.size() && cip[i] != UINT32_MAX) continue;  // chain member: skip
-        auto blob = cache_->load(pass.variant_key);
-        if (!blob) { all_cached = false; break; }
-        cached_spv[i] = std::move(*blob);
-    }
-
-    // Also check fused chain cache.
-    std::vector<std::vector<uint32_t>> cached_fused_spv(compile_result.pass_plan.chains.size());
-    if (all_cached) {
-        for (size_t ci = 0; ci < compile_result.pass_plan.chains.size(); ++ci) {
-            const auto& ch = compile_result.pass_plan.chains[ci];
-            if (ch.glsl.empty() || ch.bypassed) continue;
-            auto blob = cache_->load(ch.variant_key);
-            if (!blob) { all_cached = false; break; }
-            cached_fused_spv[ci] = std::move(*blob);
-        }
-    }
-
-    if (all_cached) {
-        passes_.clear();
-        passes_.reserve(compile_result.pass_plan.passes.size());
-
-        for (size_t i = 0; i < compile_result.pass_plan.passes.size(); ++i) {
-            const auto& pass = compile_result.pass_plan.passes[i];
-            PassExec pe;
-            pe.node_id          = pass.node_id;
-            pe.output_resources = pass.output_resources;
-            pe.input_resources  = pass.input_resources;
-            pe.input_formats    = pass.input_formats;
-            pe.param_base_slot  = pass.param_base_slot;
-            pe.bypassed         = pass.bypassed;
-
-            if (pass.kind == PassKind::Compute) {
-                bool is_chain_member = (i < cip.size() && cip[i] != UINT32_MAX);
-                if (!pass.bypassed && !is_chain_member) {
-                    if (!create_pass_pipeline_(pe, pass.node_id, pass.type_id,
-                            "pipeline creation failed for node " + std::to_string(pass.node_id),
-                            pass.variant_key, cached_spv[i])) {
-                        return 0;
-                    }
-                }
-                assign_bindless_slots_(pe);
-            }
-            passes_.push_back(std::move(pe));
-        }
-        final_output_resource_ = compile_result.pass_plan.final_output_resource;
-        installed_generation_  = gen;
-        populate_chains_(compile_result.pass_plan);
-
-        return gen;
-    }
-
-    // Step 5: Async path — set chain_member flag, skip compile for chain members.
-    pending_passes_.clear();
-    pending_passes_.reserve(compile_result.pass_plan.passes.size());
-    for (size_t i = 0; i < compile_result.pass_plan.passes.size(); ++i) {
-        const auto& pass = compile_result.pass_plan.passes[i];
-        PendingPass pp;
-        pp.name             = "node_" + std::to_string(pass.node_id);
-        pp.type_id          = pass.type_id;
-        pp.input_count      = pass.input_socket_count;
-        pp.output_resources = pass.output_resources;
-        pp.input_resources  = pass.input_resources;
-        pp.input_formats    = pass.input_formats;
-        pp.node_id          = pass.node_id;
-        pp.kind             = pass.kind;
-        pp.variant_key      = pass.variant_key;
-        pp.bypassed         = pass.bypassed;
-        pp.param_base_slot  = pass.param_base_slot;
-        bool is_chain_member = (i < cip.size() && cip[i] != UINT32_MAX);
-        pp.chain_member     = is_chain_member;
-        if (pass.kind == PassKind::Compute && !pass.bypassed && !is_chain_member) {
-            pp.fut = compiler_.compile_compute_async(pass.shader_glsl, pp.name);
-        }
-        pending_passes_.push_back(std::move(pp));
-    }
-    pending_active_       = true;
-    pending_generation_   = gen;
-    pending_final_output_ = compile_result.pass_plan.final_output_resource;
-    pending_pass_plan_    = compile_result.pass_plan;
-    log_info("PassPlan compile dispatched, passes=" + std::to_string(pending_passes_.size())
+    log_info("set_graph: FusionGroup pipeline, groups=" + std::to_string(group_execs_.size())
              + " generation=" + std::to_string(gen));
     return gen;
 }

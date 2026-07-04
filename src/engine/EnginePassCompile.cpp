@@ -247,6 +247,27 @@ void Engine::retire_all_passes_() {
     }
     chain_execs_.clear();
     chain_id_of_pass_.clear();
+
+    // Retire group exec pipelines and output images.
+    for (auto& ge : group_execs_) {
+        if (ge.pipeline) {
+            retired_passes_.push_back({
+                std::move(ge.pipeline),
+                MAX_FRAMES_IN_FLIGHT + 2
+            });
+        }
+        if (ge.output_image) {
+            RetiredImage ri;
+            ri.img = std::move(ge.output_image);
+            ri.frames_remaining = MAX_FRAMES_IN_FLIGHT + 2;
+            retired_images_.push_back(std::move(ri));
+        }
+        for (auto& ext : ge.ext_inputs) {
+            // sampled slots for group inputs are freed by res_sampled_slot_ cleanup
+        }
+    }
+    group_execs_.clear();
+    use_groups_ = false;
 }
 
 

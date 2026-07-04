@@ -5,7 +5,9 @@
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
 #include "engine/GraphIR.hpp"
-#include "engine/graphfusion/FusedGraphCompiler.hpp"
+#include "engine/graphfusion/FusionGroup.hpp"
+#include "engine/graphfusion/FusionGroupEmitter.hpp"
+#include "engine/graphfusion/FusedGroupCompiler.hpp"
 #include "engine/register_allocation/GraphColorer.hpp"
 #include "engine/register_allocation/LivenessAnalysis.hpp"
 #include "engine/graphfusion/GlslBuilder.hpp"
@@ -621,30 +623,38 @@ TEST(Aliasing, ComplexMultiChain_ChainStructure) {
 
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
-    auto cr = FusedGraphCompiler::compile(r.ir, lib, g.output_node);
-    ASSERT_TRUE(cr.success) << cr.error;
 
-    printf("\n=== Complex graph chain structure (%zu chains, %zu passes) ===\n",
-           cr.pass_plan.chains.size(), cr.pass_plan.passes.size());
-    for (size_t i = 0; i < cr.pass_plan.chains.size(); ++i) {
-        const auto& ch = cr.pass_plan.chains[i];
-        printf("  chain %zu: nodes=[", i);
-        for (size_t j = 0; j < ch.nodes.size(); ++j) {
+    auto ctx = fusion::build_context(r.ir, lib);
+    auto bundle = fusion::group_nodes(r.ir, ctx);
+    fusion::split_at_sampler2d_sources(bundle, ctx);
+    fusion::merge_groups(bundle, ctx);
+    fusion::compute_external_inputs(bundle, ctx);
+    auto compiled = fusion::compile_groups(bundle, r.ir, ctx);
+
+    ASSERT_TRUE(compiled.ok()) << compiled.error;
+    ASSERT_FALSE(compiled.groups.empty()) << "compiled must produce at least one group";
+
+    printf("\n=== Complex graph chain structure (%zu groups) ===\n",
+           compiled.groups.size());
+    for (size_t i = 0; i < compiled.groups.size(); ++i) {
+        const auto& grp = compiled.groups[i];
+        printf("  group %zu: nodes=[", i);
+        for (size_t j = 0; j < grp.nodes.size(); ++j) {
             if (j) printf(",");
-            printf("%u", ch.nodes[j]);
+            printf("%u", grp.nodes[j]);
         }
-        printf("] sub_passes=%u intermediates=%u total_outputs=%u\n",
-               ch.sub_pass_count, ch.intermediate_count, ch.total_outputs);
+        printf("] params=%u outputs=%u external=%zu\n",
+               grp.param_floats, grp.output_node, grp.external_inputs.size());
     }
 
-    // Verify the final chain contains the output node (9).
+    // Verify the output node (9) appears in one of the compiled groups' node lists.
     bool found_output = false;
-    for (const auto& ch : cr.pass_plan.chains) {
-        for (auto nid : ch.nodes) {
+    for (const auto& grp : compiled.groups) {
+        for (auto nid : grp.nodes) {
             if (nid == 9) found_output = true;
         }
     }
-    EXPECT_TRUE(found_output) << "output node 9 must be in one of the chains";
+    EXPECT_TRUE(found_output) << "output node 9 must be in one of the compiled groups";
 }
 
 // Integration render of the full complex graph: 9 nodes, 6 chains, blur/warp.

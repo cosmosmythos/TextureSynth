@@ -9,7 +9,7 @@ bool ComputePipeline::create(VulkanContext& ctx,
                              const std::vector<uint32_t>& spirv,
                              VkPipelineLayout layout,
                              const VkSpecializationInfo* spec) {
-    if (spirv.empty()) { log_error("ComputePipeline: empty SPIR-V"); return false; }
+    if (spirv.empty()) { log_error("ComputePipeline: Empty SPIR-V"); return false; }
     layout_ = layout;
 
     VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};

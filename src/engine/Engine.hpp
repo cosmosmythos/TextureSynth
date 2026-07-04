@@ -25,6 +25,10 @@
 #include <future>
 #include <memory>
 #include <mutex>
+
+namespace te::fusion {
+    struct CompiledGroupBundle;
+}
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -127,6 +131,22 @@ struct ChainExec {
     uint32_t sub_out_storage_slots[MAX_SUB_PASSES][MAX_PASS_OUTPUTS] = {};
 };
 
+struct GroupExec {
+    std::unique_ptr<ComputePipeline> pipeline;
+    std::vector<NodeId> nodes;
+    uint32_t param_base_slot = 0;
+
+    struct ExtInput {
+        uint32_t sampled_slot = BindlessTable::INVALID_SLOT;
+        ResourceUUID resource;
+    };
+    std::vector<ExtInput> ext_inputs;
+
+    std::unique_ptr<Image> output_image;
+    uint32_t out_storage_slot = BindlessTable::INVALID_SLOT;
+    NodeId output_node = 0;
+};
+
 class Engine {
 public:
     bool init(VkSurfaceKHR surface,
@@ -219,7 +239,7 @@ public:
 
     void record_dispatch(VkCommandBuffer cmd, const PushConstants& pc);
 
-    bool has_pipeline() const { return !passes_.empty(); }
+    bool has_pipeline() const { return !passes_.empty() || !group_execs_.empty(); }
     uint64_t last_dispatch_count() const noexcept { return last_dispatch_count_; }
     uint64_t compile_generation()  const { return compile_generation_; }
     uint64_t installed_generation() const { return installed_generation_; }
@@ -297,11 +317,15 @@ private:
     void populate_chains_(const PassPlan& plan);
     void record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
                                 uint32_t gx, uint32_t gy, size_t chain_idx);
-    void record_barriers_(VkCommandBuffer cmd, const PushConstants& pc);
     bool record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& pc,
                                  uint32_t gx, uint32_t gy);
+    void record_barriers_(VkCommandBuffer cmd, const PushConstants& pc);
     void record_final_copy_(VkCommandBuffer cmd, const PushConstants& pc,
                             bool final_pass_was_dirty);
+
+    bool populate_groups_(const fusion::CompiledGroupBundle& compiled,
+                          const GraphIR& ir);
+    bool record_group_dispatches_(VkCommandBuffer cmd, const PushConstants& pc);
     void seed_param_ssbo_defaults_();
     void poll_completed_uploads_();
 
@@ -387,6 +411,9 @@ private:
 
     std::vector<ChainExec> chain_execs_;
     std::vector<uint32_t>   chain_id_of_pass_;
+
+    std::vector<GroupExec> group_execs_;
+    bool use_groups_ = false;
 
     std::unordered_map<uint64_t, std::unique_ptr<Image>> image_registry_;
     VkImageLayout dummy_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;

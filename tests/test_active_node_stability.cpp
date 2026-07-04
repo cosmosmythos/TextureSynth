@@ -4,7 +4,6 @@
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
-#include "engine/graphfusion/FusedGraphCompiler.hpp"
 #include "test_assets.hpp"
 #include <thread>
 #include <chrono>

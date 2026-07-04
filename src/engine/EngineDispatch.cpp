@@ -174,7 +174,7 @@ void Engine::record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc
 
 void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
     last_dispatch_count_ = 0;
-    if (passes_.empty()) return;
+    if (passes_.empty() && group_execs_.empty()) return;
 
     if (param_dirty_) {
         const uint32_t next = (param_write_idx_ + 1) % PARAM_RING;
@@ -215,8 +215,60 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
 
     resolve_aliased_staleness_();
     record_barriers_(cmd, pc);
-    bool final_pass_was_dirty = record_pass_dispatches_(cmd, pc, gx, gy);
-    record_final_copy_(cmd, pc, final_pass_was_dirty);
+
+    if (use_groups_ && !group_execs_.empty()) {
+        record_group_dispatches_(cmd, pc);
+
+        // Copy last group's output to output_storage_ via final_copy pipeline.
+        auto& last = group_execs_.back();
+        if (last.output_image && last.output_image->image() != VK_NULL_HANDLE
+            && final_copy_pipeline_) {
+            barrier_compute_write_to_sampled_read(cmd, last.output_image->image());
+
+            // Allocate a sampled slot for the last group's output.
+            uint32_t sampled = bindless_.alloc_sampled_slot();
+            if (sampled != BindlessTable::INVALID_SLOT) {
+                bindless_.write_sampled(ctx_, sampled,
+                                        last.output_image->view(), VK_IMAGE_LAYOUT_GENERAL);
+
+                if (output_layout_ != VK_IMAGE_LAYOUT_GENERAL) {
+                    transition(cmd, output_storage_->image(),
+                               output_layout_, VK_IMAGE_LAYOUT_GENERAL,
+                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+                    output_layout_ = VK_IMAGE_LAYOUT_GENERAL;
+                }
+
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                  final_copy_pipeline_->pipeline());
+                VkDescriptorSet set = bindless_.set();
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                        bindless_.pipeline_layout(), 0, 1, &set, 0, nullptr);
+
+                PassPushConstants ppc{};
+                ppc.global = pc;
+                ppc.global.resolution_x = output_w_;
+                ppc.global.resolution_y = output_h_;
+                ppc.out_storage_slots[0] = output_storage_slot_;
+                ppc.input_count = 1;
+                ppc.in_sampled_slots[0] = sampled;
+                for (uint32_t k = 1; k < MAX_PASS_INPUTS; ++k)
+                    ppc.in_sampled_slots[k] = dummy_slot_;
+                ppc.param_ring_idx = param_write_idx_;
+
+                vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
+                                   VK_SHADER_STAGE_COMPUTE_BIT,
+                                   0, sizeof(PassPushConstants), &ppc);
+                vkCmdDispatch(cmd, (output_w_ + 7) / 8, (output_h_ + 7) / 8, 1);
+
+                bindless_.free_sampled_slot(sampled);
+            }
+        }
+    } else {
+        bool final_pass_was_dirty = record_pass_dispatches_(cmd, pc, gx, gy);
+        record_final_copy_(cmd, pc, final_pass_was_dirty);
+    }
 }
 
 

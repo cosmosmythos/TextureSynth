@@ -6,12 +6,10 @@
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
-#include "engine/graphfusion/FusedGraphCompiler.hpp"
 #include "test_assets.hpp"
 #include <thread>
 #include <chrono>
 #include <iostream>
-#include <fstream>
 
 using namespace te;
 
@@ -76,65 +74,6 @@ protected:
         engine.shutdown();
     }
 };
-
-// Pure-compile dump: shows the GLSL the chain emitter produces, plus the
-// SSBO param_base_slot layout. No GPU dispatch -- just inspection.
-TEST(BlendModeParamGLSL, DumpChainEmission) {
-    NodeLibrary lib = load_real_lib();
-    Graph g;
-    g.nodes.push_back({1, "color_const"});
-    g.nodes.push_back({3, "color_const"});
-    g.nodes.push_back({2, "blend"});
-    g.connections.push_back({1, 0, 2, 1});  // cc1 -> blend.a
-    g.connections.push_back({3, 0, 2, 2});  // cc2 -> blend.b
-    g.output_node = 2;
-
-    auto r = validate_graph(g, lib);
-    ASSERT_TRUE(r.success) << r.error;
-
-    auto cr = FusedGraphCompiler::compile(r.ir, lib, 2);
-    ASSERT_TRUE(cr.success) << cr.error;
-
-    std::cout << "\n=== param_base_slot map ===" << std::endl;
-    for (const auto& kv : cr.param_base_slot) {
-        const auto* vn = r.ir.find(kv.first);
-        std::cout << "  node " << kv.first << " (" << (vn ? vn->type_id : "?") << ")"
-                  << " base=" << kv.second << std::endl;
-    }
-    std::cout << "  total_param_floats=" << cr.total_param_floats << std::endl;
-
-    std::cout << "\n=== Chains (" << cr.pass_plan.chains.size() << ") ===" << std::endl;
-    for (size_t ci = 0; ci < cr.pass_plan.chains.size(); ++ci) {
-        const auto& ch = cr.pass_plan.chains[ci];
-        std::cout << "Chain " << ci << " nodes=[";
-        for (size_t ni = 0; ni < ch.nodes.size(); ++ni) {
-            std::cout << ch.nodes[ni];
-            if (ni+1 < ch.nodes.size()) std::cout << ", ";
-        }
-        std::cout << "] param_base_slot=" << ch.param_base_slot
-                  << " total_params=" << ch.total_params << std::endl;
-        std::cout << "  param_offsets=[";
-        for (size_t i = 0; i < ch.param_offsets.size(); ++i) {
-            std::cout << ch.param_offsets[i];
-            if (i+1 < ch.param_offsets.size()) std::cout << ", ";
-        }
-        std::cout << "]" << std::endl;
-        std::cout << "  param_global_slots=[";
-        for (size_t i = 0; i < ch.param_global_slots.size(); ++i) {
-            std::cout << ch.param_global_slots[i];
-            if (i+1 < ch.param_global_slots.size()) std::cout << ", ";
-        }
-        std::cout << "]" << std::endl;
-    }
-
-    // Dump the first chain's GLSL to stdout + file.
-    if (!cr.pass_plan.chains.empty()) {
-        const auto& glsl = cr.pass_plan.chains[0].glsl;
-        std::cout << "\n=== Chain 0 GLSL ===\n" << glsl << std::endl;
-        std::ofstream f("blend_chain_dump.glsl");
-        f << glsl;
-    }
-}
 
 
 // color_const -> blend.a, color_const2 -> blend.b, mask unconnected.

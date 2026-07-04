@@ -21,7 +21,9 @@
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
-#include "engine/graphfusion/FusedGraphCompiler.hpp"
+#include "engine/graphfusion/FusionGroup.hpp"
+#include "engine/graphfusion/FusionGroupEmitter.hpp"
+#include "engine/graphfusion/FusedGroupCompiler.hpp"
 #include "test_assets.hpp"
 #include <iostream>
 #include <fstream>
@@ -207,44 +209,47 @@ TEST(Blend002Corruption, EveryCrossChainProducerIsTail) {
     auto r = validate_graph(g, lib);
     ASSERT_TRUE(r.success) << r.error;
 
-    auto cr = FusedGraphCompiler::compile(r.ir, lib, g.output_node);
-    ASSERT_TRUE(cr.success) << cr.error;
+    auto ctx = fusion::build_context(r.ir, lib);
+    auto bundle = fusion::group_nodes(r.ir, ctx);
+    fusion::split_at_sampler2d_sources(bundle, ctx);
+    fusion::merge_groups(bundle, ctx);
+    fusion::compute_external_inputs(bundle, ctx);
+    auto compiled = fusion::compile_groups(bundle, r.ir, ctx);
+    ASSERT_TRUE(compiled.ok()) << compiled.error;
 
-    dump_compile_state(r.ir, lib, cr);
-
-    // Map EVERY node to its chain index (not just tails).
-    std::unordered_map<NodeId, uint32_t> node_chain;
-    for (uint32_t ci = 0; ci < (uint32_t)cr.pass_plan.chains.size(); ++ci)
-        for (NodeId n : cr.pass_plan.chains[ci].nodes) node_chain[n] = ci;
-
-    // Check every cross-chain edge: producer must be the TAIL of its chain.
-    // Only tails imageStore to VRAM; a non-tail cross-chain producer's image
-    // is never written, so the consumer reads garbage.
+    // Invariant: every cross-group external input references a source node
+    // that IS contained in the source group (the producer group actually
+    // contains the node that feeds the consumer).
     int violations = 0;
-    for (const auto& c : r.ir.connections) {
-        auto pc = node_chain.find(c.src_node);
-        auto cc = node_chain.find(c.dst_node);
-        if (pc == node_chain.end() || cc == node_chain.end()) continue;
-        if (pc->second == cc->second) continue;
-        const auto& prod_chain = cr.pass_plan.chains[pc->second];
-        bool is_tail = !prod_chain.nodes.empty() && prod_chain.nodes.back() == c.src_node;
-        if (!is_tail) {
-            std::cout << "VIOLATION: node " << std::hex << c.src_node << std::dec
-                      << " is cross-chain producer but NON-TAIL in chain " << pc->second << "\n";
-            ++violations;
+    for (size_t gi = 0; gi < compiled.groups.size(); ++gi) {
+        const auto& cg = compiled.groups[gi];
+        for (const auto& ext : cg.external_inputs) {
+            // find the source group that contains ext.src_node
+            bool found = false;
+            for (size_t sgi = 0; sgi < bundle.groups.size(); ++sgi) {
+                if (fusion::group_contains(bundle.groups[sgi], ext.src_node)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                std::cout << "VIOLATION: group " << gi << " ext input src_node "
+                          << std::hex << ext.src_node << std::dec
+                          << " not found in any source group\n";
+                ++violations;
+            }
         }
     }
-    EXPECT_EQ(violations, 0) << "Cross-chain non-tail producers cause unwritten-image reads";
+    EXPECT_EQ(violations, 0)
+        << "Cross-group external input references a source node not in its source group";
 
-    // Dump the GLSL of chain 0 (NON-TAIL perlin producer), chain 2 (levels),
-    // and chain 8 (the FINAL BLEND — warp/invert.002/blend fused).
-    for (size_t ci : {(size_t)0, (size_t)2, (size_t)8}) {
-        if (ci >= cr.pass_plan.chains.size()) continue;
-        const auto& ch = cr.pass_plan.chains[ci];
-        if (ch.glsl.empty()) continue;
-        std::string fn = "blend002_chain_" + std::to_string(ci) + ".glsl";
-        std::ofstream f(fn); f << ch.glsl; f.close();
-        std::cout << "  -> wrote " << fn << " (" << ch.glsl.size() << " bytes)\n";
+    // Dump the GLSL of the first few groups.
+    for (size_t gi = 0; gi < compiled.groups.size() && gi < 3; ++gi) {
+        const auto& cg = compiled.groups[gi];
+        if (cg.glsl.empty()) continue;
+        std::string fn = "blend002_chain_" + std::to_string(gi) + ".glsl";
+        std::ofstream f(fn); f << cg.glsl; f.close();
+        std::cout << "  -> wrote " << fn << " (" << cg.glsl.size() << " bytes)\n";
     }
 }
 

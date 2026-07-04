@@ -17,7 +17,7 @@ The static `engine` library. Owns the full GPU pipeline: Vulkan instance/device,
 - **Thread entry contract**: every public mutating call takes `entry_mutex()` first (the `TE_GUARD_READY` macro in `Engine.hpp:37` or the manual `check_engine_ready` lock in `bindings.cpp`). The async compile path runs on `std::future` workers; results land in `pending_passes_` and are installed only on the main thread via `poll_pending_compiles()`.
 - **Bindless slots**: `BindlessTable` is the single source of truth for `res_sampled_slot_` / `res_storage_slot_`. Engine `PARAM_RING` must equal `BindlessTable::PARAM_RING_SIZE` (static_assert in `Engine.hpp:364`).
 - **Chain slot resolution (live, not snapshot)**: `ChainExec::slot_sources[]` maps each external slot to `(member_pass_index, input_index)`. At dispatch time (`EngineDispatch.cpp:92, 139`), `record_chain_dispatch_()` reads `passes_[member_pass_idx].in_sampled_slots[input_index]` live — NOT the snapshotted `chain_in_sampled_slots[]`. This prevents stale dummy slots when async image upload completes after `populate_chains_()`. The snapshot (`chain_in_sampled_slots[]`) is retained as a fallback for bypassed chains.
-- **Dispatch order (two-phase, `record_pass_dispatches_()`)**: Phase 1 iterates `chain_execs_` in index order (topologically sorted by FusedGraphCompiler — producers always before consumers). Phase 2 iterates non-chain solo passes in pass-index order. Never reorder these phases.
+- **Dispatch order (two-phase, `record_pass_dispatches_()`)**: Phase 1 iterates `chain_execs_` in index order (topologically sorted by graphfusion — producers always before consumers). Phase 2 iterates non-chain solo passes in pass-index order. Never reorder these phases.
 - **Error model**: `set_error_()` writes an `EngineError{code, message, phase, failed_node, generation}` record. Bindings translate this to Python `RuntimeError`. Never throw across the Vulkan boundary.
 - **Retirement**: passes and images go through `retired_passes_` / `retired_images_` with `MAX_FRAMES_IN_FLIGHT + 2` countdown before destruction (GPU may still be reading them).
 
@@ -34,6 +34,6 @@ The static `engine` library. Owns the full GPU pipeline: Vulkan instance/device,
 - Build: `cmake -S . -B build -DBUILD_TESTS:BOOL=ON` then `cmake --build build --config Release --target engine_tests` (never `--target clean`).
 
 ## Child DOX Index
-- [`graphfusion/AGENTS.md`](graphfusion/AGENTS.md) — chain fusion (DAG → planner → emitter → fused compiler). Distinct compilation model from the per-pass path above.
+- [`graphfusion/AGENTS.md`](graphfusion/AGENTS.md) — header-only chain fusion: context → group → merge → external inputs → emit GLSL → compile groups. Distinct compilation model from the per-pass path above.
 - [`register_allocation/AGENTS.md`](register_allocation/AGENTS.md) — graph-coloring register allocator for fused shader chains. Chaitin-Briggs + linear scan; interval graph perfection guarantees optimal greedy coloring.
 - [`memory_allocation/AGENTS.md`](memory_allocation/AGENTS.md) — format-aware interval coloring for VkImage memory sharing (aliasing) between chains.

@@ -20,20 +20,14 @@ add_executable(engine_tests
     test_mask_node.cpp
     test_timestamps.cpp
     inspect_perlin_invert.cpp
-    test_fused_graph_emitter.cpp
-    test_fused_graph_compiler.cpp
-    test_fused_graph_activation.cpp
-    test_fused_real_nodes.cpp
+    test_fusion_group.cpp
     test_combine_rgba.cpp
     test_storage_format.cpp
     test_blend_mode_param.cpp
     test_depth_resolution.cpp
     test_format_depth_keys.cpp
-    test_repro_blend_preview.cpp
-    test_research_register_pressure.cpp
     test_image_upload.cpp
     test_noise_nodes.cpp
-    test_fused_blend_glsl.cpp
     test_blend_cross_chain.cpp
     test_blend_py_repro.cpp
     test_channel_defaults.cpp
@@ -44,7 +38,6 @@ add_executable(engine_tests
     test_dead_node_impact.cpp
     test_dead_node_impact2.cpp
     test_param_stability.cpp
-    test_blender_graph_dump.cpp
     test_blend002_corruption.cpp
 )
 

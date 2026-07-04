@@ -4,10 +4,9 @@
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
-#include "engine/GraphCompiler.hpp"
-
-#include "engine/graphfusion/FusedGraphEmitter.hpp"
-#include "engine/graphfusion/FusedGraphCompiler.hpp"
+#include "engine/graphfusion/FusionGroup.hpp"
+#include "engine/graphfusion/FusionGroupEmitter.hpp"
+#include "engine/graphfusion/FusedGroupCompiler.hpp"
 #include "test_assets.hpp"
 #include <cmath>
 #include <cstdio>
@@ -105,11 +104,16 @@ protected:
         ASSERT_GT(n, 0) << "failed to load real nodes: " << err;
     }
 
-    CompileGraphResult compile(Graph& g) {
+    fusion::CompiledGroupBundle compile(Graph& g) {
         auto r = validate_graph(g, lib);
         EXPECT_TRUE(r.success) << r.error;
         if (!r.success) return {};
-        return FusedGraphCompiler::compile(r.ir, lib, g.output_node);
+        auto ctx = fusion::build_context(r.ir, lib);
+        auto bundle = fusion::group_nodes(r.ir, ctx);
+        fusion::split_at_sampler2d_sources(bundle, ctx);
+        fusion::merge_groups(bundle, ctx);
+        fusion::compute_external_inputs(bundle, ctx);
+        return fusion::compile_groups(bundle, r.ir, ctx);
     }
 };
 
@@ -128,8 +132,9 @@ TEST_F(CombineRGBAGLSL, AllFourInputsConnected) {
     g.output_node = 5;
 
     auto cr = compile(g);
-    ASSERT_TRUE(cr.success) << cr.error;
-    const auto& glsl = cr.pass_plan.chains[0].glsl;
+    ASSERT_TRUE(cr.ok()) << cr.error;
+    ASSERT_FALSE(cr.groups.empty());
+    const auto& glsl = cr.groups[0].glsl;
     EXPECT_NE(glsl.find("node_combine_rgba"), std::string::npos);
     EXPECT_NE(glsl.find("node_perlin"), std::string::npos);
     // All connected — no external input declarations
@@ -146,8 +151,9 @@ TEST_F(CombineRGBAGLSL, OneInputConnected_ROnly) {
     g.output_node = 2;
 
     auto cr = compile(g);
-    ASSERT_TRUE(cr.success) << cr.error;
-    const auto& glsl = cr.pass_plan.chains[0].glsl;
+    ASSERT_TRUE(cr.ok()) << cr.error;
+    ASSERT_FALSE(cr.groups.empty());
+    const auto& glsl = cr.groups[0].glsl;
     EXPECT_NE(glsl.find("node_combine_rgba"), std::string::npos);
     EXPECT_NE(glsl.find("node_perlin"), std::string::npos);
     // Unconnected sockets baked as vec4(0)
@@ -168,8 +174,9 @@ TEST_F(CombineRGBAGLSL, TwoInputsConnected_RG) {
     g.output_node = 3;
 
     auto cr = compile(g);
-    ASSERT_TRUE(cr.success) << cr.error;
-    const auto& glsl = cr.pass_plan.chains[0].glsl;
+    ASSERT_TRUE(cr.ok()) << cr.error;
+    ASSERT_FALSE(cr.groups.empty());
+    const auto& glsl = cr.groups[0].glsl;
     EXPECT_NE(glsl.find("node_combine_rgba"), std::string::npos);
     EXPECT_NE(glsl.find("vec4(0"), std::string::npos)
         << "unconnected B/A must be baked as vec4(0)";
@@ -188,8 +195,9 @@ TEST_F(CombineRGBAGLSL, ThreeInputsConnected_RGB) {
     g.output_node = 4;
 
     auto cr = compile(g);
-    ASSERT_TRUE(cr.success) << cr.error;
-    const auto& glsl = cr.pass_plan.chains[0].glsl;
+    ASSERT_TRUE(cr.ok()) << cr.error;
+    ASSERT_FALSE(cr.groups.empty());
+    const auto& glsl = cr.groups[0].glsl;
     EXPECT_NE(glsl.find("node_combine_rgba"), std::string::npos);
     EXPECT_NE(glsl.find("vec4(0"), std::string::npos)
         << "unconnected A must be baked as vec4(0)";
@@ -202,8 +210,9 @@ TEST_F(CombineRGBAGLSL, ZeroInputs_AllUnconnected) {
     g.output_node = 1;
 
     auto cr = compile(g);
-    ASSERT_TRUE(cr.success) << cr.error;
-    const auto& glsl = cr.pass_plan.chains[0].glsl;
+    ASSERT_TRUE(cr.ok()) << cr.error;
+    ASSERT_FALSE(cr.groups.empty());
+    const auto& glsl = cr.groups[0].glsl;
     EXPECT_NE(glsl.find("node_combine_rgba"), std::string::npos);
     // All unconnected → baked constants, no _in_ externals
     EXPECT_EQ(glsl.find("_in_"), std::string::npos)

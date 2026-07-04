@@ -1,6 +1,6 @@
 ---
 name: code-simplifier
-description: Enhance code clarity, consistency, and maintainability while preserving exact functionality on recently modified code. Apply project-specific best practices to simplify and improve code without altering its behavior and prioritize readable, explicit code over overly compact solutions. 
+description: Enhance code clarity, consistency, and maintainability while preserving exact functionality on recently modified code. Apply project-specific best practices to simplify and improve code without altering its behavior and prioritize readable, explicit code over overly compact solutions.
 compatibility: opencode
 ---
 
