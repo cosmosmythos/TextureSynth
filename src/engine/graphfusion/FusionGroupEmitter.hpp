@@ -89,7 +89,6 @@ inline GroupEmitResult emit_group(
             } else {
                 builder.statement(out_var + " = vec4(0.0);");
             }
-            te::log_info("[bypass] node " + std::to_string(nid) + " bypassed -> vec4(0.0)");
             continue;
         }
 
@@ -179,18 +178,26 @@ inline GroupEmitResult emit_group(
                            std::to_string(ctx.param_base.at(nid) + p) + "]");
         }
 
-        te::log_info("[param_map] group=" + std::to_string(group_index)
-                     + " node=" + std::to_string(nid) + " type=" + type->id
-                     + " param_base=" + std::to_string(ctx.param_base.at(nid))
-                     + " float_inputs=" + std::to_string(ctx.float_inputs.at(nid))
-                     + " param_count=" + std::to_string(ctx.param_count.at(nid)));
-
         if (is_multi_output) {
             for (uint32_t o = 0; o < type->outputs.size(); ++o)
                 args.push_back(out_var + "_out" + std::to_string(o));
             builder.call_void("node_" + type->id, args);
         } else {
             builder.call_and_assign(out_var, "node_" + type->id, args);
+
+            // Format post-process: strip channels to match node's resolved format.
+            const auto* vn = ir.find(nid);
+            if (vn) {
+                const StorageFormat node_sf = resolve_node_storage(*vn, lib);
+                ChannelFormat ch = node_sf.channels;
+                if (ch == ChannelFormat::Mono) {
+                    builder.statement(out_var + " = _fmt_mono(" + out_var + ");");
+                } else if (ch == ChannelFormat::UV) {
+                    builder.statement(out_var + " = _fmt_uv(" + out_var + ");");
+                } else if (ch == ChannelFormat::RGB) {
+                    builder.statement(out_var + " = _fmt_rgb(" + out_var + ");");
+                }
+            }
         }
 
     }
@@ -212,8 +219,6 @@ inline GroupEmitResult emit_group(
 
     result.external_inputs = static_cast<uint32_t>(group.external_inputs.size());
     result.source = builder.build();
-
-    te::log_info("[glsl] group " + std::to_string(group_index) + ":\n" + result.source);
 
     return result;
 }

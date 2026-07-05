@@ -97,6 +97,8 @@ struct GroupExec {
     std::unique_ptr<Image> output_image;
     uint32_t out_storage_slot = BindlessTable::INVALID_SLOT;
     NodeId output_node = 0;
+    uint32_t pass_index = 0;
+    uint32_t pass_count = 1;
 };
 
 class Engine {

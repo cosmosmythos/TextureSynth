@@ -191,12 +191,6 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
             if (error) *error = "image allocation failed for " + info.debug_name;
             return false;
         }
-        log_info("[mem]   created image: node=" + std::to_string(info.rid.node_id)
-                 + " output=" + std::to_string(info.rid.output_index)
-                 + " " + std::to_string(width) + "x" + std::to_string(height)
-                 + " fmt=" + std::to_string(info.format)
-                 + " " + std::to_string((size_t)width * height * pixel_bytes_(info.format) / 1024) + " KB"
-                 + " [pinned]");
         live_[info.rid] = std::move(r);
         current_bytes_ += (size_t)width * height * pixel_bytes_(info.format);
     }
@@ -360,13 +354,6 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
                                r.debug_name + "_view");
 
             const auto& info = all_res[indices[k]];
-            log_info("[mem]   created image: node=" + std::to_string(info.rid.node_id)
-                     + " output=" + std::to_string(info.rid.output_index)
-                     + " " + std::to_string(width) + "x" + std::to_string(height)
-                     + " fmt=" + std::to_string(info.format)
-                     + " " + std::to_string((size_t)width * height * pixel_bytes_(info.format) / 1024) + " KB"
-                     + " [alias group=" + std::to_string(group_id)
-                     + (k == 0 ? " primary" : " sibling") + "]");
             live_[info.rid] = std::move(r);
             current_bytes_ += (size_t)width * height * pixel_bytes_(info.format);
         }
@@ -456,9 +443,6 @@ void ResourceManager::tick(VulkanContext& ctx) {
             }),
         retired_.end());
     if (siblings_destroyed > 0 || primaries_destroyed > 0) {
-        log_info("[mem] tick retired destroy: siblings=" + std::to_string(siblings_destroyed)
-                 + " primaries=" + std::to_string(primaries_destroyed)
-                 + " remaining_retired=" + std::to_string(retired_.size()));
     }
 }
 

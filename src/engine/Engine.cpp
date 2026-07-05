@@ -456,16 +456,6 @@ uint64_t Engine::set_graph(const Graph& graph) {
     TE_GUARD_READY(0);
     clear_error();
 
-    // [mem] checkpoint 1: entry
-    {
-        auto vma = resources_.get_vma_stats(ctx_);
-        log_info("[mem] set_graph ENTRY: live=" + std::to_string(resources_.live_count())
-                 + " retired=" + std::to_string(resources_.retired_count())
-                 + " vma_alloc=" + std::to_string(vma.vma_allocation_bytes / (1024*1024)) + " MB"
-                 + " vma_blocks=" + std::to_string(vma.vma_block_bytes / (1024*1024)) + " MB"
-                 + " ir_nodes=" + std::to_string(current_ir_.nodes.size()));
-    }
-
     // Topology change must drain in-flight async work before we tear down
     // descriptor sets, pipelines, or per-node images.
     async_.drain(ctx_);
@@ -527,37 +517,10 @@ uint64_t Engine::set_graph(const Graph& graph) {
         return 0;
     }
 
-    // [mem] checkpoint 2: after allocate_for_graph
-    {
-        auto vma = resources_.get_vma_stats(ctx_);
-        log_info("[mem] AFTER allocate_for_graph: live=" + std::to_string(resources_.live_count())
-                 + " retired=" + std::to_string(resources_.retired_count())
-                 + " vma_alloc=" + std::to_string(vma.vma_allocation_bytes / (1024*1024)) + " MB"
-                 + " resource_bytes=" + std::to_string(resources_.current_bytes() / (1024*1024)) + " MB");
-    }
-
     if (!populate_groups_(compiled, current_ir_)) {
         set_error_(EngineErrorCode::GraphCompile,
                    "populate_groups_ failed", EnginePhase::GraphSubmit);
         return 0;
-    }
-
-    // [mem] checkpoint 3: after populate_groups_
-    {
-        auto vma = resources_.get_vma_stats(ctx_);
-        size_t group_output_bytes = 0;
-        for (const auto& ge : group_execs_) {
-            if (ge.output_image && ge.output_image->image() != VK_NULL_HANDLE) {
-                group_output_bytes += (size_t)output_w_ * output_h_
-                                    * vk_format_bytes(ge.output_image->format());
-            }
-        }
-        log_info("[mem] AFTER populate_groups_: live=" + std::to_string(resources_.live_count())
-                 + " retired=" + std::to_string(resources_.retired_count())
-                 + " vma_alloc=" + std::to_string(vma.vma_allocation_bytes / (1024*1024)) + " MB"
-                 + " resource_bytes=" + std::to_string(resources_.current_bytes() / (1024*1024)) + " MB"
-                 + " group_output_bytes=" + std::to_string(group_output_bytes / (1024*1024)) + " MB"
-                 + " groups=" + std::to_string(group_execs_.size()));
     }
 
     // Param layout from FusionContext.
@@ -581,26 +544,6 @@ uint64_t Engine::set_graph(const Graph& graph) {
     const uint64_t gen = ++compile_generation_;
     installed_generation_ = gen;
 
-    // [mem] checkpoint 4: exit
-    {
-        auto vma = resources_.get_vma_stats(ctx_);
-        size_t group_output_bytes = 0;
-        for (const auto& ge : group_execs_) {
-            if (ge.output_image && ge.output_image->image() != VK_NULL_HANDLE) {
-                group_output_bytes += (size_t)output_w_ * output_h_
-                                    * vk_format_bytes(ge.output_image->format());
-            }
-        }
-        log_info("[mem] set_graph EXIT:  live=" + std::to_string(resources_.live_count())
-                 + " retired=" + std::to_string(resources_.retired_count())
-                 + " vma_alloc=" + std::to_string(vma.vma_allocation_bytes / (1024*1024)) + " MB"
-                 + " resource_bytes=" + std::to_string(resources_.current_bytes() / (1024*1024)) + " MB"
-                 + " group_output_bytes=" + std::to_string(group_output_bytes / (1024*1024)) + " MB"
-                 + " groups=" + std::to_string(group_execs_.size()));
-    }
-
-    log_info("set_graph: FusionGroup pipeline, groups=" + std::to_string(group_execs_.size())
-             + " generation=" + std::to_string(gen));
     return gen;
 }
 

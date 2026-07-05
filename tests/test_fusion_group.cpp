@@ -1223,3 +1223,200 @@ TEST_F(FusionGroupTest, LevelsFanOut) {
 
     EXPECT_EQ(compiled.groups.back().output_node, 5u);
 }
+
+// ============================================================================
+// Format post-process: _fmt_mono strips G,B,A for Mono nodes in fused path
+// ============================================================================
+
+TEST_F(FusionGroupTest, MonoFormatPostProcessAppliedInFusedGLSL) {
+    // Build a simple Worley(Mono) → Invert graph.
+    // Worley format_override=Mono should emit _fmt_mono() after its call.
+    g.nodes.clear();
+    g.connections.clear();
+
+    NodeInstance worley;
+    worley.id = 1;
+    worley.type_id = "worley";
+    worley.format_override = ChannelFormat::Mono;
+    worley.debug_name = "Worley";
+    g.nodes.push_back(worley);
+
+    NodeInstance invert;
+    invert.id = 2;
+    invert.type_id = "invert";
+    invert.format_override = ChannelFormat::RGBA;
+    invert.debug_name = "Invert";
+    g.nodes.push_back(invert);
+
+    // Invert inputs: [Float(mask), Vec4(color)]. Connect Worley→Invert color (socket 1).
+    g.connections.push_back({1, 0, 2, 1});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    ir = std::move(r.ir);
+    ctx = fusion::build_context(ir, lib);
+
+    // Verify format_override propagated to ValidatedNode.
+    const auto* vn_worley = ir.find(1);
+    ASSERT_NE(vn_worley, nullptr);
+    EXPECT_EQ(vn_worley->format_override, ChannelFormat::Mono);
+
+    auto fused = fusion::group_nodes(ir, ctx);
+    fusion::merge_groups(fused, ctx);
+    fusion::compute_external_inputs(fused, ctx);
+
+    ASSERT_EQ(fused.groups.size(), 1u) << "Worley→Invert should be one fused group";
+
+    auto emit = fusion::emit_group(fused.groups[0], ir, ctx, 0, lib);
+    ASSERT_TRUE(emit.ok()) << emit.error;
+
+    // The GLSL must contain _fmt_mono call after node_worley.
+    // Search only in main body (not function definitions).
+    auto main_pos = emit.source.find("void main()");
+    ASSERT_NE(main_pos, std::string::npos);
+    std::string main_body = emit.source.substr(main_pos);
+
+    EXPECT_NE(main_body.find("_fmt_mono("), std::string::npos)
+        << "Mono format must emit _fmt_mono() in fused GLSL main:\n" << main_body;
+
+    // The GLSL must NOT contain _fmt_mono for the Invert (RGBA passthrough).
+    // Check that _fmt_mono is called exactly once in main (after worley, not after invert).
+    size_t first_fmt = main_body.find("_fmt_mono(");
+    ASSERT_NE(first_fmt, std::string::npos);
+    size_t second_fmt = main_body.find("_fmt_mono(", first_fmt + 1);
+    EXPECT_EQ(second_fmt, std::string::npos)
+        << "_fmt_mono should only appear once in main (after worley), not after invert";
+
+    // Print GLSL for visual inspection.
+    std::cout << "\n  GLSL main (Mono→Invert fused):\n" << main_body << "\n";
+}
+
+TEST_F(FusionGroupTest, UVFormatPostProcessAppliedInFusedGLSL) {
+    // UV format → _fmt_uv strips B,A.
+    g.nodes.clear();
+    g.connections.clear();
+
+    NodeInstance perlin;
+    perlin.id = 1;
+    perlin.type_id = "perlin";
+    perlin.format_override = ChannelFormat::UV;
+    perlin.debug_name = "Perlin";
+    g.nodes.push_back(perlin);
+
+    NodeInstance invert;
+    invert.id = 2;
+    invert.type_id = "invert";
+    invert.format_override = ChannelFormat::RGBA;
+    invert.debug_name = "Invert";
+    g.nodes.push_back(invert);
+
+    g.connections.push_back({1, 0, 2, 1});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    ir = std::move(r.ir);
+    ctx = fusion::build_context(ir, lib);
+
+    auto fused = fusion::group_nodes(ir, ctx);
+    fusion::merge_groups(fused, ctx);
+    fusion::compute_external_inputs(fused, ctx);
+
+    ASSERT_EQ(fused.groups.size(), 1u);
+
+    auto emit = fusion::emit_group(fused.groups[0], ir, ctx, 0, lib);
+    ASSERT_TRUE(emit.ok()) << emit.error;
+
+    EXPECT_NE(emit.source.find("_fmt_uv("), std::string::npos)
+        << "UV format must emit _fmt_uv() in fused GLSL:\n" << emit.source;
+}
+
+TEST_F(FusionGroupTest, RGBFormatPostProcessAppliedInFusedGLSL) {
+    // RGB format → _fmt_rgb strips A.
+    g.nodes.clear();
+    g.connections.clear();
+
+    NodeInstance perlin;
+    perlin.id = 1;
+    perlin.type_id = "perlin";
+    perlin.format_override = ChannelFormat::RGB;
+    perlin.debug_name = "Perlin";
+    g.nodes.push_back(perlin);
+
+    NodeInstance invert;
+    invert.id = 2;
+    invert.type_id = "invert";
+    invert.format_override = ChannelFormat::RGBA;
+    invert.debug_name = "Invert";
+    g.nodes.push_back(invert);
+
+    g.connections.push_back({1, 0, 2, 1});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    ir = std::move(r.ir);
+    ctx = fusion::build_context(ir, lib);
+
+    auto fused = fusion::group_nodes(ir, ctx);
+    fusion::merge_groups(fused, ctx);
+    fusion::compute_external_inputs(fused, ctx);
+
+    ASSERT_EQ(fused.groups.size(), 1u);
+
+    auto emit = fusion::emit_group(fused.groups[0], ir, ctx, 0, lib);
+    ASSERT_TRUE(emit.ok()) << emit.error;
+
+    EXPECT_NE(emit.source.find("_fmt_rgb("), std::string::npos)
+        << "RGB format must emit _fmt_rgb() in fused GLSL:\n" << emit.source;
+}
+
+TEST_F(FusionGroupTest, RGBAFormatNoPostProcessInFusedGLSL) {
+    // RGBA → no _fmt call (passthrough).
+    g.nodes.clear();
+    g.connections.clear();
+
+    NodeInstance perlin;
+    perlin.id = 1;
+    perlin.type_id = "perlin";
+    perlin.format_override = ChannelFormat::RGBA;
+    perlin.debug_name = "Perlin";
+    g.nodes.push_back(perlin);
+
+    NodeInstance invert;
+    invert.id = 2;
+    invert.type_id = "invert";
+    invert.format_override = ChannelFormat::RGBA;
+    invert.debug_name = "Invert";
+    g.nodes.push_back(invert);
+
+    g.connections.push_back({1, 0, 2, 1});
+    g.output_node = 2;
+
+    auto r = validate_graph(g, lib);
+    ASSERT_TRUE(r.success) << r.error;
+    ir = std::move(r.ir);
+    ctx = fusion::build_context(ir, lib);
+
+    auto fused = fusion::group_nodes(ir, ctx);
+    fusion::merge_groups(fused, ctx);
+    fusion::compute_external_inputs(fused, ctx);
+
+    ASSERT_EQ(fused.groups.size(), 1u);
+
+    auto emit = fusion::emit_group(fused.groups[0], ir, ctx, 0, lib);
+    ASSERT_TRUE(emit.ok()) << emit.error;
+
+    // Find _fmt_ calls in main body (not in the helper function definitions).
+    auto main_pos = emit.source.find("void main()");
+    ASSERT_NE(main_pos, std::string::npos);
+    std::string main_body = emit.source.substr(main_pos);
+
+    EXPECT_EQ(main_body.find("_fmt_mono("), std::string::npos)
+        << "RGBA format must NOT emit _fmt_mono() in main body";
+    EXPECT_EQ(main_body.find("_fmt_uv("), std::string::npos)
+        << "RGBA format must NOT emit _fmt_uv() in main body";
+    EXPECT_EQ(main_body.find("_fmt_rgb("), std::string::npos)
+        << "RGBA format must NOT emit _fmt_rgb() in main body";
+}

@@ -14,6 +14,9 @@ namespace te::fusion {
 
 struct FusionGroup {
     std::vector<NodeId> nodes;
+    uint32_t pass_index = 0;
+    uint32_t pass_count = 1;
+    uint32_t intermediate_count = 0;
     struct ExternalInput {
         NodeId src_node;
         uint32_t src_socket;
@@ -55,7 +58,6 @@ inline FusionContext build_context(const GraphIR& ir, const NodeLibrary& lib) {
         ctx.node_type[vn.id] = lib.find(vn.type_id);
         if (vn.bypassed) {
             ctx.bypassed_nodes.insert(vn.id);
-            te::log_info("[build_context] node " + std::to_string(vn.id) + " marked bypassed");
         }
     }
 
@@ -93,8 +95,9 @@ inline FusionContext build_context(const GraphIR& ir, const NodeLibrary& lib) {
         auto type_it = ctx.node_type.find(node_id);
         if (type_it == ctx.node_type.end()) continue;
         const auto* type = type_it->second;
-        for (uint32_t pass = 0; pass < type->pass_count; ++pass)
+        for (uint32_t pass = 0; pass < type->pass_count; ++pass) {
             expanded.push_back({node_id, pass, type->pass_count});
+        }
     }
     return expanded;
 }
@@ -124,21 +127,41 @@ inline bool is_connected(NodeId source, NodeId dest, const FusionContext& ctx) {
 
     FusionGroup current_group;
     current_group.nodes.push_back(expanded[0].node_id);
+    current_group.pass_index = expanded[0].pass_index;
+    current_group.pass_count = expanded[0].pass_count;
+    {
+        auto it = ctx.node_type.find(expanded[0].node_id);
+        if (it != ctx.node_type.end() && it->second)
+            current_group.intermediate_count = it->second->intermediate_count;
+    }
 
     for (size_t i = 0; i + 1 < expanded.size(); ++i) {
         NodeId prev = expanded[i].node_id;
         NodeId curr = expanded[i + 1].node_id;
+        uint32_t prev_pass = expanded[i].pass_index;
+        uint32_t curr_pass = expanded[i + 1].pass_index;
+        uint32_t prev_count = expanded[i].pass_count;
+        uint32_t curr_count = expanded[i + 1].pass_count;
 
-        if (is_connected(prev, curr, ctx)) {
+        bool conn = is_connected(prev, curr, ctx);
+        bool same_node = (prev == curr);
+
+        if (conn) {
             current_group.nodes.push_back(curr);
         } else {
             fused.groups.push_back(std::move(current_group));
             current_group = FusionGroup();
             current_group.nodes.push_back(curr);
+            current_group.pass_index = expanded[i + 1].pass_index;
+            current_group.pass_count = expanded[i + 1].pass_count;
+            auto it = ctx.node_type.find(curr);
+            if (it != ctx.node_type.end() && it->second)
+                current_group.intermediate_count = it->second->intermediate_count;
         }
     }
 
     fused.groups.push_back(std::move(current_group));
+
     return fused;
 }
 

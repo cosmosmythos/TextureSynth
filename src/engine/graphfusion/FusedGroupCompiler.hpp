@@ -30,6 +30,10 @@ struct CompiledGroup {
     NodeId   output_node   = 0;
     uint32_t output_socket = 0;
 
+    uint32_t pass_index         = 0;
+    uint32_t pass_count         = 1;
+    uint32_t intermediate_count = 0;
+
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };
 
@@ -90,6 +94,10 @@ inline CompiledGroupBundle compile_groups(
             cg.output_node = group.nodes.back();
             cg.output_socket = 0;
         }
+
+        cg.pass_index         = group.pass_index;
+        cg.pass_count         = group.pass_count;
+        cg.intermediate_count = group.intermediate_count;
 
         result.groups.push_back(std::move(cg));
     }
