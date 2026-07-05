@@ -132,22 +132,28 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
             if (slot == BindlessTable::INVALID_SLOT)
                 slot = dummy_slot_;
 
+            // Multi-pass pass 1: override ext_input[0] to use intermediate.
+            // This MUST happen before the connected/unconnected branching because
+            // the blur node's sampler2D input IS connected (cross-group to image node),
+            // but pass 1 needs to read from the intermediate, not the original image.
+            if (cg.pass_count > 1 && cg.pass_index == 1 && ei == 0) {
+                auto inter_it = intermediates.find(cg.output_node);
+                if (inter_it != intermediates.end()) {
+                    bindless_.write_sampled(ctx_, inter_it->second.sampled_slot,
+                                            inter_it->second.view, VK_IMAGE_LAYOUT_GENERAL);
+                    input.sampled_slot  = inter_it->second.sampled_slot;
+                    input.sampled_image = inter_it->second.vkimg;
+                    input.node_id       = ext.dst_node;
+                    continue;
+                }
+            }
+
             // Unconnected sampler2D: the image was uploaded by the user and lives in image_registry_.
             if (ext.src_node == 0) {
                 auto entry = image_registry_.find(ext.dst_node);
                 bool found = (entry != image_registry_.end() && entry->second);
                 VkImageView view = found ? entry->second->view() : dummy_image_.view();
                 VkImage    image = found ? entry->second->image() : dummy_image_.image();
-
-                // Multi-pass pass 1: override ext_input[0] to use intermediate instead of original image.
-                if (cg.pass_count > 1 && cg.pass_index == 1 && ei == 0) {
-                    auto inter_it = intermediates.find(cg.output_node);
-                    if (inter_it != intermediates.end()) {
-                        view = inter_it->second.view;
-                        image = inter_it->second.vkimg;
-                        slot = inter_it->second.sampled_slot;
-                    }
-                }
 
                 bindless_.write_sampled(ctx_, slot, view, VK_IMAGE_LAYOUT_GENERAL);
                 input.sampled_slot  = slot;
