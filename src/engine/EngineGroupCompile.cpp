@@ -58,53 +58,89 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
             return false;
         }
         bindless_.write_storage(ctx_, ge.out_storage_slot, ge.output_image->view());
+        log_info("[mem]   group " + std::to_string(gi) + " output: node="
+                 + std::to_string(cg.output_node)
+                 + " " + std::to_string(output_w_) + "x" + std::to_string(output_h_)
+                 + " fmt=" + std::to_string(fmt)
+                 + " " + std::to_string((size_t)output_w_ * output_h_ * vk_format_bytes(fmt) / 1024) + " KB"
+                 + " storage_slot=" + std::to_string(ge.out_storage_slot)
+                 + " nodes_in_group=" + std::to_string(cg.nodes.size()));
 
         // Allocate bindless sampled slots for external inputs.
         ge.ext_inputs.resize(cg.external_inputs.size());
         for (size_t ei = 0; ei < cg.external_inputs.size(); ++ei) {
             const auto& ext = cg.external_inputs[ei];
+            auto& input = ge.ext_inputs[ei];
+
+            uint32_t slot = bindless_.alloc_sampled_slot();
+            if (slot == BindlessTable::INVALID_SLOT)
+                slot = dummy_slot_;
+            log_info("[ext_slot_mismatch] group=" + std::to_string(gi)
+                     + " ei=" + std::to_string(ei)
+                     + " glsl_ext_slot=" + std::to_string(ext.slot)
+                     + " bindless_alloc_slot=" + std::to_string(slot)
+                     + " dst_node=" + std::to_string(ext.dst_node)
+                     + " dst_socket=" + std::to_string(ext.dst_socket)
+                     + " src_node=" + std::to_string(ext.src_node));
+
+            // Unconnected sampler2D: the image was uploaded by the user and lives in image_registry_.
+            if (ext.src_node == 0) {
+                auto entry = image_registry_.find(ext.dst_node);
+                bool found = (entry != image_registry_.end() && entry->second);
+                VkImageView view = found ? entry->second->view() : dummy_image_.view();
+                VkImage    image = found ? entry->second->image() : dummy_image_.image();
+
+                bindless_.write_sampled(ctx_, slot, view, VK_IMAGE_LAYOUT_GENERAL);
+                input.sampled_slot  = slot;
+                input.sampled_image = image;
+                input.node_id       = ext.dst_node;
+            log_info("[mem]   group " + std::to_string(gi) + " ext_input: node="
+                     + std::to_string(ext.dst_node)
+                     + " socket=" + std::to_string(ext.dst_socket)
+                     + " sampled_slot=" + std::to_string(slot)
+                     + " vkview=" + std::to_string((uint64_t)view)
+                     + " vkimg=" + std::to_string((uint64_t)image)
+                     + (found ? " [from image_registry]" : " [FALLBACK dummy]"));
+                continue;
+            }
+
+            // Cross-group connection: check cache first.
             ResourceUUID rid{ext.src_node, ext.src_socket};
-            ge.ext_inputs[ei].resource = rid;
+            input.resource = rid;
 
-            auto sit = res_sampled_slot_.find(rid);
-            if (sit != res_sampled_slot_.end()) {
-                ge.ext_inputs[ei].sampled_slot = sit->second;
+            auto cached = res_sampled_slot_.find(rid);
+            if (cached != res_sampled_slot_.end()) {
+                input.sampled_slot = cached->second;
+                continue;
+            }
+
+            // Not cached — find the image to bind.
+            res_sampled_slot_[rid] = slot;
+            input.sampled_slot = slot;
+
+            // Priority: ResourceManager → image_registry_ → previous group output → dummy.
+            VkImageView view = dummy_image_.view();
+            VkImage    image = dummy_image_.image();
+
+            if (auto* r = resources_.get(rid)) {
+                view  = r->view;
+                image = r->image;
+            } else if (auto entry = image_registry_.find(ext.src_node);
+                       entry != image_registry_.end() && entry->second) {
+                view  = entry->second->view();
+                image = entry->second->image();
             } else {
-                uint32_t slot = bindless_.alloc_sampled_slot();
-                if (slot == BindlessTable::INVALID_SLOT) {
-                    ge.ext_inputs[ei].sampled_slot = dummy_slot_;
-                } else {
-                    ge.ext_inputs[ei].sampled_slot = slot;
-                    res_sampled_slot_[rid] = slot;
-
-                    // Find the image to bind: try resource system first, then external uploads.
-                    auto* r = resources_.get(rid);
-                    if (r) {
-                        bindless_.write_sampled(ctx_, slot, r->view, VK_IMAGE_LAYOUT_GENERAL);
-                    } else {
-                        auto eit = image_registry_.find(ext.src_node);
-                        if (eit != image_registry_.end() && eit->second) {
-                            bindless_.write_sampled(ctx_, slot,
-                                                    eit->second->view(), VK_IMAGE_LAYOUT_GENERAL);
-                        } else {
-                            // Check if it's a previous group's output.
-                            bool found = false;
-                            for (auto& prev : group_execs_) {
-                                if (prev.output_node == ext.src_node) {
-                                    bindless_.write_sampled(ctx_, slot,
-                                                            prev.output_image->view(),
-                                                            VK_IMAGE_LAYOUT_GENERAL);
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found)
-                                bindless_.write_sampled(ctx_, slot,
-                                                        dummy_image_.view(), VK_IMAGE_LAYOUT_GENERAL);
-                        }
+                for (auto& prev : group_execs_) {
+                    if (prev.output_node == ext.src_node) {
+                        view  = prev.output_image->view();
+                        image = prev.output_image->image();
+                        break;
                     }
                 }
             }
+
+            bindless_.write_sampled(ctx_, slot, view, VK_IMAGE_LAYOUT_GENERAL);
+            input.sampled_image = image;
         }
 
         group_execs_.push_back(std::move(ge));
@@ -126,10 +162,8 @@ bool Engine::record_group_dispatches_(VkCommandBuffer cmd, const PushConstants& 
         // Barrier: ensure previous group's output storage writes are visible
         // as sampled reads for this group's external inputs.
         for (auto& ext : ge.ext_inputs) {
-            auto* r = resources_.get(ext.resource);
-            if (r && r->layout != VK_IMAGE_LAYOUT_GENERAL) {
-                barrier_compute_write_to_sampled(cmd, r->image);
-                r->layout = VK_IMAGE_LAYOUT_GENERAL;
+            if (ext.sampled_image != VK_NULL_HANDLE) {
+                barrier_compute_write_to_sampled(cmd, ext.sampled_image);
             }
         }
 
@@ -148,14 +182,27 @@ bool Engine::record_group_dispatches_(VkCommandBuffer cmd, const PushConstants& 
         ppc.global = pc;
         ppc.global.resolution_x = output_w_;
         ppc.global.resolution_y = output_h_;
-        ppc.param_base_slot = ge.param_base_slot;
+        ppc.param_base_slot = 0;  // emitter uses ctx.param_base[] directly
         ppc.input_count = static_cast<uint32_t>(ge.ext_inputs.size());
         ppc.pass_index = 0;
+
+        log_info("[dispatch] group output_node=" + std::to_string(ge.output_node)
+                 + " param_base_slot=" + std::to_string(ge.param_base_slot)
+                 + " param_ring_idx=" + std::to_string(param_write_idx_)
+                 + " res_x=" + std::to_string(output_w_)
+                 + " res_y=" + std::to_string(output_h_)
+                 + " ext_count=" + std::to_string(ge.ext_inputs.size()));
 
         for (uint32_t k = 0; k < ge.ext_inputs.size() && k < MAX_PASS_INPUTS; ++k)
             ppc.in_sampled_slots[k] = ge.ext_inputs[k].sampled_slot;
         for (uint32_t k = static_cast<uint32_t>(ge.ext_inputs.size()); k < MAX_PASS_INPUTS; ++k)
             ppc.in_sampled_slots[k] = dummy_slot_;
+
+        if (!ge.ext_inputs.empty()) {
+            log_info("[dispatch] in_sampled_slots[0]=" + std::to_string(ppc.in_sampled_slots[0])
+                     + " dummy_slot=" + std::to_string(dummy_slot_)
+                     + " out_storage_slot=" + std::to_string(ppc.out_storage_slots[0]));
+        }
 
         ppc.out_storage_slots[0] = ge.out_storage_slot;
         for (uint32_t t = 1; t < MAX_PASS_OUTPUTS; ++t)

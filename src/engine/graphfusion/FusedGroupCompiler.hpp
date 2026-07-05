@@ -22,6 +22,8 @@ struct CompiledGroup {
         uint32_t slot;
         NodeId   src_node;
         uint32_t src_socket;
+        NodeId   dst_node;
+        uint32_t dst_socket;
     };
     std::vector<ExternalInput> external_inputs;
 
@@ -41,6 +43,7 @@ inline CompiledGroupBundle compile_groups(
     const FusionGroupBundle& bundle,
     const GraphIR& ir,
     const FusionContext& ctx,
+    const NodeLibrary& lib,
     uint32_t global_param_base = 0)
 {
     CompiledGroupBundle result;
@@ -52,7 +55,7 @@ inline CompiledGroupBundle compile_groups(
         cg.nodes = group.nodes;
 
         // emit GLSL
-        auto emitted = emit_group(group, ir, ctx, static_cast<uint32_t>(gi));
+        auto emitted = emit_group(group, ir, ctx, static_cast<uint32_t>(gi), lib);
         if (!emitted.ok()) {
             cg.error = "group " + std::to_string(gi) + ": " + emitted.error;
             result.error = cg.error;
@@ -79,7 +82,8 @@ inline CompiledGroupBundle compile_groups(
         // external inputs
         cg.external_inputs.reserve(group.external_inputs.size());
         for (const auto& ext : group.external_inputs)
-            cg.external_inputs.push_back({ext.slot, ext.src_node, ext.src_socket});
+            cg.external_inputs.push_back({ext.slot, ext.src_node, ext.src_socket,
+                                          ext.dst_node, ext.dst_socket});
 
         // output: tail node
         if (!group.nodes.empty()) {

@@ -350,29 +350,10 @@ void Engine::shutdown_internal_() {
     async_.drain(ctx_);
     uploader_.drain(ctx_);
 
-    for (auto& pp : pending_passes_) if (pp.fut.valid()) pp.fut.wait();
-    pending_passes_.clear();
-
-    for (auto& p : passes_) {
-        if (p.pipeline) p.pipeline->destroy(ctx_);
-    }
-    passes_.clear();
     for (auto& r : retired_passes_) {
         if (r.pipeline) r.pipeline->destroy(ctx_);
     }
     retired_passes_.clear();
-
-    for (auto& ce : chain_execs_) {
-        if (ce.pipeline) ce.pipeline->destroy(ctx_);
-        for (auto& sp : ce.sub_pipelines) {
-            if (sp) sp->destroy(ctx_);
-        }
-        for (auto& intermedi : ce.intermediates) {
-            if (intermedi.image) intermedi.image->destroy(ctx_);
-        }
-    }
-    chain_execs_.clear();
-    chain_id_of_pass_.clear();
 
     if (final_copy_pipeline_) {
         final_copy_pipeline_->destroy(ctx_);
@@ -475,6 +456,16 @@ uint64_t Engine::set_graph(const Graph& graph) {
     TE_GUARD_READY(0);
     clear_error();
 
+    // [mem] checkpoint 1: entry
+    {
+        auto vma = resources_.get_vma_stats(ctx_);
+        log_info("[mem] set_graph ENTRY: live=" + std::to_string(resources_.live_count())
+                 + " retired=" + std::to_string(resources_.retired_count())
+                 + " vma_alloc=" + std::to_string(vma.vma_allocation_bytes / (1024*1024)) + " MB"
+                 + " vma_blocks=" + std::to_string(vma.vma_block_bytes / (1024*1024)) + " MB"
+                 + " ir_nodes=" + std::to_string(current_ir_.nodes.size()));
+    }
+
     // Topology change must drain in-flight async work before we tear down
     // descriptor sets, pipelines, or per-node images.
     async_.drain(ctx_);
@@ -510,31 +501,63 @@ uint64_t Engine::set_graph(const Graph& graph) {
     res_sampled_slot_.clear();
     res_storage_slot_.clear();
 
-    // Allocate images for all nodes (no aliasing — FusionGroup manages its own outputs).
-    std::string rerr;
-    if (!resources_.allocate_for_graph(ctx_, current_ir_, node_lib_, output_w_, output_h_,
-                                        texture_format_, &rerr)) {
-        set_error_(EngineErrorCode::GraphCompile, rerr, EnginePhase::GraphSubmit);
-        return 0;
-    }
-
     // FusionGroup pipeline: group -> split -> merge -> external inputs -> compile -> populate.
     auto ctx = fusion::build_context(current_ir_, node_lib_);
     auto bundle = fusion::group_nodes(current_ir_, ctx);
     fusion::split_at_sampler2d_sources(bundle, ctx);
     fusion::merge_groups(bundle, ctx);
     fusion::compute_external_inputs(bundle, ctx);
-    auto compiled = fusion::compile_groups(bundle, current_ir_, ctx);
+    auto compiled = fusion::compile_groups(bundle, current_ir_, ctx, node_lib_);
     if (!compiled.ok() || compiled.groups.empty()) {
         set_error_(EngineErrorCode::GraphCompile,
                    compiled.ok() ? "empty fusion groups" : compiled.error,
                    EnginePhase::GraphSubmit);
         return 0;
     }
+
+    // Compute active_resources: only the graph output needs a resource image.
+    // All other consumption (cross-group ext_inputs, readback) uses group output images.
+    std::unordered_set<ResourceUUID, ResourceUUIDHash> active_resources;
+    active_resources.insert({current_ir_.output_node, 0});
+
+    std::string rerr;
+    if (!resources_.allocate_for_graph(ctx_, current_ir_, node_lib_, output_w_, output_h_,
+                                        texture_format_, &rerr, nullptr, &active_resources)) {
+        set_error_(EngineErrorCode::GraphCompile, rerr, EnginePhase::GraphSubmit);
+        return 0;
+    }
+
+    // [mem] checkpoint 2: after allocate_for_graph
+    {
+        auto vma = resources_.get_vma_stats(ctx_);
+        log_info("[mem] AFTER allocate_for_graph: live=" + std::to_string(resources_.live_count())
+                 + " retired=" + std::to_string(resources_.retired_count())
+                 + " vma_alloc=" + std::to_string(vma.vma_allocation_bytes / (1024*1024)) + " MB"
+                 + " resource_bytes=" + std::to_string(resources_.current_bytes() / (1024*1024)) + " MB");
+    }
+
     if (!populate_groups_(compiled, current_ir_)) {
         set_error_(EngineErrorCode::GraphCompile,
                    "populate_groups_ failed", EnginePhase::GraphSubmit);
         return 0;
+    }
+
+    // [mem] checkpoint 3: after populate_groups_
+    {
+        auto vma = resources_.get_vma_stats(ctx_);
+        size_t group_output_bytes = 0;
+        for (const auto& ge : group_execs_) {
+            if (ge.output_image && ge.output_image->image() != VK_NULL_HANDLE) {
+                group_output_bytes += (size_t)output_w_ * output_h_
+                                    * vk_format_bytes(ge.output_image->format());
+            }
+        }
+        log_info("[mem] AFTER populate_groups_: live=" + std::to_string(resources_.live_count())
+                 + " retired=" + std::to_string(resources_.retired_count())
+                 + " vma_alloc=" + std::to_string(vma.vma_allocation_bytes / (1024*1024)) + " MB"
+                 + " resource_bytes=" + std::to_string(resources_.current_bytes() / (1024*1024)) + " MB"
+                 + " group_output_bytes=" + std::to_string(group_output_bytes / (1024*1024)) + " MB"
+                 + " groups=" + std::to_string(group_execs_.size()));
     }
 
     // Param layout from FusionContext.
@@ -558,6 +581,24 @@ uint64_t Engine::set_graph(const Graph& graph) {
     const uint64_t gen = ++compile_generation_;
     installed_generation_ = gen;
 
+    // [mem] checkpoint 4: exit
+    {
+        auto vma = resources_.get_vma_stats(ctx_);
+        size_t group_output_bytes = 0;
+        for (const auto& ge : group_execs_) {
+            if (ge.output_image && ge.output_image->image() != VK_NULL_HANDLE) {
+                group_output_bytes += (size_t)output_w_ * output_h_
+                                    * vk_format_bytes(ge.output_image->format());
+            }
+        }
+        log_info("[mem] set_graph EXIT:  live=" + std::to_string(resources_.live_count())
+                 + " retired=" + std::to_string(resources_.retired_count())
+                 + " vma_alloc=" + std::to_string(vma.vma_allocation_bytes / (1024*1024)) + " MB"
+                 + " resource_bytes=" + std::to_string(resources_.current_bytes() / (1024*1024)) + " MB"
+                 + " group_output_bytes=" + std::to_string(group_output_bytes / (1024*1024)) + " MB"
+                 + " groups=" + std::to_string(group_execs_.size()));
+    }
+
     log_info("set_graph: FusionGroup pipeline, groups=" + std::to_string(group_execs_.size())
              + " generation=" + std::to_string(gen));
     return gen;
@@ -573,7 +614,6 @@ uint64_t Engine::set_active_node(NodeId node_id) {
     if (node_id == current_graph_.output_node) {
         return installed_generation_ ? installed_generation_ : pending_generation_;
     }
-    // Check the node exists before building a graph that would fail validation.
     bool node_exists = false;
     for (const auto& n : current_graph_.nodes) {
         if (n.id == node_id) { node_exists = true; break; }
@@ -581,9 +621,36 @@ uint64_t Engine::set_active_node(NodeId node_id) {
     if (!node_exists) {
         return 0;
     }
+
+    // Save entire param SSBO before set_graph may reseed defaults.
+    std::vector<float> saved_params;
+    {
+        const float* src = static_cast<const float*>(param_mapped_[param_write_idx_]);
+        if (src) {
+            saved_params.resize(MAX_NODE_PARAMS);
+            std::memcpy(saved_params.data(), src, MAX_NODE_PARAMS * sizeof(float));
+        }
+    }
+
     Graph g = current_graph_;
     g.output_node = node_id;
-    return set_graph(g);
+    uint64_t gen = set_graph(g);
+    if (gen == 0) return 0;
+
+    // Restore entire param SSBO — preserves all user values across layout changes.
+    if (!saved_params.empty()) {
+        float* dst = static_cast<float*>(param_mapped_[param_write_idx_]);
+        if (dst) {
+            std::memcpy(dst, saved_params.data(), MAX_NODE_PARAMS * sizeof(float));
+            vmaFlushAllocation(ctx_.allocator(), param_alloc_[param_write_idx_],
+                               0, MAX_NODE_PARAMS * sizeof(float));
+        }
+        param_dirty_ = true;
+        any_pass_dirty_.store(true);
+        dirty_set_.mark_topology_change();
+    }
+
+    return gen;
 }
 
 
@@ -914,15 +981,6 @@ bool Engine::release_image(uint64_t node_id) {
     if (sit != ext_sampled_slot_.end()) {
         bindless_.free_sampled_slot(sit->second);
         ext_sampled_slot_.erase(sit);
-    }
-    // Patch passes that referenced this external image → fall back to per-format dummy.
-    for (auto& pe : passes_) {
-        if (pe.node_id != node_id) continue;
-        for (uint32_t i = 0; i < pe.input_count && i < MAX_PASS_INPUTS; ++i) {
-            if (pe.input_resources[i].node_id == 0) {
-                pe.in_sampled_slots[i] = dummy_slot_;
-            }
-        }
     }
     return true;
 }

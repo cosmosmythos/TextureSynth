@@ -1,4 +1,5 @@
 #include "engine/GraphIR.hpp"
+#include "engine/Logging.hpp"
 #include <algorithm>
 #include <queue>
 #include <map>
@@ -112,23 +113,12 @@ constexpr NodeId SEVERED = ~NodeId{0};
 
     order = std::move(reachable);
 
-    // Append unreachable nodes (no path from output).
-    // They're topologically safe at the end — nothing downstream depends on them.
-    // We need them in ir.nodes for set_active_node to work without recompilation.
-    for (const auto& n : nodes) {
-        if (state[n.id] == 2) continue;     // already in order (reachable)
-        if (state[n.id] == 0) {
-            // Unvisited: not reachable from output. Still check for self-loops
-            // or internal cycles by running Kahn's on this connected component.
-            // (Cycles in unreachable code are still invalid graphs.)
-        }
-        order.push_back(n.id);
-    }
-
     // Validate unreachable components have no cycles (Kahn's on unreachable subset).
+    // Do NOT append unreachable nodes to eval_order — the fused group path builds
+    // dispatch groups from eval_order and the final copy uses the last group's output.
+    // Unreachable nodes at the end would become the last group, producing wrong output.
     {
-        std::unordered_set<NodeId> reachable_set(order.begin(),
-            order.begin() + static_cast<std::ptrdiff_t>(reachable.size()));
+        std::unordered_set<NodeId> reachable_set(order.begin(), order.end());
         std::map<NodeId, int> in_deg;
         std::map<NodeId, std::vector<NodeId>> u_adj;
         for (const auto& n : nodes) {
@@ -323,6 +313,13 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     if (!topo_sort_ir(ir.nodes, ir.connections, ir.output_node, ir.eval_order)) {
         result.error = "Active subgraph contains a cycle";
         return result;
+    }
+
+    log_info("[topo] eval_order nodes=" + std::to_string(ir.eval_order.size())
+             + " ir.nodes=" + std::to_string(ir.nodes.size())
+             + " output=" + std::to_string(ir.output_node));
+    for (size_t i = 0; i < ir.eval_order.size(); ++i) {
+        log_info("[topo]   [" + std::to_string(i) + "] node=" + std::to_string(ir.eval_order[i]));
     }
 
     result.success = true;

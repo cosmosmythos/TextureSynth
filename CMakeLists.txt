@@ -32,6 +32,7 @@ add_library(engine STATIC
     src/engine/Image.cpp
     src/engine/NodeLibrary.cpp
     src/engine/NodeRegistryLoader.cpp
+
     src/engine/GraphCompiler.cpp
     src/engine/GraphIR.cpp
     src/engine/ResourceManager.cpp

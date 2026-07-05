@@ -25,6 +25,7 @@ Two independent test suites:
 - Prefer adding to an existing test file when the topic fits (e.g. noise behavior → `test_noise_nodes.cpp`) rather than spawning a new file.
 - Keep heavy/large debug binaries out of the suite — `test_full_pipeline.cpp` is at the upper end. Historical one-off debug dumps (e.g. the old `test_simplex_debug.cpp` tiling investigation, `test_tiling_math.cpp`, `test_blend_ssbodump.cpp`) have been removed; do not reintroduce them. Tiling correctness is verified in `shader_assets/glsl/noise_common.glsl` (GLSL-spec `mod()`), not re-tested here.
 - Cache dirs: Python uses `tests/python/cache/shader` (gitignored). Do not point tests at `build/_deps/` (root §2 cache trap).
+- **Engine API ordering**: `set_resolution(w, h)` MUST be called BEFORE `set_graph()`. Group output images are allocated at `set_graph()` time using the current `output_w_`/`output_h_`. Tests that call `set_graph()` first will get 512x512 output images and dispatch at the wrong resolution — returning black.
 
 ## Verification
 - C++: `ctest --test-dir build -C Release` (or run `engine_tests` directly). GoogleTest discovery is wired via `gtest_discover_tests` in `tests/CMakeLists.txt:63`. All 85 tests pass.

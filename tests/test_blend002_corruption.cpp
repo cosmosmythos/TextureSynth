@@ -19,6 +19,7 @@
 #include "engine/Engine.hpp"
 #include "engine/Graph.hpp"
 #include "engine/GraphIR.hpp"
+#include "engine/GraphCompiler.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/NodeRegistryLoader.hpp"
 #include "engine/graphfusion/FusionGroup.hpp"
@@ -214,7 +215,7 @@ TEST(Blend002Corruption, EveryCrossChainProducerIsTail) {
     fusion::split_at_sampler2d_sources(bundle, ctx);
     fusion::merge_groups(bundle, ctx);
     fusion::compute_external_inputs(bundle, ctx);
-    auto compiled = fusion::compile_groups(bundle, r.ir, ctx);
+    auto compiled = fusion::compile_groups(bundle, r.ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     // Invariant: every cross-group external input references a source node

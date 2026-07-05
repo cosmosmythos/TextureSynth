@@ -775,7 +775,7 @@ TEST(CompilePipeline, MutedMiddleNodeCompilesSuccessfully) {
     fusion::split_at_sampler2d_sources(bundle, ctx);
     fusion::merge_groups(bundle, ctx);
     fusion::compute_external_inputs(bundle, ctx);
-    auto compiled = fusion::compile_groups(bundle, r.ir, ctx);
+    auto compiled = fusion::compile_groups(bundle, r.ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
     EXPECT_FALSE(compiled.groups.empty());
     for (auto& group : compiled.groups) {
@@ -805,7 +805,7 @@ TEST(CompilePipeline, MutedOutputNodeCompilesWithCorrectedOutput) {
     fusion::split_at_sampler2d_sources(bundle, ctx);
     fusion::merge_groups(bundle, ctx);
     fusion::compute_external_inputs(bundle, ctx);
-    auto compiled = fusion::compile_groups(bundle, r.ir, ctx);
+    auto compiled = fusion::compile_groups(bundle, r.ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
     EXPECT_FALSE(compiled.groups.empty());
     for (auto& group : compiled.groups) {
@@ -835,7 +835,7 @@ TEST(CompilePipeline, MutedOutputNodeWithWrongIdStillCompiles) {
     fusion::split_at_sampler2d_sources(bundle, ctx);
     fusion::merge_groups(bundle, ctx);
     fusion::compute_external_inputs(bundle, ctx);
-    auto compiled = fusion::compile_groups(bundle, r.ir, ctx);
+    auto compiled = fusion::compile_groups(bundle, r.ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << "compile should not fail with muted active_node_id";
     EXPECT_FALSE(compiled.groups.empty());
 }
@@ -928,6 +928,6 @@ TEST(CompilePipeline, AllNodesMutedCompilesEmptyGraph) {
     fusion::split_at_sampler2d_sources(bundle, ctx);
     fusion::merge_groups(bundle, ctx);
     fusion::compute_external_inputs(bundle, ctx);
-    auto compiled = fusion::compile_groups(bundle, r.ir, ctx);
+    auto compiled = fusion::compile_groups(bundle, r.ir, ctx, lib);
     EXPECT_TRUE(compiled.groups.empty());
 }

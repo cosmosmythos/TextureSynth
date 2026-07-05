@@ -1,11 +1,13 @@
 #pragma once
 
 #include "engine/GraphIR.hpp"
+#include "engine/Logging.hpp"
 #include "engine/NodeLibrary.hpp"
 #include "engine/Graph.hpp"
 #include <cstdint>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace te::fusion {
@@ -41,14 +43,21 @@ struct FusionContext {
     std::unordered_map<NodeId, uint32_t> float_inputs;
     std::unordered_map<NodeId, uint32_t> param_count;
     uint32_t total_param_floats = 0;
+
+    std::unordered_set<NodeId> bypassed_nodes;
 };
 
 inline FusionContext build_context(const GraphIR& ir, const NodeLibrary& lib) {
     FusionContext ctx;
 
     ctx.node_type.reserve(ir.nodes.size());
-    for (const auto& vn : ir.nodes)
+    for (const auto& vn : ir.nodes) {
         ctx.node_type[vn.id] = lib.find(vn.type_id);
+        if (vn.bypassed) {
+            ctx.bypassed_nodes.insert(vn.id);
+            te::log_info("[build_context] node " + std::to_string(vn.id) + " marked bypassed");
+        }
+    }
 
     ctx.conns_by_dst.reserve(ir.connections.size());
     ctx.conns_by_src.reserve(ir.connections.size());
@@ -224,15 +233,34 @@ inline void compute_external_inputs(FusionGroupBundle& fused, const FusionContex
         uint32_t slot = 0;
 
         for (NodeId node_in_group : group.nodes) {
-            auto connection_it = ctx.conns_by_dst.find(node_in_group);
-            if (connection_it == ctx.conns_by_dst.end()) continue;
+            auto type_it = ctx.node_type.find(node_in_group);
+            if (type_it == ctx.node_type.end()) continue;
+            const auto* type = type_it->second;
 
-            for (const auto& [source_node, source_socket, dest_socket] : connection_it->second) {
-                if (group_contains(group, source_node)) continue;
-                auto type_it = ctx.node_type.find(node_in_group);
-                if (type_it == ctx.node_type.end()) continue;
+            auto connections = ctx.conns_by_dst.find(node_in_group);
+            bool has_connections = (connections != ctx.conns_by_dst.end());
 
-                group.external_inputs.push_back({source_node, source_socket, node_in_group, dest_socket, slot++});
+            // Cross-group connections: source lives outside this group.
+            if (has_connections) {
+                for (const auto& [src_node, src_socket, dst_socket] : connections->second) {
+                    if (group_contains(group, src_node)) continue;
+                    group.external_inputs.push_back({src_node, src_socket, node_in_group, dst_socket, slot++});
+                }
+            }
+
+            // Unconnected sampler2D inputs: image bound at runtime via image_registry_.
+            for (uint32_t s = 0; s < type->inputs.size(); ++s) {
+                if (type->inputs[s].type != SocketType::Sampler2D) continue;
+
+                bool already_connected = false;
+                if (has_connections) {
+                    for (const auto& [src_node, src_socket, dst_socket] : connections->second) {
+                        if (dst_socket == s) { already_connected = true; break; }
+                    }
+                }
+                if (!already_connected) {
+                    group.external_inputs.push_back({0, 0, node_in_group, s, slot++});
+                }
             }
         }
     }

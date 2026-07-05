@@ -18,9 +18,13 @@ void Engine::seed_param_ssbo_defaults_() {
         auto* dst = static_cast<float*>(param_mapped_[ring]);
         if (!dst) continue;
 
-        for (const auto& vn : current_ir_.nodes) {
-            auto bit = param_base_slot_.find(vn.id);
+        for (NodeId nid : current_ir_.eval_order) {
+            auto bit = param_base_slot_.find(nid);
             if (bit == param_base_slot_.end()) continue;
+
+            auto vn_it = current_ir_.node_index.find(nid);
+            if (vn_it == current_ir_.node_index.end()) continue;
+            const auto& vn = current_ir_.nodes[vn_it->second];
 
             const auto* type = node_lib_.find(vn.type_id);
             if (!type) continue;
@@ -66,6 +70,11 @@ void Engine::update_node_params_by_id(NodeId node_id, const std::vector<float>& 
     }
     const int base = it->second;
     if (base < 0) return;
+    log_info("[param_write] node=" + std::to_string(node_id)
+             + " base_slot=" + std::to_string(base)
+             + " param_count=" + std::to_string(params.size())
+             + " values[0]=" + std::to_string(params.empty() ? 0.f : params[0])
+             + (params.size() > 1 ? " values[1]=" + std::to_string(params[1]) : ""));
     const size_t cap = (base >= 0 && (size_t)base < MAX_NODE_PARAMS)
                          ? (MAX_NODE_PARAMS - (size_t)base) : 0;
     if (params.size() > cap) {

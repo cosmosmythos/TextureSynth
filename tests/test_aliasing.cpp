@@ -629,7 +629,7 @@ TEST(Aliasing, ComplexMultiChain_ChainStructure) {
     fusion::split_at_sampler2d_sources(bundle, ctx);
     fusion::merge_groups(bundle, ctx);
     fusion::compute_external_inputs(bundle, ctx);
-    auto compiled = fusion::compile_groups(bundle, r.ir, ctx);
+    auto compiled = fusion::compile_groups(bundle, r.ir, ctx, lib);
 
     ASSERT_TRUE(compiled.ok()) << compiled.error;
     ASSERT_FALSE(compiled.groups.empty()) << "compiled must produce at least one group";

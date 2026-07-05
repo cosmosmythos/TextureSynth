@@ -10,10 +10,9 @@
 #include "engine/Graph.hpp"
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
-#include "engine/GraphCompiler.hpp"
+
 #include "engine/ResourceManager.hpp"
 #include "engine/BindlessTable.hpp"
-#include "engine/PassPlan.hpp"
 #include "engine/AsyncReadback.hpp"
 #include "engine/DirtySet.hpp"
 #include "engine/EngineError.hpp"
@@ -65,22 +64,6 @@ inline const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& vk,
     return &out_info;
 }
 
-struct PassExec {
-    std::unique_ptr<ComputePipeline> pipeline;
-    NodeId                           node_id = 0;
-    std::vector<ResourceUUID>        input_resources;
-    std::vector<ChannelFormat>       input_formats;
-    std::vector<ResourceUUID>        output_resources;
-    int                              param_base_slot = 0;
-
-    uint32_t out_storage_slots[MAX_PASS_OUTPUTS] = {};
-    uint32_t output_count = 0;
-    uint32_t in_sampled_slots[MAX_PASS_INPUTS] = {};
-    uint32_t input_count = 0;
-
-    bool bypassed = false;
-};
-
 struct RetiredPass {
     std::unique_ptr<ComputePipeline> pipeline;
     uint32_t frames_remaining = MAX_FRAMES_IN_FLIGHT + 2;
@@ -98,39 +81,6 @@ struct TimestampPool {
     std::vector<PassTiming> cached_timings;
 };
 
-struct ChainExec {
-    std::unique_ptr<ComputePipeline> pipeline;
-    std::vector<uint32_t>            member_pass_indices;
-    uint32_t                         head_pass_index = 0;
-    uint32_t                         tail_pass_index = 0;
-    bool                             bypassed        = false;
-    uint32_t                         chain_in_sampled_slots[MAX_PASS_INPUTS] = {};
-
-    struct SlotSource {
-        uint32_t member_idx;   // index into member_pass_indices
-        uint32_t input_index;  // input socket index in that pass
-    };
-    SlotSource slot_sources[MAX_PASS_INPUTS] = {};
-    uint32_t   slot_source_count = 0;
-
-    // Multi-pass: populated when sub_pass_count > 0.
-    // Each sub-pass gets its own pipeline. Intermediate images sit between passes.
-    static constexpr uint32_t MAX_SUB_PASSES = 8;
-    std::vector<std::unique_ptr<ComputePipeline>> sub_pipelines;
-    uint32_t sub_pass_count = 0;
-
-    struct Intermediate {
-        std::unique_ptr<Image> image;
-        uint32_t sampled_slot = BindlessTable::INVALID_SLOT;
-        uint32_t storage_slot = BindlessTable::INVALID_SLOT;
-    };
-    std::vector<Intermediate> intermediates;
-
-    // Per-sub-pass output storage slots: [sub_pass][output_index].
-    // Last sub-pass writes to the chain's final output.
-    uint32_t sub_out_storage_slots[MAX_SUB_PASSES][MAX_PASS_OUTPUTS] = {};
-};
-
 struct GroupExec {
     std::unique_ptr<ComputePipeline> pipeline;
     std::vector<NodeId> nodes;
@@ -139,6 +89,8 @@ struct GroupExec {
     struct ExtInput {
         uint32_t sampled_slot = BindlessTable::INVALID_SLOT;
         ResourceUUID resource;
+        VkImage sampled_image = VK_NULL_HANDLE;
+        NodeId node_id = 0;
     };
     std::vector<ExtInput> ext_inputs;
 
@@ -239,7 +191,7 @@ public:
 
     void record_dispatch(VkCommandBuffer cmd, const PushConstants& pc);
 
-    bool has_pipeline() const { return !passes_.empty() || !group_execs_.empty(); }
+    bool has_pipeline() const { return !group_execs_.empty(); }
     uint64_t last_dispatch_count() const noexcept { return last_dispatch_count_; }
     uint64_t compile_generation()  const { return compile_generation_; }
     uint64_t installed_generation() const { return installed_generation_; }
@@ -314,14 +266,7 @@ private:
     void mark_downstream_dirty_(NodeId root);
     void rebuild_downstream_adj_();
 
-    void populate_chains_(const PassPlan& plan);
-    void record_chain_dispatch_(VkCommandBuffer cmd, const PushConstants& pc,
-                                uint32_t gx, uint32_t gy, size_t chain_idx);
-    bool record_pass_dispatches_(VkCommandBuffer cmd, const PushConstants& pc,
-                                 uint32_t gx, uint32_t gy);
     void record_barriers_(VkCommandBuffer cmd, const PushConstants& pc);
-    void record_final_copy_(VkCommandBuffer cmd, const PushConstants& pc,
-                            bool final_pass_was_dirty);
 
     bool populate_groups_(const fusion::CompiledGroupBundle& compiled,
                           const GraphIR& ir);
@@ -339,15 +284,7 @@ private:
     std::vector<PassTiming> last_pass_timings_;
 
     void shutdown_internal_();
-    void assign_bindless_slots_(PassExec& pe);
     bool resolve_aliased_staleness_();
-
-    bool create_pass_pipeline_(PassExec& pe,
-                               NodeId node_id,
-                               const std::string& type_id,
-                               const std::string& error_prefix,
-                               const ShaderVariantKey& variant_key,
-                               const std::vector<uint32_t>& spirv);
 
     void set_error_(EngineErrorCode code,
                     std::string message,
@@ -405,12 +342,8 @@ private:
     struct RetiredImage { std::unique_ptr<Image> img; uint32_t frames_remaining; };
     std::vector<RetiredImage> retired_images_;
 
-    std::vector<PassExec> passes_;
     std::vector<RetiredPass> retired_passes_;
     ResourceUUID  final_output_resource_ = {};
-
-    std::vector<ChainExec> chain_execs_;
-    std::vector<uint32_t>   chain_id_of_pass_;
 
     std::vector<GroupExec> group_execs_;
     bool use_groups_ = false;
@@ -419,27 +352,6 @@ private:
     VkImageLayout dummy_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout output_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     std::unordered_map<NodeId, std::vector<NodeId>> downstream_adj_;
-
-    struct PendingPass {
-        std::future<CompileResult> fut;
-        std::string                name;
-        std::string                type_id;
-        uint32_t                   input_count = 0;
-        std::vector<ResourceUUID>  output_resources;
-        std::vector<ResourceUUID>  input_resources;
-        std::vector<ChannelFormat> input_formats;
-        NodeId                     node_id = 0;
-        PassKind                   kind = PassKind::Compute;
-        ShaderVariantKey           variant_key;
-        bool                       bypassed = false;
-        bool                       chain_member = false;
-        int                        param_base_slot = 0;
-    };
-
-    std::vector<PendingPass> pending_passes_;
-    bool                     pending_active_ = false;
-    ResourceUUID             pending_final_output_ = {};
-    PassPlan                 pending_pass_plan_;
 
     std::unordered_map<NodeId, int> param_base_slot_;
     int total_param_floats_ = 0;

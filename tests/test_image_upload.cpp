@@ -128,11 +128,10 @@ TEST(ImageUpload, UploadGraphDispatchReadback) {
     wait_for_upload(engine);
 
     Graph g = make_image_graph(node_id);
+    engine.set_resolution(W, H);
     uint64_t gen = engine.set_graph(g);
     ASSERT_NE(gen, 0u) << engine.last_error();
     ASSERT_TRUE(wait_for_pipeline(engine)) << "pipeline compile timed out";
-
-    engine.set_resolution(W, H);
 
     PushConstants pc{};
     pc.resolution_x = W;
@@ -179,11 +178,11 @@ TEST(ImageUpload, GradientUploadPreservesSpatialData) {
     wait_for_upload(engine);
 
     Graph g = make_image_graph(node_id);
+    engine.set_resolution(W, H);
     uint64_t gen = engine.set_graph(g);
     ASSERT_NE(gen, 0u) << engine.last_error();
     ASSERT_TRUE(wait_for_pipeline(engine));
 
-    engine.set_resolution(W, H);
     PushConstants pc{};
     pc.resolution_x = W;
     pc.resolution_y = H;
@@ -226,11 +225,11 @@ TEST(ImageUpload, ReuploadChangesOutput) {
     wait_for_upload(engine);
 
     Graph g = make_image_graph(node_id);
+    engine.set_resolution(W, H);
     uint64_t gen = engine.set_graph(g);
     ASSERT_NE(gen, 0u) << engine.last_error();
     ASSERT_TRUE(wait_for_pipeline(engine));
 
-    engine.set_resolution(W, H);
     PushConstants pc{};
     pc.resolution_x = W;
     pc.resolution_y = H;
@@ -304,11 +303,11 @@ TEST(ImageUpload, UploadReleaseReupload) {
     wait_for_upload(engine);
 
     Graph g = make_image_graph(node_id);
+    engine.set_resolution(W, H);
     uint64_t gen = engine.set_graph(g);
     ASSERT_NE(gen, 0u) << engine.last_error();
     ASSERT_TRUE(wait_for_pipeline(engine));
 
-    engine.set_resolution(W, H);
     PushConstants pc{};
     pc.resolution_x = W;
     pc.resolution_y = H;
@@ -379,6 +378,7 @@ TEST(ImageUpload, GraphBeforeUpload_ChainSlotsNotStale) {
     g.connections.push_back({image_id, 0, levels_id, 0});
     g.output_node = levels_id;
 
+    engine.set_resolution(W, H);
     uint64_t gen = engine.set_graph(g);
     ASSERT_NE(gen, 0u) << engine.last_error();
     ASSERT_TRUE(wait_for_pipeline(engine)) << "pipeline compile timed out";
@@ -389,8 +389,6 @@ TEST(ImageUpload, GraphBeforeUpload_ChainSlotsNotStale) {
     auto pixels = make_solid(W, H, 1.0f, 0.5f, 0.25f);
     ASSERT_TRUE(engine.upload_image(image_id, pixels.data(), W, H));
     wait_for_upload(engine);
-
-    engine.set_resolution(W, H);
     PushConstants pc{};
     pc.resolution_x = W;
     pc.resolution_y = H;

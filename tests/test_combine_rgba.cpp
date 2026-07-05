@@ -113,7 +113,7 @@ protected:
         fusion::split_at_sampler2d_sources(bundle, ctx);
         fusion::merge_groups(bundle, ctx);
         fusion::compute_external_inputs(bundle, ctx);
-        return fusion::compile_groups(bundle, r.ir, ctx);
+        return fusion::compile_groups(bundle, r.ir, ctx, lib);
     }
 };
 

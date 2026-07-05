@@ -308,7 +308,7 @@ TEST_F(FusionGroupTest, EmitGroupsProducesGLSL) {
             }
         }
 
-        auto emit = fusion::emit_group(group, ir, ctx, g);
+        auto emit = fusion::emit_group(group, ir, ctx, g, lib);
         EXPECT_TRUE(emit.ok()) << "Group " << g << ": " << emit.error;
 
         if (g == fused.groups.size() - 1)
@@ -331,7 +331,7 @@ TEST_F(FusionGroupTest, CompileGroupsProducesGLSL) {
     fusion::merge_groups(fused, ctx);
     fusion::compute_external_inputs(fused, ctx);
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
     EXPECT_EQ(compiled.groups.size(), fused.groups.size());
 
@@ -350,7 +350,7 @@ TEST_F(FusionGroupTest, CompileGroupsParamLayout) {
     fusion::merge_groups(fused, ctx);
     fusion::compute_external_inputs(fused, ctx);
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     EXPECT_EQ(compiled.groups[0].param_floats, 7u);
@@ -367,7 +367,7 @@ TEST_F(FusionGroupTest, CompileGroupsExternalInputs) {
     fusion::merge_groups(fused, ctx);
     fusion::compute_external_inputs(fused, ctx);
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     EXPECT_TRUE(compiled.groups[0].external_inputs.empty());
@@ -383,7 +383,7 @@ TEST_F(FusionGroupTest, CompileGroupsOutputNode) {
     fusion::merge_groups(fused, ctx);
     fusion::compute_external_inputs(fused, ctx);
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     auto& last = compiled.groups.back();
@@ -397,7 +397,7 @@ TEST_F(FusionGroupTest, CompileGroupsParamBaseSlot) {
     fusion::merge_groups(fused, ctx);
     fusion::compute_external_inputs(fused, ctx);
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     for (size_t i = 0; i < compiled.groups.size(); ++i) {
@@ -410,7 +410,7 @@ TEST_F(FusionGroupTest, CompileGroupsEmptyGraphReturnsEmpty) {
     GraphIR empty_ir;
     fusion::FusionContext empty_ctx;
     fusion::FusionGroupBundle empty_bundle;
-    auto compiled = fusion::compile_groups(empty_bundle, empty_ir, empty_ctx);
+    auto compiled = fusion::compile_groups(empty_bundle, empty_ir, empty_ctx, lib);
     EXPECT_TRUE(compiled.ok());
     EXPECT_TRUE(compiled.groups.empty());
 }
@@ -556,7 +556,7 @@ TEST_F(FusionGroupTest, DiamondPattern) {
         }
     }
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     for (size_t i = 0; i < compiled.groups.size(); ++i) {
@@ -664,7 +664,7 @@ TEST_F(FusionGroupTest, FanOutConverges) {
 
     fusion::compute_external_inputs(fused, ctx);
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     // All 4 nodes in one group (all Vec4 connected, no Sampler2D boundaries)
@@ -772,7 +772,7 @@ TEST_F(FusionGroupTest, FanOutWithSampler2D) {
         }
     }
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     // A+B in one group (Vec4), C separate (Sampler2D from A), D merges with B
@@ -934,7 +934,7 @@ TEST_F(FusionGroupTest, DiamondWithChain) {
         }
     }
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     std::vector<NodeId> all_nodes;
@@ -1012,7 +1012,7 @@ TEST_F(FusionGroupTest, Sampler2DDiamond) {
         }
     }
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     // Perlin(1) has Sampler2D consumer Warp(3) → split separates Perlin.
@@ -1087,7 +1087,7 @@ TEST_F(FusionGroupTest, Sampler2DOnlyDiamond) {
         }
     }
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     // No Vec4 connections from A, so A can't merge with B or C.
@@ -1197,7 +1197,7 @@ TEST_F(FusionGroupTest, LevelsFanOut) {
         }
     }
 
-    auto compiled = fusion::compile_groups(fused, ir, ctx);
+    auto compiled = fusion::compile_groups(fused, ir, ctx, lib);
     ASSERT_TRUE(compiled.ok()) << compiled.error;
 
     // Expect 2 groups: [Perlin,Levels] and [Warp,Invert,Blend]

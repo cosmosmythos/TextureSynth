@@ -257,44 +257,11 @@ TEST(Mask, Grayscale_Mask0_PassthroughInput) {
 // Params: [0]=mode
 // =====================================================================
 
-TEST(Mask, Blend_Mask0_PassthroughA) {
+TEST(Mask, Blend_Mask0_PassthroughB) {
     EngineFixture fx;
     SKIP_IF_NO_ENGINE();
 
-    // Standalone simplex reference
-    Graph g_ref;
-    g_ref.nodes.push_back({1, "simplex"});
-    g_ref.output_node = 1;
-    ASSERT_TRUE(fx.build_graph(g_ref));
-    ASSERT_TRUE(fx.render(1));
-    auto ref_img = fx.engine.readback_sync();
-
-    // simplex -> A, white -> B, mask=0 (mix mode=0) -> output = A = simplex
-    Graph g;
-    g.nodes.push_back({1, "simplex"});
-    g.nodes.push_back({2, "white"});
-    g.nodes.push_back({3, "blend"});
-    g.connections.push_back({1, 0, 3, 1});  // simplex -> a (input[1])
-    g.connections.push_back({2, 0, 3, 2});  // white   -> b (input[2])
-    g.output_node = 3;
-    ASSERT_TRUE(fx.build_graph(g));
-
-    // mode=0 (mix), mask=0.0 -> output should be A (= simplex)
-    fx.engine.update_node_params_by_id(3, {0.0f, 0.0f});
-    ASSERT_TRUE(fx.render(3));
-    auto img = fx.engine.readback_sync();
-    ASSERT_FALSE(img.pixels.empty());
-
-    double diff = msd(ref_img, img);
-    std::printf("    msd(simplex, blend(simplex,white) mask=0 mix) = %.6f\n", diff);
-    EXPECT_LT(diff, 0.001) << "blend with mask=0 should give A (unblended)";
-}
-
-TEST(Mask, Blend_Mask1_FullBlend) {
-    EngineFixture fx;
-    SKIP_IF_NO_ENGINE();
-
-    // Standalone white_noise reference
+    // Standalone white reference (B)
     Graph g_ref;
     g_ref.nodes.push_back({1, "white"});
     g_ref.output_node = 1;
@@ -302,7 +269,7 @@ TEST(Mask, Blend_Mask1_FullBlend) {
     ASSERT_TRUE(fx.render(1));
     auto ref_img = fx.engine.readback_sync();
 
-    // simplex -> A, white -> B, mask=1 (mix mode=0) -> output = B = white_noise
+    // simplex -> A, white -> B, mask=0 (mix mode=0) -> output = B = white
     Graph g;
     g.nodes.push_back({1, "simplex"});
     g.nodes.push_back({2, "white"});
@@ -312,15 +279,48 @@ TEST(Mask, Blend_Mask1_FullBlend) {
     g.output_node = 3;
     ASSERT_TRUE(fx.build_graph(g));
 
-    // mode=0 (mix), mask=1.0 -> output should be B (= white_noise)
+    // mode=0 (mix), mask=0.0 -> output should be B (= white)
+    fx.engine.update_node_params_by_id(3, {0.0f, 0.0f});
+    ASSERT_TRUE(fx.render(3));
+    auto img = fx.engine.readback_sync();
+    ASSERT_FALSE(img.pixels.empty());
+
+    double diff = msd(ref_img, img);
+    std::printf("    msd(white, blend(simplex,white) mask=0 mix) = %.6f\n", diff);
+    EXPECT_LT(diff, 0.001) << "blend with mask=0 should give B (background)";
+}
+
+TEST(Mask, Blend_Mask1_FullBlend) {
+    EngineFixture fx;
+    SKIP_IF_NO_ENGINE();
+
+    // Standalone simplex reference (A — mode=0 mix passes through A)
+    Graph g_ref;
+    g_ref.nodes.push_back({1, "simplex"});
+    g_ref.output_node = 1;
+    ASSERT_TRUE(fx.build_graph(g_ref));
+    ASSERT_TRUE(fx.render(1));
+    auto ref_img = fx.engine.readback_sync();
+
+    // simplex -> A, white -> B, mask=1 (mix mode=0) -> output = A = simplex
+    Graph g;
+    g.nodes.push_back({1, "simplex"});
+    g.nodes.push_back({2, "white"});
+    g.nodes.push_back({3, "blend"});
+    g.connections.push_back({1, 0, 3, 1});  // simplex -> a (input[1])
+    g.connections.push_back({2, 0, 3, 2});  // white   -> b (input[2])
+    g.output_node = 3;
+    ASSERT_TRUE(fx.build_graph(g));
+
+    // mode=0 (mix), mask=1.0 -> output should be A (= simplex)
     fx.engine.update_node_params_by_id(3, {0.0f, 1.0f});
     ASSERT_TRUE(fx.render(3));
     auto img = fx.engine.readback_sync();
     ASSERT_FALSE(img.pixels.empty());
 
     double diff = msd(ref_img, img);
-    std::printf("    msd(white, blend(simplex,white) mask=1 mix) = %.6f\n", diff);
-    EXPECT_LT(diff, 0.01) << "blend with mask=1 mix should give B (white_noise)";
+    std::printf("    msd(simplex, blend(simplex,white) mask=1 mix) = %.6f\n", diff);
+    EXPECT_LT(diff, 0.001) << "blend with mask=1 should give A (foreground/mode result)";
 }
 
 TEST(Mask, Blend_Mask0and1_Different) {
@@ -384,18 +384,18 @@ TEST(Mask, Blend_MaskConnectedViaColorConst_RespondsToValue) {
     auto img_m1 = fx.engine.readback_sync();
     ASSERT_FALSE(img_m1.pixels.empty());
 
-    // Also get a standalone white_noise reference for comparison
-    Graph g_white;
-    g_white.nodes.push_back({10, "white"});
-    g_white.output_node = 10;
-    ASSERT_TRUE(fx.build_graph(g_white));
+    // Also get a standalone simplex reference for comparison (mask=1 → A for mode=0)
+    Graph g_simplex;
+    g_simplex.nodes.push_back({10, "simplex"});
+    g_simplex.output_node = 10;
+    ASSERT_TRUE(fx.build_graph(g_simplex));
     ASSERT_TRUE(fx.render(10));
-    auto white_img = fx.engine.readback_sync();
+    auto simplex_img = fx.engine.readback_sync();
 
-    // mask=1 should be pure B (= white noise)
-    double diff_m1_white = msd(img_m1, white_img);
-    std::printf("    msd(blend(mask=1 via color_const), white) = %.6f\n", diff_m1_white);
-    EXPECT_LT(diff_m1_white, 0.01) << "blend with mask=1 from texture should give B (white_noise)";
+    // mask=1 should be pure A (= simplex) for mode=0 mix
+    double diff_m1_simplex = msd(img_m1, simplex_img);
+    std::printf("    msd(blend(mask=1 via color_const), simplex) = %.6f\n", diff_m1_simplex);
+    EXPECT_LT(diff_m1_simplex, 0.01) << "blend with mask=1 from texture should give A (simplex)";
 
     // mask=0 and mask=1 must produce different results
     double diff_0_1 = msd(img_m0, img_m1);

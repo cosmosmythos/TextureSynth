@@ -115,6 +115,16 @@ public:
     size_t current_bytes() const { return current_bytes_; }
     size_t budget_bytes() const  { return budget_bytes_; }  // configured warning threshold
     size_t live_count() const { return live_.size(); }
+    size_t retired_count() const { return retired_.size(); }
+    size_t retired_bytes() const {
+        size_t bytes = 0;
+        for (const auto& r : retired_) {
+            bytes += (size_t)r.res.extent.width
+                   * (size_t)r.res.extent.height
+                   * pixel_bytes_(r.res.format);
+        }
+        return bytes;
+    }
 
     // Read-only view of the live resource map. Exposed for tests. Do not mutate.
     const auto& live_resources() const { return live_; }

@@ -1,0 +1,24 @@
+{
+  "skills": ["beauty-coder", "code-simplifier"],
+  "fileTypeSkills": {
+    ".py": ["beauty-coder", "code-simplifier"],
+    ".glsl": ["beauty-coder", "glsl"],
+    ".cpp": ["beauty-coder"],
+    ".hpp": ["beauty-coder"]
+  },
+  "agentSkills": {
+    "build": ["beauty-coder", "code-simplifier"],
+    "plan": ["beauty-coder"],
+    "code-simplifier": ["beauty-coder", "code-simplifier"]
+  },
+  "contentTriggers": {
+    "write code": ["beauty-coder"],
+    "edit": ["code-simplifier"],
+    "refactor": ["beauty-coder", "code-simplifier"],
+    "simplify": ["code-simplifier"],
+    "clean up": ["code-simplifier"]
+  },
+  "showToasts": true,
+  "enableTools": true,
+  "persistAfterCompaction": true
+}
