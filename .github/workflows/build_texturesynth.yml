@@ -106,7 +106,7 @@ jobs:
             echo "--- Showing dependencies for $whl ---"
             delvewheel show "$whl"
             echo "--- Repairing $whl ---"
-            delvewheel repair -v -w repaired/ "$whl"
+            delvewheel repair -v --exclude vulkan-1.dll -w repaired/ "$whl"
           done
           mv repaired/*.whl ./
           rm -rf repaired
