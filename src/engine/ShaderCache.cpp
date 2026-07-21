@@ -1,5 +1,6 @@
 #include "engine/ShaderCache.hpp"
 #include "engine/Logging.hpp"
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <nlohmann/json.hpp>
@@ -59,6 +60,7 @@ void ShaderCache::write_sidecar_(uint64_t hash, const FusedVariantKey& key) cons
     j["param_socket_masks"]        = key.param_socket_masks;
     j["input_counts"]              = key.input_counts;
     j["feature_flags"]             = key.feature_flags;
+    j["bypass_mask"]               = key.bypass_mask;
     j["external_socket_masks"]     = key.external_socket_masks;
     j["internal_producer_indices"] = key.internal_producer_indices;
     j["epoch"]                     = key.epoch;
@@ -84,6 +86,7 @@ bool ShaderCache::sidecar_matches_(uint64_t hash, const FusedVariantKey& key) co
         // but those fail the epoch check below anyway. Default-empty is safe.
         stored.internal_producer_indices = j.value("internal_producer_indices",
                                                    std::vector<uint32_t>{});
+        stored.bypass_mask               = j.value("bypass_mask", 0u);
         stored.epoch                     = j.at("epoch").get<uint64_t>();
         return stored == key;
     } catch (const nlohmann::json::exception&) {
@@ -96,6 +99,8 @@ std::optional<std::vector<uint32_t>> ShaderCache::load(const ShaderVariantKey& k
 }
 
 void ShaderCache::store(const ShaderVariantKey& key, const std::vector<uint32_t>& spirv) const {
+    if (!dir_.empty())
+        std::filesystem::create_directories(dir_);
     write_spv_(path_for_spv_(key.hash()), spirv);
 }
 
@@ -108,6 +113,8 @@ std::optional<std::vector<uint32_t>> ShaderCache::load(const FusedVariantKey& ke
 
 void ShaderCache::store(const FusedVariantKey& key, const std::vector<uint32_t>& spirv) const {
     const uint64_t h = key.hash();
+    if (!dir_.empty())
+        std::filesystem::create_directories(dir_);
     write_spv_(path_for_spv_(h), spirv);
     write_sidecar_(h, key);
 }

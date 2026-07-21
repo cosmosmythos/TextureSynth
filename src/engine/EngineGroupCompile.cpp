@@ -3,6 +3,7 @@
 #include "engine/Logging.hpp"
 #include "engine/graphfusion/FusedGroupCompiler.hpp"
 
+
 namespace te {
 
 bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
@@ -31,16 +32,40 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
         ge.pass_index = cg.pass_index;
         ge.pass_count = cg.pass_count;
 
-        // Compile GLSL → SPIR-V → pipeline.
+        // Compile GLSL → SPIR-V → pipeline, with disk cache.
         if (!cg.glsl.empty()) {
-            CompileResult r = compiler_.compile_compute_sync(
-                cg.glsl, "group_" + std::to_string(gi) + "_pass" + std::to_string(cg.pass_index));
-            if (!r.success) {
-                log_warn("group " + std::to_string(gi) + " compile failed: " + r.error_log);
-                set_error_(EngineErrorCode::ShaderCompile,
-                           "group " + std::to_string(gi) + ": " + r.error_log,
-                           EnginePhase::GraphCompileFinish, cg.output_node);
-                return false;
+            std::vector<uint32_t> spirv;
+            bool cache_hit = false;
+
+            if (cache_) {
+                auto cached = cache_->load(cg.fused_key);
+                if (cached.has_value()) {
+                    spirv = std::move(*cached);
+                    cache_hit = true;
+                }
+            }
+
+            if (!cache_hit) {
+                CompileResult r = compiler_.compile_compute_sync(
+                    cg.glsl, "group_" + std::to_string(gi) + "_pass" + std::to_string(cg.pass_index));
+                if (!r.success) {
+                    log_warn("group " + std::to_string(gi) + " compile failed: " + r.error_log);
+                    set_error_(EngineErrorCode::ShaderCompile,
+                               "group " + std::to_string(gi) + ": " + r.error_log,
+                               EnginePhase::GraphCompileFinish, cg.output_node);
+                    return false;
+                }
+                spirv = std::move(r.spirv);
+                if (cache_)
+                    cache_->store(cg.fused_key, spirv);
+            }
+
+            {
+                std::string msg = "shader_cache: ";
+                msg += cache_hit ? "HIT" : "MISS";
+                msg += " group=" + std::to_string(gi);
+                msg += " hash=" + std::to_string(cg.fused_key.hash());
+                log_info(msg);
             }
 
             // Build specialization info for ts_pass_index (layout(constant_id = 0)).
@@ -53,7 +78,7 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
 
             auto pipe = std::make_unique<ComputePipeline>();
             pipe->set_name("pipe_group_" + std::to_string(gi) + "_pass" + std::to_string(cg.pass_index));
-            if (!pipe->create(ctx_, r.spirv, bindless_.pipeline_layout(), spec_ptr)) {
+            if (!pipe->create(ctx_, spirv, bindless_.pipeline_layout(), spec_ptr)) {
                 log_warn("group " + std::to_string(gi) + " pipeline creation failed");
                 set_error_(EngineErrorCode::PipelineCreation,
                            "group pipeline creation failed",
@@ -100,12 +125,16 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
             bindless_.write_storage(ctx_, ge.out_storage_slot, ge.output_image->view());
 
             // Find the intermediate from pass 0.
-            auto it = intermediates.find(cg.output_node);
-            if (it != intermediates.end()) {
-                // The blur node's GLSL reads from ext_inputs[0] (sampler2D).
-                // We need to override ext_inputs[0] to point to the intermediate.
-                // This will be patched after ext_inputs allocation below.
-            }
+            // If the group was merged with a downstream Vec4 consumer,
+            // cg.output_node is the tail (e.g. blend) but the intermediate
+            // was stored under the multi-pass node's original ID.
+            // Scan the group to find the right key.
+            auto it = [&]() -> decltype(intermediates.begin()) {
+                auto c = intermediates.find(cg.output_node);
+                if (c != intermediates.end()) return c;
+                for (NodeId nid : cg.nodes) { c = intermediates.find(nid); if (c != intermediates.end()) return c; }
+                return intermediates.end();
+            }();
         }
         // Single-pass or pass_count=1: normal output image.
         else {
@@ -137,7 +166,12 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
             // the blur node's sampler2D input IS connected (cross-group to image node),
             // but pass 1 needs to read from the intermediate, not the original image.
             if (cg.pass_count > 1 && cg.pass_index == 1 && ei == 0) {
-                auto inter_it = intermediates.find(cg.output_node);
+                auto inter_it = [&]() -> decltype(intermediates.begin()) {
+                    auto c = intermediates.find(cg.output_node);
+                    if (c != intermediates.end()) return c;
+                    for (NodeId nid : cg.nodes) { c = intermediates.find(nid); if (c != intermediates.end()) return c; }
+                    return intermediates.end();
+                }();
                 if (inter_it != intermediates.end()) {
                     bindless_.write_sampled(ctx_, inter_it->second.sampled_slot,
                                             inter_it->second.view, VK_IMAGE_LAYOUT_GENERAL);

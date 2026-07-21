@@ -10,6 +10,8 @@
 #include <unordered_set>
 #include <vector>
 
+
+
 namespace te::fusion {
 
 struct FusionGroup {
@@ -220,7 +222,9 @@ inline void merge_groups(FusionGroupBundle& fused, const FusionContext& ctx) {
                     break;
                 }
             }
-            if (target_group != fused.groups.size()) break;
+            if (target_group != fused.groups.size()) {
+                break;
+            }
         }
         if (target_group == fused.groups.size()) continue;
 
@@ -239,7 +243,9 @@ inline void merge_groups(FusionGroupBundle& fused, const FusionContext& ctx) {
             }
             if (sampler2d) break;
         }
-        if (sampler2d) continue;
+        if (sampler2d) {
+            continue;
+        }
 
         fused.groups[target_group].nodes.insert(
             fused.groups[target_group].nodes.begin(),

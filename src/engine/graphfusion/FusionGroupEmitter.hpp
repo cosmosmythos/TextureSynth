@@ -56,7 +56,7 @@ inline GroupEmitResult emit_group(
     builder.main_begin();
     builder.statement("if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;");
 
-    std::string tail_var = "_g" + std::to_string(group_index) + "_out";
+    std::string group_result_var = "_group" + std::to_string(group_index) + "_result";
 
     for (size_t i = 0; i < group.nodes.size(); ++i) {
         NodeId nid = group.nodes[i];
@@ -70,8 +70,8 @@ inline GroupEmitResult emit_group(
         bool is_multi_output = type->outputs.size() > 1;
 
         std::string out_var = (i == group.nodes.size() - 1)
-            ? tail_var
-            : "_n" + std::to_string(i);
+            ? group_result_var
+            : "_node" + std::to_string(i);
 
         if (is_multi_output) {
             for (uint32_t o = 0; o < type->outputs.size(); ++o)
@@ -123,7 +123,7 @@ inline GroupEmitResult emit_group(
 
             // Case 1: source is another node in this group → use its local variable.
             if (src != 0 && node_index.count(src)) {
-                std::string src_var = "_n" + std::to_string(node_index.at(src));
+                std::string src_var = "_node" + std::to_string(node_index.at(src));
                 const auto* src_type = ctx.node_type.count(src) ? ctx.node_type.at(src) : nullptr;
                 if (src_type && src_type->outputs.size() > 1) {
                     // Multi-output node: find which output socket connects here.
@@ -211,10 +211,10 @@ inline GroupEmitResult emit_group(
         for (uint32_t o = 0; o < tail_type->outputs.size(); ++o)
             slot_indices.push_back(o);
         builder.main_end_multi(slot_indices, [&](uint32_t i) {
-            return tail_var + "_out" + std::to_string(i);
+            return group_result_var + "_out" + std::to_string(i);
         });
     } else {
-        builder.main_end(tail_var);
+        builder.main_end(group_result_var);
     }
 
     result.external_inputs = static_cast<uint32_t>(group.external_inputs.size());

@@ -1,5 +1,7 @@
 # AGENTS.md — Mandatory rules for AI coding agents
 
+Do NOT rely solely on glob for searching. If a glob returns empty, try reading the path directly with `read`.
+
 **Read before ANY build/clean/install/test, or before writing a technical explanation.**
 Skipping the cache rules wastes bandwidth and rebuild time. Skipping the explanation rules makes answers unusable.
 Do NOT rely solely on glob for searching. If a glob returns empty, try reading the path directly with `read`.

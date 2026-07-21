@@ -417,3 +417,65 @@ TEST(BlurDebug, LevelsBlurPipelineLowIntensity) {
 
     engine.shutdown();
 }
+
+// ============================================================================
+// TEST 4: Debug logging for blur→blend fusion merge.
+// Graph: image(1) → blur(2) → blend(3). Tests:
+//   - merge_groups: is blur(pass1) merged with blend?
+//   - populate_groups_: can pass 1 find the intermediate?
+//   - Fallback scan: which group's output does blend read for blur's input?
+// ============================================================================
+TEST(BlurDebug, FusedBlurThenBlendMergeTracing) {
+    printf("\n===== TEST: image->blur->blend, output=blend =====\n");
+    NodeLibrary lib = load_lib();
+    Engine engine;
+    ASSERT_TRUE(init_engine(engine, "test_blur_debug_blur_blend"));
+
+    Graph g;
+    g.nodes.push_back({1, "simplex"});
+    g.nodes.push_back({2, "blur"});
+    g.nodes.push_back({3, "blend"});
+    g.connections.push_back({1, 0, 2, 0});   // simplex out -> blur.tex (Sampler2D)
+    g.connections.push_back({2, 0, 3, 1});   // blur out -> blend.a (Vec4)
+    g.connections.push_back({2, 0, 3, 2});   // blur out -> blend.b (Vec4)
+    g.output_node = 3;                        // blend is active
+
+    printf("[test] set_resolution(128,128)\n");
+    engine.set_resolution(128, 128);
+    printf("[test] set_graph()...\n");
+    uint64_t gen = engine.set_graph(g);
+    printf("[test] set_graph gen=%llu err=%s\n", (unsigned long long)gen, engine.last_error());
+    ASSERT_NE(gen, 0u) << engine.last_error();
+
+    printf("[test] waiting for pipeline...\n");
+    EXPECT_TRUE(wait_for_pipeline(engine));
+    printf("[test] pipeline ready\n");
+
+    engine.shutdown();
+
+    // --- Second run: blur as output for comparison ---
+    printf("\n===== TEST: image->blur->blend, output=blur =====\n");
+    Engine engine2;
+    ASSERT_TRUE(init_engine(engine2, "test_blur_debug_blur_blend_out2"));
+    Graph g2;
+    g2.nodes.push_back({1, "simplex"});
+    g2.nodes.push_back({2, "blur"});
+    g2.nodes.push_back({3, "blend"});
+    g2.connections.push_back({1, 0, 2, 0});   // simplex out -> blur.tex (Sampler2D)
+    g2.connections.push_back({2, 0, 3, 1});   // blur out -> blend.a (Vec4)
+    g2.connections.push_back({2, 0, 3, 2});   // blur out -> blend.b (Vec4)
+    g2.output_node = 2;  // blur is active
+
+    printf("[test] set_resolution(128,128)\n");
+    engine2.set_resolution(128, 128);
+    printf("[test] set_graph()...\n");
+    uint64_t gen2 = engine2.set_graph(g2);
+    printf("[test] set_graph gen=%llu err=%s\n", (unsigned long long)gen2, engine2.last_error());
+    ASSERT_NE(gen2, 0u) << engine2.last_error();
+
+    printf("[test] waiting for pipeline...\n");
+    EXPECT_TRUE(wait_for_pipeline(engine2));
+    printf("[test] pipeline ready\n");
+
+    engine2.shutdown();
+}

@@ -339,7 +339,7 @@ void Engine::shutdown() {
 
 
 void Engine::shutdown_internal_() {
-    // Wait for the GPU to finish. Tolerate device-lost so a sick GPU still allows cleanup.
+    // Wait for the GPU to finish. Tolerate device-lost so a sick GPU still allows recovery.
     if (ctx_.device()) {
         const VkResult w = vkDeviceWaitIdle(ctx_.device());
         if (w != VK_SUCCESS && w != VK_ERROR_DEVICE_LOST) {
@@ -349,6 +349,18 @@ void Engine::shutdown_internal_() {
     }
     async_.drain(ctx_);
     uploader_.drain(ctx_);
+
+    // Free bindless slots held by group execs before retire clears the vector.
+    for (auto& ge : group_execs_) {
+        if (ge.out_storage_slot != BindlessTable::INVALID_SLOT)
+            bindless_.free_storage_slot(ge.out_storage_slot);
+        for (auto& ext : ge.ext_inputs) {
+            if (ext.sampled_slot != BindlessTable::INVALID_SLOT)
+                bindless_.free_sampled_slot(ext.sampled_slot);
+        }
+    }
+    // Retire any live group execs (pipelines + output images).
+    retire_all_passes_();
 
     for (auto& r : retired_passes_) {
         if (r.pipeline) r.pipeline->destroy(ctx_);

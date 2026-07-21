@@ -1,6 +1,6 @@
 ---
 name: beauty-coder
-description: Write advanced expert level code that remains readable, expressive, and learner-friendly, while preserving existing functionality and behavior unless explicitly instructed otherwise.
+description: Use when writing, editing, refactoring, implementing, or reviewing ANY code across the project. Produce expert-level code that is readable, expressive, and learner-friendly — never cryptic or jargon-heavy. Preserves existing functionality and behavior unless explicitly instructed otherwise.
 compatibility: opencode
 ---
 

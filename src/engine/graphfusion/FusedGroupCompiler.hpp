@@ -2,8 +2,10 @@
 
 #include "engine/GraphIR.hpp"
 #include "engine/NodeLibrary.hpp"
+#include "engine/ShaderVariantKey.hpp"
 #include "engine/graphfusion/FusionGroup.hpp"
 #include "engine/graphfusion/FusionGroupEmitter.hpp"
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -34,6 +36,7 @@ struct CompiledGroup {
     uint32_t pass_count         = 1;
     uint32_t intermediate_count = 0;
 
+    FusedVariantKey fused_key;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };
 
@@ -42,6 +45,73 @@ struct CompiledGroupBundle {
     std::string error;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };
+
+// Build a FusedVariantKey for the given group, capturing every field
+// that affects the emitted GLSL. Equal keys produce identical SPIR-V.
+// The key is stored on CompiledGroup and used by populate_groups_()
+// to avoid recompiling shaders that are already cached on disk.
+inline FusedVariantKey build_fused_key(const FusionGroup& group,
+                                       const FusionContext& ctx,
+                                       const GraphIR& ir,
+                                       const NodeLibrary& lib) {
+    FusedVariantKey key;
+    std::unordered_map<NodeId, uint32_t> local_index;
+    uint32_t total_sockets = 0;
+
+    for (uint32_t li = 0; li < group.nodes.size(); ++li) {
+        NodeId nid = group.nodes[li];
+        local_index[nid] = li;
+        const NodeType* t = ctx.node_type.at(nid);
+        key.node_type_ids.push_back(t->id);
+        key.input_counts.push_back(static_cast<uint32_t>(t->inputs.size()));
+        key.param_socket_masks.push_back(0);
+        if (ctx.bypassed_nodes.count(nid))
+            key.bypass_mask |= (1u << li);
+        total_sockets += static_cast<uint32_t>(t->inputs.size());
+    }
+
+    // feature_flags: low 3 bits = ChannelFormat, bits 3-4 = BitDepth
+    NodeId output_node = group.nodes.empty() ? 0 : group.nodes.back();
+    if (const auto* vn = ir.find(output_node)) {
+        StorageFormat sf = resolve_node_storage(*vn, lib);
+        uint32_t fmt   = static_cast<uint32_t>(sf.channels) & 0x7u;
+        uint32_t depth = static_cast<uint32_t>(sf.depth) & 0x3u;
+        key.feature_flags = fmt | (depth << 3);
+    }
+
+    // external_socket_masks: per-node bitmask of cross-group input sockets
+    key.external_socket_masks.assign(group.nodes.size(), 0);
+    for (const auto& ext : group.external_inputs) {
+        auto li = local_index.find(ext.dst_node);
+        if (li != local_index.end())
+            key.external_socket_masks[li->second] |= (1u << ext.dst_socket);
+    }
+
+    // internal_producer_indices: for each socket, the local index of the
+    // in-group node that feeds it, or UINT32_MAX for external/unconnected.
+    key.internal_producer_indices.assign(total_sockets, UINT32_MAX);
+    uint32_t flat = 0;
+    for (uint32_t li = 0; li < group.nodes.size(); ++li) {
+        NodeId nid = group.nodes[li];
+        const NodeType* t = ctx.node_type.at(nid);
+        auto dst_it = ctx.conns_by_dst.find(nid);
+        for (uint32_t s = 0; s < t->inputs.size(); ++s) {
+            NodeId src = 0;
+            if (dst_it != ctx.conns_by_dst.end()) {
+                for (const auto& conn : dst_it->second) {
+                    const auto& [src_node, src_socket, dst_socket] = conn;
+                    if (dst_socket == s) { src = src_node; break; }
+                }
+            }
+            auto sli = local_index.find(src);
+            if (sli != local_index.end())
+                key.internal_producer_indices[flat] = sli->second;
+            ++flat;
+        }
+    }
+
+    return key;
+}
 
 inline CompiledGroupBundle compile_groups(
     const FusionGroupBundle& bundle,
@@ -98,6 +168,8 @@ inline CompiledGroupBundle compile_groups(
         cg.pass_index         = group.pass_index;
         cg.pass_count         = group.pass_count;
         cg.intermediate_count = group.intermediate_count;
+
+        cg.fused_key = build_fused_key(group, ctx, ir, lib);
 
         result.groups.push_back(std::move(cg));
     }
