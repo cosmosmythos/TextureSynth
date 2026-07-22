@@ -1,144 +1,244 @@
 ---
 name: blender-mcp
-description: Use when testing the TextureSynth Blender addon inside a LIVE Blender process via Blender MCP (the `blender_mcp_addon.py` socket server on port 9876). Two modes — (1) build/sweep/bake tests against a fresh graph, and (2) introspect + verify whatever graph the user ALREADY has open, quizzing them or yourself about the task before mutating anything. Use whenever the user says "test in Blender", "does the addon work", "verify the node", "check the graph builds", "sweep the slider", "bake and inspect", "what's in my graph", "test what I have open", "check my setup", or wants to confirm an addon change behaves end-to-end in the real Blender environment. Also use to diagnose addon/engine-bridge bugs that only reproduce with a live bpy.context and running Vulkan engine.
-
+description: Run Python code in live Blender via TCP socket server. Query scenes, node trees, engine state.
+compatibility: opencode
 ---
 
 ## What I do
 
-Drive the **installed TextureSynth extension** from inside a running Blender through the Blender MCP socket server. The addon is event-driven (`ADDON/core/evaluation.py` runs a persistent timer + msgbus), so a test is not a function call — it is: *change graph state, let the timer dispatch, then read back the result.*
+Execute arbitrary Python in Blender's main thread via TCP MCP server. Read scene data, node trees, engine state. No Blender restart needed.
 
-The scripts under `scripts/` are canonical, copy-paste-safe patterns. Read the one that matches the test before writing your own — the graph-building API has several non-obvious contracts (stable IDs, socket format overrides, `as_socket` param slot ordering) that are easy to get wrong.
+## Protocol
 
-## The Blender MCP contract (read first — this shapes every script)
-
-The MCP addon is at `%APPDATA%\Blender Foundation\Blender\5.0\scripts\addons\blender_mcp_addon.py`. It exposes **one** useful command type: `execute_code`. Everything else (`get_scene_info`, etc.) is viewport/object-only and useless for node trees. Key facts:
-
-| Fact | Implication |
+| Item | Value |
 |---|---|
-| `execute_code` runs `exec(code, {"bpy": bpy})` — **fresh namespace per call** | Every script must self-contain its imports. Nothing persists between calls. |
-| Runs on the **main thread** via `bpy.app.timers.register(..., first_interval=0.0)` | `bpy.ops.*` is valid. But context is the user's *real* editor state. |
-| **Stdout is captured** via `redirect_stdout` and returned as the result | `print()` is the **only** output channel. Structure output as a report. No return values. |
-| `bpy.context` reflects whatever the user has selected right now | `context.active_node` is NOT something you set by assigning `tree.nodes.active` in a headless run — it's the user's click. For operators needing it, use `bpy.context.temp_override` or direct socket API. |
-| Server on `localhost:9876` | User must click "Connect to Claude" in the BlenderMCP panel first. If a call errors with connection refused, tell them to connect. |
+| Host:Port | `127.0.0.1:9876` |
+| Encoding | JSON, null-byte (`\0`) delimited |
+| Request | `{"type":"execute","code":"...","strict_json":true}` |
+| Response | `{"status":"ok"/"error","result":{...},"message":"..."}` |
+| Server | `%APPDATA%\Blender Foundation\Blender\5.2\extensions\lab_blender_org\mcp\mcp_to_blender_server.py` |
 
-### How to resolve the addon package
+## Quick usage
 
-The extension's import path depends on how it's loaded. Prefer the resolver helper and **never hardcode** `import texturesynth`:
+```powershell
+# Inline query
+python .opencode/skills/blender-mcp/scripts/mcp_fetch.py "import bpy; result={'ver':bpy.app.version_string}"
 
-```python
-import bpy, addon_utils, importlib, sys
-def _ts_pkg():
-    # Try the bl_ext path (4.2+ extension), then fall back to legacy addon name.
-    for name in ("bl_ext.user_default.texturesynth", "texturesynth"):
-        if name in sys.modules:
-            return importlib.import_module(name)
-    # Not imported yet: force-load via the registered module.
-    for mod in sys.modules.values():
-        core = getattr(mod, "core", None)
-        if core and hasattr(core, "cpp_module"):
-            return mod
-    raise RuntimeError("TextureSynth addon not loaded in this Blender")
+# From script file
+python .opencode/skills/blender-mcp/scripts/mcp_fetch.py my_script.py
+
+# Default: scene overview
+python .opencode/skills/blender-mcp/scripts/mcp_fetch.py
+
+# Run any debug script:
+python .opencode/skills/blender-mcp/scripts/engine_state.py
+python .opencode/skills/blender-mcp/scripts/error_diag.py
 ```
 
-Every bundled script begins with this resolver. If it raises, the extension isn't enabled — tell the user to enable it in Preferences → Extensions.
+## Scripts
 
-## The addon test loop
-
-Every live test follows five steps. Run them as separate `execute_code` calls so you can inspect intermediate output.
-
-| Step | What | Key call |
+| Script | Run | What you get |
 |---|---|---|
-| 1. Find tree | Get the active TextureSynth node tree | `engine_bridge._find_node_tree()` |
-| 2. Build (or read) graph | Create nodes/links OR inspect what's already there | `tree.nodes.new(bl_idname)` + `tree.links.new(...)` |
-| 3. Trigger dispatch | Ask the eval loop to submit | `evaluation.request_topology_update()` (topology) or `request_param_update()` (slider) |
-| 4. Wait for GPU | Async compile + dispatch is non-blocking | poll `engine.is_generation_ready(gen)` + `engine.poll_readback()` |
-| 5. Read back | Pixels land in `bpy.data.images["TS_Preview2D"]` | `img.pixels[:]` or `engine.poll_readback()` |
+| `mcp_fetch.py` | `python mcp_fetch.py "code"` | Core helper — send code, get JSON. Importable from other scripts. |
+| `dissect_scene.py` | `python dissect_scene.py` | All 20 nodes, 21 links, sockets, UUIDs, engine status |
+| `engine_state.py` | `python engine_state.py` | Pipeline ready? Generations (compile/installed/revision), VRAM bytes, VMA heap telemetry (11 fields) |
+| `graph_inspect.py` | `python graph_inspect.py` | Compiled graph output node ID, param layout (node_id→offset), float count |
+| `error_diag.py` | `python error_diag.py` | `last_error_record()` (code/message/failed_node/phase) + per-node `ts_compile_error` from tree |
+| `perf_timings.py` | `python perf_timings.py` | Per-pass GPU timings (pass_index, duration_us, available), gen bump, readback in-flight |
+| `node_params.py` | `python node_params.py` | Every node's sliders, enums, depth/format — safe against bpy_prop_array |
+| `shader_cache.py` | `python shader_cache.py` | All SPIR-V keys: fused chains (`blur→invert`), epoch, external_socket_masks, param_socket_masks |
+| `enable_cpp_logging.py` | `python enable_cpp_logging.py` | Hook C++ `set_log_callback(print)` + bump addon prefs to DEBUG. C++ logs appear in Blender system console. |
+| `disable_cpp_logging.py` | `python disable_cpp_logging.py` | Remove C++ log callback |
+| `ts_quickref.py` | `python ts_quickref.py` | Copy-paste constants for common MCP queries |
+| `trace_timer.py` | `python trace_timer.py` | Read evaluation-timer state + dispatch decision chain from MCP (no addon edits). Identifies blocker: `generation_not_ready`, `compiling_not_ready`, `nothing_dirty`, `no_pipeline`, `engine_not_loaded` |
+| `full_pipeline.py` | `python full_pipeline.py` | Full round-trip: set_resolution → add_node → set_graph → compile → params → submit → readback |
 
-Steps 3-5 normally happen automatically in `_evaluation_timer` (~50-100ms). In a test you can either **let the timer run** (realistic, slower) or **drive the bridge directly** via `engine_bridge.submit_graph()` + `update_params_only(force_submit=True)` (deterministic, faster).
+All paths relative to `scripts/`. All scripts handle engine-not-loaded case gracefully.
 
-## Two testing modes
+## Confirmed engine API calls (C++ → Python bindings)
 
-### Mode A — Verify what's already open (QUIZ FIRST)
+These call `get_engine()` → `Engine` object:
 
-The user often has a graph already built and wants you to test *that*, not a fresh one. **Before mutating anything**, introspect and confirm the task. This avoids destroying their work.
-
-1. Run `scripts/introspect.py` — prints every node, its sv_type, params, links, and engine state. **Read-only.** Safe on any graph.
-2. **Quiz the task.** Either ask the user, or pose the question to yourself and answer it from the introspection output. Examples:
-   - "I see a Perlin → Levels → Output graph, 1024², R16. You said 'test roughness' — do you mean sweep the Perlin `roughness` param and check pixels change? Or add a roughness bake target?"
-   - "The graph has no Output node wired. Did you intend to bake, or just preview?"
-3. **State the plan in one sentence** and only then touch state. If a step would mutate the user's graph (add/remove nodes, rewire, change sliders), say so explicitly and prefer non-destructive variants: add a *new* Output target instead of renaming theirs; sweep a param and restore it after; snapshot node positions before re-locating.
-4. Run the matching Mode B script (adapted) or a custom check, then report.
-
-The quiz is mandatory when the introspection shows a non-trivial graph (≥3 nodes or any links) — guessing wrong wastes the user's setup.
-
-### Mode B — Build a fresh test graph
-
-When there's nothing useful open, or the test needs a controlled setup, build from scratch. Clean the tree first (only after confirming with the user it's not their work). Use the scripts below as scaffolds.
-
-## When to use me
-
-- After editing anything in `ADDON/` and deploying (via the `blender-addon` skill) — confirm the change didn't break graph build / dispatch / readback.
-- Verifying a new node behaves: appears in the Add menu, generates params, accepts links, compiles, produces non-zero output.
-- Sweeping a slider to confirm the engine re-dispatches and pixels change.
-- "Check my setup" / "test what I have open" — Mode A. Introspect, quiz, then verify.
-- Reproducing a user-reported bug that needs a real `bpy.context` (active node, editor space, msgbus) the pytest suite can't construct.
-- Bake smoke test: Output node targets → `texturesynth.bake` → image data-blocks exist with non-zero pixels.
-
-## When NOT to use me
-
-- Testing the C++ engine or `texturesynth_core` binding **without** Blender — use `pytest tests/python/` (root §6). Faster, no GUI.
-- C++ engine internals — use the gtest suite (`-DBUILD_TESTS:BOOL=ON`).
-- Anything expressible in `pytest`. Prefer `pytest` when it fits.
-
-## Bundled scripts (read the relevant one before writing new code)
-
-| Script | Mode | Use when |
+| Call | Returns | Debug use |
 |---|---|---|
-| `scripts/_resolver.py` | both | Helper to find the addon package. Pasted at the top of every other script — not run alone. |
-| `scripts/smoke_test.py` | B | First-run / "does the addon load at all". Engine live, node library populated, tree exists. |
-| `scripts/introspect.py` | A | **Read-only** dump of the current graph: nodes, params, links, engine state, last error. Always run this first in Mode A. |
-| `scripts/build_graph.py` | B | Fresh Perlin → Invert → Output. Template for wiring links + setting props. |
-| `scripts/param_sweep.py` | B | Confirm a slider change re-dispatches and readback pixels change. |
-| `scripts/bake_targets.py` | B | End-to-end bake: add Output targets, call `texturesynth.bake`, verify image data-blocks + non-zero pixels. |
+| `e.has_pipeline()` | bool | Pipeline compiled and ready |
+| `e.is_ready()` | bool | Engine in Ready state |
+| `e.engine_state()` | int | 0=Idle, 1=Building, 2=Ready, 3=Error |
+| `e.current_revision()` | uint64 | Latest submitted generation |
+| `e.compile_generation()` | uint64 | Generation being compiled |
+| `e.installed_generation()` | uint64 | Generation ready to dispatch |
+| `e.is_generation_ready(gen)` | bool | Specific gen finished compiling |
+| `e.async_in_flight()` | bool | Render job pending readback |
+| `e.resource_count()` | int | Live VRAM image count |
+| `e.resource_bytes()` | uint64 | VRAM bytes used |
+| `e.resource_budget_bytes()` | uint64 | VRAM budget limit |
+| `e.get_vma_stats()` | dict | Full VMA: node counts, heap stats, aliasing efficiency, GPU pressure |
+| `e.last_pass_timings` | list[PassTiming] | Each: `p.pass_index`, `p.duration_us`, `p.available` |
+| `e.last_error()` | str | UTF-8 error message (empty if no error) |
+| `e.failed_node()` | uint64 | Node ID that caused compile failure (0 = none) |
+| `e.last_error_record()` | EngineError | `.code`, `.message`, `.failed_node`, `.phase`, `.graph_generation`, `.is_error()` |
+| `e.current_graph()` | Graph | C++ graph ref — use `.output_node` for node ID |
+| `e.param_layout()` | dict | `{node_id: base_offset}` in the GPU SSBO |
+| `e.total_param_floats()` | int | Total float count in param buffer |
+| `e.precision()` | int | Precision mode |
+| `e.graph_default_depth()` | BitDepth | Default bit depth (cast to str for JSON) |
+| `e.update_node_params_by_name(id, dict)` | — | Push per-node params to GPU |
 
-Adapt, don't copy verbatim — these are scaffolds showing correct API calls and ordering, not assertions locked to specific pixel values.
+### Graph building API (for full round-trips)
 
-To run one: send its full text via the MCP `execute_code` tool. Output comes back as captured stdout (the scripts use `print` for exactly this reason).
+| Call | Signature |
+|---|---|
+| `tsc.Graph()` | Construct empty graph |
+| `g.add_node(id, type, format_override, debug_name, muted, bypassed, depth_mode, absolute_depth)` | Add node. Only `id` (uint64) and `type` (str) required. Defaults: `RGBA, "", False, False, Auto, F16` |
+| `g.add_connection(src_id, src_sock_idx, dst_id, dst_sock_idx)` | Wire nodes by integer socket index (0-based) |
+| `g.set_output(node_id)` | Set active output node |
+| `g.add_output_target(node_id, name, socket_idx=0)` | Named bake target |
+| `g.output_node` (prop) | Read current output node ID |
+| `tsc.PushConstants()` | Construct dispatch constants. Set `.resolution_x`, `.resolution_y`, `.seed` (uint32, pass int not float), `.time` |
+| `e.set_resolution(w, h)` | Must call BEFORE `set_graph()` |
+| `e.set_graph(graph)` → uint64 generation | Submit for async compile. 0 = failure |
+| `e.poll_pending_compiles()` | Drain async compile queue (call each tick) |
+| `e.is_generation_ready(gen)` → bool | Check if submit→compile finished |
+| `e.update_node_params_by_name(node_id, {"name": val})` | Push slider/enum values to GPU SSBO |
+| `e.update_node_params_by_id(node_id, [float, ...])` | Push params by flat index order |
+| `e.submit_render(pc, gen)` → uint64 ticket | Dispatch GPU render. 0 = ring full |
+| `e.readback_sync()` → numpy[H,W,4] float32 RGBA | Block until GPU done, get pixels |
+| `e.poll_readback()` → (numpy, gen) or None | Non-blocking async readback |
+| `e.bake()` → list of `{name, width, height, pixels}` | Bake all output targets |
+| `e.upload_image(node_id, numpy[H,W,4], w, h)` → bool | Upload pixel data for image/texture nodes |
 
-## API reference
+`texturesynth_core` module-level:
 
-Full node list, socket layouts, and bl_idnames live in `references/nodes_and_api.md`. **Read it before constructing a graph from scratch.** It documents the two easiest things to get wrong:
+| Call | Debug use |
+|---|---|
+| `texturesynth_core.set_log_callback(fn)` | Stream C++ engine logs to Python. Set to `None` to disable. Callback: `fn(level_str, msg_str)`. |
 
-1. **Node `bl_idname`s** are not uniform. Factory-generated nodes use `TS_<SvTypeCapitalized>_Node` (e.g. `TS_Perlin_Node`); specialized nodes use hand-written ids (`TS_Blend_Node`, `TS_Image_Node`, `TS_Levels_Node`, `TS_Color_Const_Node`, `TS_Output_Node`).
-2. **`as_socket` params become input sockets**, and the engine's slot ordering is "regular inputs first, then as_socket inputs" (`ADDON/core/engine_bridge.py:328-341`).
+## Blender 5.2 confirmed APIs for TextureSynth
 
-## CRASH PREVENTION — NEVER SET `tree.nodes.active`
+| What to use | Gets you |
+|---|---|
+| `bpy.context.preferences.addons["bl_ext.user_default.texturesynth"]` | Check if TS extension is enabled (raises KeyError if not) |
+| `bpy.context.preferences.addons` | Enabled addons list (`bl_ext.user_default.texturesynth`) |
+| `t.name.startswith("TextureSynth")` | Find TS node tree |
+| `t.bl_idname` | `"TextureSynthTreeType"` |
+| `type(t).__name__` | `"TextureSynthTree"` |
+| `n.bl_rna.identifier` | Node type: `"TS_Invert_Node"`, `"TS_Blur_Node"`, etc. |
+| `n.items()` | Custom ID properties (TS nodes store params as registered RNA props, not ID props — use `bl_rna.properties` instead) |
+| `getattr(n, p.identifier)` | Read node param by RNA property identifier |
 
-**DO NOT set `tree.nodes.active` from MCP scripts. EVER.** This triggers a crash chain:
+## Import rules (verified in Blender 5.2)
 
-1. Setting `tree.nodes.active = X` fires Blender's `_on_format_override_change` → deferred `_rebuild` timer
-2. `_rebuild` calls `rebuild_output_sockets()` on the node — if the node is mid-transition or partially constructed, Blender segfaults (access violation in `ColorAdapterClient.dll` / `icm32.dll`)
-3. **The active node IS the preview output.** Making a node active triggers `TS_Preview2D` update via the evaluation timer. You do NOT need to set it — the addon does this automatically.
+MCP code runs inside Blender's Python where the addon is fully loaded. All these work:
 
-If you need to inspect the graph, use the existing `tree.nodes` collection. Do NOT touch `.active`.
+```python
+# Get engine — use either:
+from bl_ext.user_default.texturesynth.core.cpp_module import get_engine
+e = get_engine()
 
-## Common live-test pitfalls
+# OR (slightly more robust in edge cases):
+import sys
+e = sys.modules["bl_ext.user_default.texturesynth.core.cpp_module"].get_engine()
+```
 
-- **Operators needing `context.active_node`.** In MCP, `context` is the user's real selection — setting `tree.nodes.active` in code does NOT change `context.active_node` for the operator call. Use `bpy.context.temp_override(active_node=node, ...)` **inside the editor area context**, or skip the operator and use the direct API (e.g. `node.inputs.new(...)` instead of `bpy.ops.texturesynth.output_target_add()`). The scripts prefer the direct API for this reason.
-- **`tree.nodes.new` positioning.** Headless MCP runs stack nodes at (0,0). Set `node.location = (x, y)` only if layout matters (it usually doesn't for tests).
-- **Every TS node needs a `stable_id()`** before the engine sees it — `init` assigns the UUID. Create-then-link and create-then-submit are both fine.
-- **Mute rewiring searches ALL inputs**, not input[0] (root §5 gotcha). For filter nodes socket 0 is often the mask; data is socket 1.
-- **One VkInstance per process** (root §5). Never call `cpp_module.shutdown()` mid-test and expect the addon to keep working. Tests leave the engine running.
-- **Readback is async.** `submit_graph()` returning non-zero means *accepted*, not *rendered*. Poll `is_generation_ready(gen)` then `poll_readback()` (returns `None` until a frame lands).
-- **`TS_Preview2D`** is the live preview image. Black after a submit = `engine_bridge._invalidate_output_image()` ran = submit failed. Check `engine.last_error()` for the cause; black is the symptom, not the diagnosis.
+```python
+# Module-level C++ API (Graph, PushConstants, set_log_callback):
+import texturesynth_core as tsc
+g = tsc.Graph()
+pc = tsc.PushConstants()
+tsc.set_log_callback(fn)
+```
 
-## Reporting results
+**What does NOT work:**
+- `texturesynth_core.get_engine()` — `get_engine()` is in `cpp_module`, not at module level
 
-After a test run, report concretely:
-- Which script ran and whether each step's assertion passed (quote the printed PASS/FAIL lines).
-- Engine generation number, `last_error()` string (or "None"), and any compile error on a node (`node.ts_compile_error`).
-- For readback/bake: image dimensions and a pixel statistic (mean / non-zero fraction), not "it worked".
-- If a step failed, quote the actual `engine.last_error()` / Python traceback — don't paraphrase.
+**One gotcha:** `engine_bridge` has both a function `submitted_generation()` and a variable `_submitted_generation`. Use `eb.submitted_generation()` for the function, `eb._submitted_generation` for the raw variable.
 
-Do not claim a change is verified unless readback actually produced non-trivial pixels. For Mode A, also state what the quiz concluded and which (if any) mutation you performed.
+## Serialization rules (must follow exactly)
+
+- **`result` must be a dict.** Always: `result = {"key": value}`.
+- **C++ binding objects** (`EngineError`, `PassTiming`, `BitDepth`, `Graph`, `NodeType`) are NOT subscriptable. Access as `.attribute` not `["attr"]`.
+- **bpy_prop_array / Vector / Color / Matrix** are NOT JSON-serializable. Convert: `round(float(val), 6)`, `int(val)`, `bool(val)`, `str(val)`.
+- **Enum objects** from C++ bindings (`BitDepth.F16`) — cast to `str()`.
+- **MCP request code** must be a single string passed as CLI arg or file. Multi-line is fine inside quotes.
+
+## Script structure rule (critical — agents keep getting this wrong)
+
+**Never use PowerShell here-strings (`@"..."@`) for Python multi-line code.**
+
+PowerShell 5.1 here-strings have fragile quoting rules and break when the code contains `"`, `$`, or `()`. Instead, always write a `.py` file with the Python code as a regular string:
+
+```python
+# ✅ CORRECT — Python multi-line string in a .py file
+code = r"""
+import sys
+e = sys.modules["bl_ext.user_default.texturesynth.core.cpp_module"].get_engine()
+result = {"status": "ok", "generation": e.current_revision()}
+"""
+
+if __name__ == "__main__":
+    from mcp_fetch import send
+    import json
+    resp = send(code)
+    print(json.dumps(resp, indent=2))
+```
+
+Run it directly:
+```powershell
+python script.py
+```
+
+The `mcp_fetch` module handles the TCP socket and null-byte framing. Your code executes inside **Blender's Python**, not the shell — so shell quoting never matters.
+
+**Never** try to inline multi-line Python via `python -c "@`...`"@` — it breaks on quotes, dollar signs, and nested strings. If you need a one-liner for a quick test, use `mcp_fetch.py` directly:
+
+```powershell
+python .opencode/skills/blender-mcp/scripts/mcp_fetch.py "import bpy; result={'ver': bpy.app.version_string}"
+```
+
+## Tracing the evaluation timer (dispatch decision chain)
+
+When the addon skips dispatch, read `trace_timer.py` output. The decision at `evaluation.py:175`:
+
+```
+needs_dispatch = ready and (_force_render or _params_dirty)
+```
+
+**State modules** (all readable from MCP via `sys.modules`):
+
+| Module | File | Readable state |
+|---|---|---|
+| `...core.evaluation` | `ADDON/core/evaluation.py` | `_topology_dirty`, `_params_dirty`, `_compiling`, `_force_render` |
+| `...core.engine_bridge` | `ADDON/core/engine_bridge.py` | `_submitted_generation`, `_last_applied_generation`, `_last_pushed_param_hash`, `_last_active_node_id`, `_last_mute_snapshot`, `_image_cache`, `_pending_image_uploads` |
+| `...core.cpp_module` | `ADDON/core/cpp_module.py` | `is_loaded()`, `get_engine()` → `.has_pipeline()`, `.is_generation_ready(gen)`, `.async_in_flight()` |
+
+**Dispatch chain** (which flag sets what):
+
+1. User edits a parameter → `request_param_update()` → `_params_dirty = True`
+2. User changes topology → `request_topology_update()` → `_topology_dirty = True` → timer submits graph → sets `_force_render = True`
+3. Active node changes → `_on_node_select_change()` or timer poll → sets `_force_render = True` OR calls `request_topology_update()`
+4. Timer tick (line 166-183): checks `ready = is_generation_ready(submitted)` → `needs_dispatch = ready and (_force_render or _params_dirty)` → calls `update_params_only(force_submit=True)`
+5. **Dead code bug** (`evaluation.py:183-188`): `return 0.016` is before the flag-clearing lines. `_force_render` and `_params_dirty` are **never cleared**. Once set, `needs_dispatch` is permanently True → dispatch fires every 16ms tick.
+
+**Why dispatch might not fire:**
+- `engine` is None or `has_pipeline()` is False → `needs_dispatch` never reached
+- `_submitted_generation` is 0 → `ready` stays False
+- `is_generation_ready(gen)` returns False (compile still in-flight) → `ready = False`
+- `_force_render` AND `_params_dirty` both False → nothing triggers a render
+
+## Gotchas
+
+| Gotcha | Mitigation |
+|---|---|
+| `result` not a dict | Always wrap: `result = {"key": value}` |
+| C++ struct not subscriptable | Use `.attr`, not `["attr"]` |
+| `bpy_prop_array` | `round(float(val), 6)` before assigning to result |
+| `Color` / `Vector` RNA types | `json.dumps(default=repr)` or early convert |
+| C++ enum (BitDepth) | `str(e.graph_default_depth())` |
+| `texturesynth_core.get_engine()` doesn't exist | `get_engine()` is in `cpp_module`, not at `texturesynth_core` module level. Use `from ...cpp_module import get_engine` |
+| One request per connection | Server closes after each response |
+| 10s client timeout | Split long loops or use scripts |
+| `n.items()` returns empty on TS nodes | Use `n.bl_rna.properties` instead |
+| `_` as list-comp iteration var + string literal `'_x'` | Python concatenates: `_[hasattr(e, '_x') for _ in items]` parses as `_x = _` (loop var) + `"x"`. Use `[hasattr(e, '_x') for item in items]` |
+| `hasattr()` on C++ binding triggers exception | Nanobind `__getattr__` can raise `RuntimeError` instead of returning False. Use `try: obj.attr; has=True; except (AttributeError, RuntimeError): has=False` |
+| MCP server not running | Check Blender → Extensions → MCP is enabled + port 9876 open |
+| ImportError after addon enable | Engine `.pyd` not deployed — see AGENTS.md §4 |

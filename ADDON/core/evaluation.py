@@ -180,11 +180,14 @@ def _evaluation_timer():
             _tslog.debug(f"dispatch state={state}")
         except Exception as e:
             _tslog.error(f"dispatch exception: {e}")
-        return 0.016
+            state = 'error'
 
-        if state == 'landed':
+        if state in ('landed', 'idle', 'error'):
             _force_render = False
             _params_dirty = False
+
+        if state == 'in_flight' or engine.async_in_flight():
+            return 0.016
         return 0.05
 
     if _compiling:

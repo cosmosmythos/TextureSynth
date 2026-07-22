@@ -694,15 +694,15 @@ def update_params_only(force_submit: bool = False):
         request_topology_update()
         return 'invalid'
 
-    res = _get_resolution()
-    engine.set_resolution(res, res)
-    _apply_sidebar_precision(engine)
-
     fp = _active_subgraph_fingerprint(tree)
     if fp != _last_active_fingerprint:
         from .evaluation import request_topology_update
         request_topology_update()
         return 'invalid'
+
+    res = _get_resolution()
+    engine.set_resolution(res, res)
+    _apply_sidebar_precision(engine)
 
     pc, _ = _build_push_constants(tree)
     if pc is None:
