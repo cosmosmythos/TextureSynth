@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuites tests="1" failures="0" disabled="0" errors="0" time="1.973" timestamp="2026-06-19T17:10:18.130" name="AllTests">
-  <testsuite name="NoiseNodes" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="1.341" timestamp="2026-06-19T17:10:18.636">
-    <testcase name="Worley_TimeShift_AllPeriods" file="C:\Users\User\Documents\0\TEXTURESYNTH\tests\test_noise_nodes.cpp" line="297" status="run" result="completed" time="1.341" timestamp="2026-06-19T17:10:18.636" classname="NoiseNodes" />
-  </testsuite>
-</testsuites>

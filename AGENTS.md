@@ -155,7 +155,30 @@ On bash-capable systems, the `blender-addon` OpenCode skill (`.opencode/skills/b
 
 ---
 
-## 6. Workflow Rules
+## 6. File Storage Rules
+
+**Where to put things to keep the project root clean:**
+
+| Artifact type | Destination | Examples |
+|---|---|---|
+| Dev journal / plans / debug findings | `DEV_LOG/` | `INTERMEDIATE_OVERRIDE_DEBUG_FINDINGS.md`, `MUTE_FIX_PLAN.md` |
+| Architecture diagrams / docs (non-journal) | `docs/` | `.html`, `.excalidraw`, architecture writeups |
+| Debug Python scripts (one-off probes) | `tools/` | `debug_blender_mute.py`, `mcp_query.py` |
+| GLSL dump files from tests | Delete after use (do not commit) | `.glsl` dumps in repo root |
+| Test output artifacts | Delete after verification | `test_detail.xml`, `test_results.xml` |
+| Binary dumps | Delete after verification | `fusion_fused.bin` |
+| Test caches | Delete after verification | `test_shader_cache/` |
+| Build artifacts (`build/`) | Keep in `build/` — never commit to root | `.pyd`, `.obj`, `.exe` |
+
+**Hard rules:**
+- **Never commit** `.glsl` dump files, `.xml` test results, `.bin` dumps, `.obj` test artifacts, or empty cache directories to the repo root.
+- **Always place `.md` documents** in either `DEV_LOG/` (journal/plans/debug findings) or `docs/` (architecture/reference). Never in the repo root.
+- **Always place debug Python scripts** in `tools/`. Not in root.
+- If you generate temporary files during debugging, delete them before the next commit.
+
+---
+
+## 7. Workflow Rules
 
 **🚫 NEVER deploy .pyd/.so binaries manually.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable. **When C++ changes are needed: ask user for approval first, then commit and push.**
 
@@ -182,7 +205,7 @@ if (Test-Path .\ADDON\shader_assets) { Remove-Item -LiteralPath .\ADDON\shader_a
 
 ---
 
-## 7. Code Style: No Verbose Commentary
+## 8. Code Style: No Verbose Commentary
 - **No huge blocks of comments** in code. Code should be self-documenting via clear naming.
 - **No tutorial-style docstrings** that re-state what a function does. One-line docstrings are fine.
 - **3-layer explanations** (artist/architecture/code) are for *conversations with the user*, not for source files.
@@ -289,7 +312,7 @@ TextureSynth is a node-based Vulkan procedural-texture engine with a Python/Blen
 | [`ADDON/AGENTS.md`](ADDON/AGENTS.md) | Blender 4.3+ extension (`ADDON/`): register order, nodes/operators/panels, engine bridge | `cpp_module` loads `.pyd` from wheel; never create `src/*_addon/` |
 | [`shader_assets/AGENTS.md`](shader_assets/AGENTS.md) | Node manifests (`*.node.json`), GLSL node fns, common GLSL | Every node GLSL follows the `vec4 node_<name>(vec2 uv, ...)` signature contract |
 | [`tests/AGENTS.md`](tests/AGENTS.md) | C++ gtest suite + Python pytest suite against the binding | C++ tests need `-DBUILD_TESTS:BOOL=ON`; Python tests skip if Vulkan init fails |
-| [`DEV_LOG/AGENTS.md`](DEV_LOG/AGENTS.md) | User's dev journal: roadmaps, feature plans, architecture notes | Read-only for agents; no verification |
+| [`DEV_LOG/AGENTS.md`](DEV_LOG/AGENTS.md) | User's dev journal: roadmaps, feature plans, architecture notes, debug findings | Agent-writeable when user directs; no verification |
 
 Hierarchy:
 ```
@@ -310,3 +333,4 @@ Cross-cutting artifacts that live at repo root (no dedicated doc — covered by 
 - `build_fast.bat` (use) / `build_clean.bat` (never use) — see §2.
 - `.github/workflows/build_texturesynth.yml` — CI builds wheels for py311/py313.
 - `deploy.ps1`, `scripts/*.bat` — local helper scripts; non-durable.
+- `tools/*.py` — debug Python scripts and one-off probes (see §6).
