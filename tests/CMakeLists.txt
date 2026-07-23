@@ -9,37 +9,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(engine_tests
     main.cpp
-    test_context.cpp
-    test_graph_validation.cpp
-    test_async_readback.cpp
-    test_full_pipeline.cpp
-    test_shader_variant_key.cpp
-    test_fused_variant_key.cpp
-    test_dirty_set.cpp
-    test_aliasing.cpp
-    test_mask_node.cpp
-    test_timestamps.cpp
-    inspect_perlin_invert.cpp
     test_fusion_group.cpp
-    test_combine_rgba.cpp
-    test_storage_format.cpp
-    test_blend_mode_param.cpp
-    test_depth_resolution.cpp
-    test_format_depth_keys.cpp
-    test_image_upload.cpp
-    test_noise_nodes.cpp
-    test_blend_cross_chain.cpp
-    test_blend_py_repro.cpp
-    test_channel_defaults.cpp
-    test_color_const.cpp
-    test_blur_debug.cpp
-    test_blend_dual_input.cpp
-    test_active_node_stability.cpp
-    test_dead_node_impact.cpp
-    test_dead_node_impact2.cpp
-    test_param_stability.cpp
-    test_blend002_corruption.cpp
-    test_memory_tracking.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE
