@@ -1,0 +1,773 @@
+﻿Note: Google Test filter = FusionGroupTest.EmitGroupsProducesGLSL
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from FusionGroupTest
+[ RUN      ] FusionGroupTest.EmitGroupsProducesGLSL
+.\build\tests\Release\engine_tests.exe : [info]  [topo] eval_order nodes=12 ir.nodes=12 output=9
+At line:1 char:1
++ .\build\tests\Release\engine_tests.exe --gtest_filter="FusionGroupTes ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([info]  [topo] ...des=12 output=9:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[info]  [topo]   [0] node=1
+[info]  [topo]   [1] node=2
+[info]  [topo]   [2] node=3
+[info]  [topo]   [3] node=8
+[info]  [topo]   [4] node=5
+[info]  [topo]   [5] node=4
+[info]  [topo]   [6] node=6
+[info]  [topo]   [7] node=10
+[info]  [topo]   [8] node=11
+[info]  [topo]   [9] node=7
+[info]  [topo]   [10] node=12
+[info]  [topo]   [11] node=9
+[info]  group_nodes: 8 groups formed
+  [0] nodes=[1] pass=0/1 count=1 inter=0
+  [1] nodes=[2] pass=0/2 count=2 inter=0
+  [2] nodes=[2,3] pass=1/2 count=2 inter=0
+  [3] nodes=[8,5] pass=0/1 count=1 inter=0
+  [4] nodes=[4] pass=0/1 count=1 inter=0
+  [5] nodes=[6] pass=0/1 count=1 inter=0
+  [6] nodes=[10,11] pass=0/1 count=1 inter=0
+  [7] nodes=[7,12,9] pass=0/1 count=1 inter=0
+[info]  merge_groups: merged src_idx=4 ΓåÆ dst_idx=7
+  src nodes=[4] pass=0/1
+  dst nodes=[7,12,9] pass=0/1
+[info]  compute_external_inputs:
+  group 0 nodes=[1] pass=0/1
+  group 1 nodes=[2] pass=0/2
+    ext[0]: src=1 sock=0 ΓåÆ dst=2 sock=0
+  group 2 nodes=[2,3] pass=1/2
+    ext[0]: src=1 sock=0 ΓåÆ dst=2 sock=0
+  group 3 nodes=[8,5] pass=0/1
+  group 4 nodes=[6] pass=0/1
+  group 5 nodes=[10,11] pass=0/1
+  group 6 nodes=[4,7,12,9] pass=0/1
+    ext[0]: src=3 sock=0 ΓåÆ dst=4 sock=1
+    ext[1]: src=5 sock=0 ΓåÆ dst=4 sock=0
+    ext[2]: src=6 sock=0 ΓåÆ dst=7 sock=1
+    ext[3]: src=11 sock=0 ΓåÆ dst=7 sock=0
+[info]  emit_group gi=0 nodes=[1] ext_inputs=0 pass=0/1
+  GLSL:
+  | #version 460
+  | 
+  | #extension GL_EXT_nonuniform_qualifier : require
+  | #extension GL_EXT_samplerless_texture_functions : require
+  | layout(local_size_x = 8, local_size_y = 8) in;
+  | 
+  | layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+  | layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
+  | 
+  | layout(set = 0, binding = 2) uniform sampler samp_repeat;
+  | layout(set = 0, binding = 3) uniform sampler samp_clamp;
+  | layout(set = 0, binding = 4) uniform sampler samp_mirror;
+  | layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+  | layout(constant_id = 0) const uint ts_pass_index = 0u;
+  | layout(push_constant, std430) uniform PC {
+  |     uint resolution_x, resolution_y, seed;
+  |     float time;
+  |     uint out_storage_slots[4];
+  |     uint param_base_slot;
+  |     uint input_count;
+  |     uint param_ring_idx;
+  |     uint in_sampled_slots[8];
+  |     uint pass_index;
+  | } pc;
+  | 
+  | struct TSTexture { int slot; vec2 inv_size; };
+  | 
+  | vec4 ts_sample(int local, vec2 uv) {
+  |     return texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv);
+  | }
+  | vec4 ts_sample_lod(int local, vec2 uv, float lod) {
+  |     return textureLod(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv, lod);
+  | }
+  | ivec2 ts_size(int local) {
+  |     return textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], 0);
+  | }
+  | vec4  Sample      (TSTexture t, vec2 uv)            { return ts_sample(t.slot, uv); }
+  | vec4  SampleLevel (TSTexture t, vec2 uv, float lod) { return ts_sample_lod(t.slot, uv, lod); }
+  | ivec2 GetSize     (TSTexture t)                     { return ts_size(t.slot); }
+  | vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
+  | 
+  | 
+  | 
+  | 
+  | vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
+  | vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
+  | vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+  | vec4 _fmt_rgba(vec4 v) { return v; }
+  | 
+  | 
+  | vec4 node_worley(vec2 uv) { return vec4(0.0); }
+  | 
+  | void main() {
+  |     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+  |     vec2 uv;
+  |     uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+  |     uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+  |     vec4 _result = vec4(0.0);
+  |     if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+  |     vec4 _g0_out;
+  |     _g0_out = node_worley(uv, node_params[pc.param_ring_idx].v[0], node_params[pc.param_ring_idx].v[1], 
+node_params[pc.param_ring_idx].v[2], node_params[pc.param_ring_idx].v[3], node_params[pc.param_ring_idx].v[4], 
+node_params[pc.param_ring_idx].v[5], node_params[pc.param_ring_idx].v[6]);
+  |     imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g0_out);
+  | }
+
+[info]  emit_group gi=1 nodes=[2] ext_inputs=1 pass=0/2
+  GLSL:
+  | #version 460
+  | 
+  | #extension GL_EXT_nonuniform_qualifier : require
+  | #extension GL_EXT_samplerless_texture_functions : require
+  | layout(local_size_x = 8, local_size_y = 8) in;
+  | 
+  | layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+  | layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
+  | 
+  | layout(set = 0, binding = 2) uniform sampler samp_repeat;
+  | layout(set = 0, binding = 3) uniform sampler samp_clamp;
+  | layout(set = 0, binding = 4) uniform sampler samp_mirror;
+  | layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+  | layout(constant_id = 0) const uint ts_pass_index = 0u;
+  | layout(push_constant, std430) uniform PC {
+  |     uint resolution_x, resolution_y, seed;
+  |     float time;
+  |     uint out_storage_slots[4];
+  |     uint param_base_slot;
+  |     uint input_count;
+  |     uint param_ring_idx;
+  |     uint in_sampled_slots[8];
+  |     uint pass_index;
+  | } pc;
+  | 
+  | struct TSTexture { int slot; vec2 inv_size; };
+  | 
+  | vec4 ts_sample(int local, vec2 uv) {
+  |     return texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv);
+  | }
+  | vec4 ts_sample_lod(int local, vec2 uv, float lod) {
+  |     return textureLod(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv, lod);
+  | }
+  | ivec2 ts_size(int local) {
+  |     return textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], 0);
+  | }
+  | vec4  Sample      (TSTexture t, vec2 uv)            { return ts_sample(t.slot, uv); }
+  | vec4  SampleLevel (TSTexture t, vec2 uv, float lod) { return ts_sample_lod(t.slot, uv, lod); }
+  | ivec2 GetSize     (TSTexture t)                     { return ts_size(t.slot); }
+  | vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
+  | 
+  | 
+  | 
+  | 
+  | vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
+  | vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
+  | vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+  | vec4 _fmt_rgba(vec4 v) { return v; }
+  | 
+  | 
+  | vec4 node_blur(vec2 uv, TSTexture tex) { return vec4(0.0); }
+  | 
+  | void main() {
+  |     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+  |     vec2 uv;
+  |     uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+  |     uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+  |     vec4 _result = vec4(0.0);
+  |     if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+  |     vec4 _g1_out;
+  |     _g1_out = node_blur(uv, TSTexture(0, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], 
+0))), node_params[pc.param_ring_idx].v[7]);
+  |     imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g1_out);
+  | }
+
+[info]  emit_group gi=2 nodes=[2,3] ext_inputs=1 pass=1/2
+  GLSL:
+  | #version 460
+  | 
+  | #extension GL_EXT_nonuniform_qualifier : require
+  | #extension GL_EXT_samplerless_texture_functions : require
+  | layout(local_size_x = 8, local_size_y = 8) in;
+  | 
+  | layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+  | layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
+  | 
+  | layout(set = 0, binding = 2) uniform sampler samp_repeat;
+  | layout(set = 0, binding = 3) uniform sampler samp_clamp;
+  | layout(set = 0, binding = 4) uniform sampler samp_mirror;
+  | layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+  | layout(constant_id = 0) const uint ts_pass_index = 0u;
+  | layout(push_constant, std430) uniform PC {
+  |     uint resolution_x, resolution_y, seed;
+  |     float time;
+  |     uint out_storage_slots[4];
+  |     uint param_base_slot;
+  |     uint input_count;
+  |     uint param_ring_idx;
+  |     uint in_sampled_slots[8];
+  |     uint pass_index;
+  | } pc;
+  | 
+  | struct TSTexture { int slot; vec2 inv_size; };
+  | 
+  | vec4 ts_sample(int local, vec2 uv) {
+  |     return texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv);
+  | }
+  | vec4 ts_sample_lod(int local, vec2 uv, float lod) {
+  |     return textureLod(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv, lod);
+  | }
+  | ivec2 ts_size(int local) {
+  |     return textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], 0);
+  | }
+  | vec4  Sample      (TSTexture t, vec2 uv)            { return ts_sample(t.slot, uv); }
+  | vec4  SampleLevel (TSTexture t, vec2 uv, float lod) { return ts_sample_lod(t.slot, uv, lod); }
+  | ivec2 GetSize     (TSTexture t)                     { return ts_size(t.slot); }
+  | vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
+  | 
+  | 
+  | 
+  | 
+  | vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
+  | vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
+  | vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+  | vec4 _fmt_rgba(vec4 v) { return v; }
+  | 
+  | 
+  | vec4 node_blur(vec2 uv, TSTexture tex) { return vec4(0.0); }
+  | 
+  | vec4 node_invert(vec2 uv, float mask, vec4 color) { return vec4(0.0); }
+  | 
+  | void main() {
+  |     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+  |     vec2 uv;
+  |     uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+  |     uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+  |     vec4 _result = vec4(0.0);
+  |     if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+  |     vec4 _n0;
+  |     _n0 = node_blur(uv, TSTexture(0, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], 
+0))), node_params[pc.param_ring_idx].v[7]);
+  |     vec4 _g2_out;
+  |     _g2_out = node_invert(uv, node_params[pc.param_ring_idx].v[8], _n0);
+  |     imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g2_out);
+  | }
+
+[info]  emit_group gi=3 nodes=[8,5] ext_inputs=0 pass=0/1
+  GLSL:
+  | #version 460
+  | 
+  | #extension GL_EXT_nonuniform_qualifier : require
+  | #extension GL_EXT_samplerless_texture_functions : require
+  | layout(local_size_x = 8, local_size_y = 8) in;
+  | 
+  | layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+  | layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
+  | 
+  | layout(set = 0, binding = 2) uniform sampler samp_repeat;
+  | layout(set = 0, binding = 3) uniform sampler samp_clamp;
+  | layout(set = 0, binding = 4) uniform sampler samp_mirror;
+  | layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+  | layout(constant_id = 0) const uint ts_pass_index = 0u;
+  | layout(push_constant, std430) uniform PC {
+  |     uint resolution_x, resolution_y, seed;
+  |     float time;
+  |     uint out_storage_slots[4];
+  |     uint param_base_slot;
+  |     uint input_count;
+  |     uint param_ring_idx;
+  |     uint in_sampled_slots[8];
+  |     uint pass_index;
+  | } pc;
+  | 
+  | struct TSTexture { int slot; vec2 inv_size; };
+  | 
+  | vec4 ts_sample(int local, vec2 uv) {
+  |     return texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv);
+  | }
+  | vec4 ts_sample_lod(int local, vec2 uv, float lod) {
+  |     return textureLod(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv, lod);
+  | }
+  | ivec2 ts_size(int local) {
+  |     return textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], 0);
+  | }
+  | vec4  Sample      (TSTexture t, vec2 uv)            { return ts_sample(t.slot, uv); }
+  | vec4  SampleLevel (TSTexture t, vec2 uv, float lod) { return ts_sample_lod(t.slot, uv, lod); }
+  | ivec2 GetSize     (TSTexture t)                     { return ts_size(t.slot); }
+  | vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
+  | 
+  | 
+  | 
+  | 
+  | vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
+  | vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
+  | vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+  | vec4 _fmt_rgba(vec4 v) { return v; }
+  | 
+  | 
+  | vec4 node_perlin(vec2 uv) { return vec4(0.0); }
+  | 
+  | vec4 node_levels(vec2 uv, vec4 color) { return vec4(0.0); }
+  | 
+  | void main() {
+  |     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+  |     vec2 uv;
+  |     uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+
+=== Group 0 ===
+  Nodes: Worley (Cellular)(1)
+  GLSL main:
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+    vec4 _result = vec4(0.0);
+    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+    vec4 _g0_out;
+    _g0_out = node_worley(uv, node_params[pc.param_ring_idx].v[0], node_params[pc.param_ring_idx].v[1], node_params[pc.param_ring_idx].v[2], node_params[pc.param_ring_idx].v[3], node_params[pc.param_ring_idx].v[4], node_params[pc.param_ring_idx].v[5], node_params[pc.param_ring_idx].v[6]);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g0_out);
+}
+
+
+=== Group 1 ===
+  Nodes: Blur.001(2)
+  External inputs:
+    slot 0: Worley (Cellular)(1) output0 -> Blur.001(2) input0
+  GLSL main:
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+    vec4 _result = vec4(0.0);
+    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+    vec4 _g1_out;
+    _g1_out = node_blur(uv, TSTexture(0, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], 0))), node_params[pc.param_ring_idx].v[7]);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g1_out);
+}
+
+
+=== Group 2 ===
+  Nodes: Blur.001(2) Invert(3)
+  External inputs:
+    slot 0: Worley (Cellular)(1) output0 -> Blur.001(2) input0
+  GLSL main:
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+    vec4 _result = vec4(0.0);
+    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+    vec4 _n0;
+    _n0 = node_blur(uv, TSTexture(0, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], 0))), node_params[pc.param_ring_idx].v[7]);
+    vec4 _g2_out;
+    _g2_out = node_invert(uv, node_params[pc.param_ring_idx].v[8], _n0);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g2_out);
+}
+
+
+=== Group 3 ===
+  Nodes: Perlin Noise.001(8) Levels(5)
+  GLSL main:
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+    vec4 _result = vec4(0.0);
+    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+    vec4 _n0;
+    _n0 = node_perlin(uv, node_params[pc.param_ring_idx].v[9], node_params[pc.param_ring_idx].v[10], node_params[pc.param_ring_idx].v[11], node_params[pc.param_ring_idx].v[12], node_params[pc.param_ring_idx].v[13], node_params[pc.param_ring_idx].v[14]);
+    vec4 _g3_out;
+    _g3_out = node_levels(uv, _n0, node_params[pc.param_ring_idx].v[15], node_params[pc.param_ring_idx].v[16], node_params[pc.param_ring_idx].v[17], node_params[pc.param_ring_idx].v[18], node_params[pc.param_ring_idx].v[19], node_params[pc.param_ring_idx].v[20], node_params[pc.param_ring_idx].v[21], node_params[pc.param_ring_idx].v[22], node_params[pc.param_ring_idx].v[23], node_params[pc.param_ring_idx].v[24], node_params[pc.param_ring_idx].v[25], node_params[pc.param_ring_idx].v[26], node_params[pc.param_ring_idx].v[27], node_params[pc.param_ring_idx].v[28], node_params[pc.param_ring_idx].v[29], node_params[pc.param_ring_idx].v[30], node_params[pc.param_ring_idx].v[31], node_params[pc.param_ring_idx].v[32], node_params[pc.param_ring_idx].v[33], node_params[pc.param_ring_idx].v[34], node_params[pc.param_ring_idx].v[35], node_params[pc.param_ring_idx].v[36], node_params[pc.param_ring_idx].v[37], node_params[pc.param_ring_idx].v[38], node_params[pc.param_ring_idx].v[39]);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g3_out);
+}
+
+
+=== Group 4 ===
+  Nodes: Perlin Noise(6)
+  GLSL main:
+void main() {
+  |     uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+  |     vec4 _result = vec4(0.0);
+  |     if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+  |     vec4 _n0;
+  |     _n0 = node_perlin(uv, node_params[pc.param_ring_idx].v[9], node_params[pc.param_ring_idx].v[10], 
+node_params[pc.param_ring_idx].v[11], node_params[pc.param_ring_idx].v[12], node_params[pc.param_ring_idx].v[13], 
+node_params[pc.param_ring_idx].v[14]);
+  |     vec4 _g3_out;
+  |     _g3_out = node_levels(uv, _n0, node_params[pc.param_ring_idx].v[15], node_params[pc.param_ring_idx].v[16], 
+node_params[pc.param_ring_idx].v[17], node_params[pc.param_ring_idx].v[18], node_params[pc.param_ring_idx].v[19], 
+node_params[pc.param_ring_idx].v[20], node_params[pc.param_ring_idx].v[21], node_params[pc.param_ring_idx].v[22], 
+node_params[pc.param_ring_idx].v[23], node_params[pc.param_ring_idx].v[24], node_params[pc.param_ring_idx].v[25], 
+node_params[pc.param_ring_idx].v[26], node_params[pc.param_ring_idx].v[27], node_params[pc.param_ring_idx].v[28], 
+node_params[pc.param_ring_idx].v[29], node_params[pc.param_ring_idx].v[30], node_params[pc.param_ring_idx].v[31], 
+node_params[pc.param_ring_idx].v[32], node_params[pc.param_ring_idx].v[33], node_params[pc.param_ring_idx].v[34], 
+node_params[pc.param_ring_idx].v[35], node_params[pc.param_ring_idx].v[36], node_params[pc.param_ring_idx].v[37], 
+node_params[pc.param_ring_idx].v[38], node_params[pc.param_ring_idx].v[39]);
+  |     imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g3_out);
+  | }
+
+[info]  emit_group gi=4 nodes=[6] ext_inputs=0 pass=0/1
+  GLSL:
+  | #version 460
+  | 
+  | #extension GL_EXT_nonuniform_qualifier : require
+  | #extension GL_EXT_samplerless_texture_functions : require
+  | layout(local_size_x = 8, local_size_y = 8) in;
+  | 
+  | layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+  | layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
+  | 
+  | layout(set = 0, binding = 2) uniform sampler samp_repeat;
+  | layout(set = 0, binding = 3) uniform sampler samp_clamp;
+  | layout(set = 0, binding = 4) uniform sampler samp_mirror;
+  | layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+  | layout(constant_id = 0) const uint ts_pass_index = 0u;
+  | layout(push_constant, std430) uniform PC {
+  |     uint resolution_x, resolution_y, seed;
+  |     float time;
+  |     uint out_storage_slots[4];
+  |     uint param_base_slot;
+  |     uint input_count;
+  |     uint param_ring_idx;
+  |     uint in_sampled_slots[8];
+  |     uint pass_index;
+  | } pc;
+  | 
+  | struct TSTexture { int slot; vec2 inv_size; };
+  | 
+  | vec4 ts_sample(int local, vec2 uv) {
+  |     return texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv);
+  | }
+  | vec4 ts_sample_lod(int local, vec2 uv, float lod) {
+  |     return textureLod(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv, lod);
+  | }
+  | ivec2 ts_size(int local) {
+  |     return textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], 0);
+  | }
+  | vec4  Sample      (TSTexture t, vec2 uv)            { return ts_sample(t.slot, uv); }
+  | vec4  SampleLevel (TSTexture t, vec2 uv, float lod) { return ts_sample_lod(t.slot, uv, lod); }
+  | ivec2 GetSize     (TSTexture t)                     { return ts_size(t.slot); }
+  | vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
+  | 
+  | 
+  | 
+  | 
+  | vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
+  | vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
+  | vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+  | vec4 _fmt_rgba(vec4 v) { return v; }
+  | 
+  | 
+  | vec4 node_perlin(vec2 uv) { return vec4(0.0); }
+  | 
+  | void main() {
+  |     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+  |     vec2 uv;
+  |     uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+  |     uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+  |     vec4 _result = vec4(0.0);
+  |     if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+  |     vec4 _g4_out;
+  |     _g4_out = node_perlin(uv, node_params[pc.param_ring_idx].v[44], node_params[pc.param_ring_idx].v[45], 
+node_params[pc.param_ring_idx].v[46], node_params[pc.param_ring_idx].v[47], node_params[pc.param_ring_idx].v[48], 
+node_params[pc.param_ring_idx].v[49]);
+  |     imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g4_out);
+  | }
+
+[info]  emit_group gi=5 nodes=[10,11] ext_inputs=0 pass=0/1
+  GLSL:
+  | #version 460
+  | 
+  | #extension GL_EXT_nonuniform_qualifier : require
+  | #extension GL_EXT_samplerless_texture_functions : require
+  | layout(local_size_x = 8, local_size_y = 8) in;
+  | 
+  | layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+  | layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
+  | 
+  | layout(set = 0, binding = 2) uniform sampler samp_repeat;
+  | layout(set = 0, binding = 3) uniform sampler samp_clamp;
+  | layout(set = 0, binding = 4) uniform sampler samp_mirror;
+  | layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+  | layout(constant_id = 0) const uint ts_pass_index = 0u;
+  | layout(push_constant, std430) uniform PC {
+  |     uint resolution_x, resolution_y, seed;
+  |     float time;
+  |     uint out_storage_slots[4];
+  |     uint param_base_slot;
+  |     uint input_count;
+  |     uint param_ring_idx;
+  |     uint in_sampled_slots[8];
+  |     uint pass_index;
+  | } pc;
+  | 
+  | struct TSTexture { int slot; vec2 inv_size; };
+  | 
+  | vec4 ts_sample(int local, vec2 uv) {
+  |     return texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv);
+  | }
+  | vec4 ts_sample_lod(int local, vec2 uv, float lod) {
+  |     return textureLod(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv, lod);
+  | }
+  | ivec2 ts_size(int local) {
+  |     return textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], 0);
+  | }
+  | vec4  Sample      (TSTexture t, vec2 uv)            { return ts_sample(t.slot, uv); }
+  | vec4  SampleLevel (TSTexture t, vec2 uv, float lod) { return ts_sample_lod(t.slot, uv, lod); }
+  | ivec2 GetSize     (TSTexture t)                     { return ts_size(t.slot); }
+  | vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
+  | 
+  | 
+  | 
+  | 
+  | vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
+  | vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
+  | vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+  | vec4 _fmt_rgba(vec4 v) { return v; }
+  | 
+  | 
+  | vec4 node_worley(vec2 uv) { return vec4(0.0); }
+  | 
+  | vec4 node_invert(vec2 uv, float mask, vec4 color) { return vec4(0.0); }
+  | 
+  | void main() {
+  |     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+  |     vec2 uv;
+  |     uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+  |     uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+  |     vec4 _result = vec4(0.0);
+  |     if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+  |     vec4 _n0;
+  |     _n0 = node_worley(uv, node_params[pc.param_ring_idx].v[50], node_params[pc.param_ring_idx].v[51], 
+node_params[pc.param_ring_idx].v[52], node_params[pc.param_ring_idx].v[53], node_params[pc.param_ring_idx].v[54], 
+node_params[pc.param_ring_idx].v[55], node_params[pc.param_ring_idx].v[56]);
+  |     vec4 _g5_out;
+  |     _g5_out = node_invert(uv, node_params[pc.param_ring_idx].v[57], _n0);
+  |     imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g5_out);
+  | }
+
+[info]  emit_group gi=6 nodes=[4,7,12,9] ext_inputs=4 pass=0/1
+  GLSL:
+  | #version 460
+  | 
+  | #extension GL_EXT_nonuniform_qualifier : require
+  | #extension GL_EXT_samplerless_texture_functions : require
+  | layout(local_size_x = 8, local_size_y = 8) in;
+  | 
+  | layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+  | layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
+  | 
+  | layout(set = 0, binding = 2) uniform sampler samp_repeat;
+  | layout(set = 0, binding = 3) uniform sampler samp_clamp;
+  | layout(set = 0, binding = 4) uniform sampler samp_mirror;
+  | layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+  | layout(constant_id = 0) const uint ts_pass_index = 0u;
+  | layout(push_constant, std430) uniform PC {
+  |     uint resolution_x, resolution_y, seed;
+  |     float time;
+  |     uint out_storage_slots[4];
+  |     uint param_base_slot;
+  |     uint input_count;
+  |     uint param_ring_idx;
+  |     uint in_sampled_slots[8];
+  |     uint pass_index;
+  | } pc;
+  | 
+  | struct TSTexture { int slot; vec2 inv_size; };
+  | 
+  | vec4 ts_sample(int local, vec2 uv) {
+  |     return texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv);
+  | }
+  | vec4 ts_sample_lod(int local, vec2 uv, float lod) {
+  |     return textureLod(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv, lod);
+  | }
+  | ivec2 ts_size(int local) {
+  |     return textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], 0);
+  | }
+  | vec4  Sample      (TSTexture t, vec2 uv)            { return ts_sample(t.slot, uv); }
+  | vec4  SampleLevel (TSTexture t, vec2 uv, float lod) { return ts_sample_lod(t.slot, uv, lod); }
+  | ivec2 GetSize     (TSTexture t)                     { return ts_size(t.slot); }
+  | vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
+  | 
+  | 
+  | 
+  | 
+  | vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
+  | vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
+  | vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+  | vec4 _fmt_rgba(vec4 v) { return v; }
+  | 
+  | 
+  | vec4 node_warp(vec2 uv, TSTexture image, TSTexture gradient) { return vec4(0.0); }
+  | 
+  | vec4 node_invert(vec2 uv, float mask, vec4 color) { return vec4(0.0); }
+  | 
+  | vec4 node_blend(vec2 uv, float mask, vec4 a, vec4 b) { return vec4(0.0); }
+  | 
+  | void main() {
+  |     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+  |     vec2 uv;
+  |     uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+  |     uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+  |     vec4 _result = vec4(0.0);
+  |     if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+  |     vec4 _n0;
+  |     _n0 = node_warp(uv, TSTexture(1, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[1])], 
+0))), TSTexture(0, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], 0))), 
+node_params[pc.param_ring_idx].v[40], node_params[pc.param_ring_idx].v[41], node_params[pc.param_ring_idx].v[42], 
+node_params[pc.param_ring_idx].v[43]);
+  |     vec4 _n1;
+  |     _n1 = node_warp(uv, TSTexture(3, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[3])], 
+0))), TSTexture(2, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[2])], 0))), 
+node_params[pc.param_ring_idx].v[58], node_params[pc.param_ring_idx].v[59], node_params[pc.param_ring_idx].v[60], 
+node_params[pc.param_ring_idx].v[61]);
+  |     vec4 _n2;
+  |     _n2 = node_invert(uv, node_params[pc.param_ring_idx].v[62], _n1);
+  |     vec4 _g6_out;
+  |     _g6_out = node_blend(uv, node_params[pc.param_ring_idx].v[64], _n2, _n0, node_params[pc.param_ring_idx].v[63]);
+  |     imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g6_out);
+  | }
+
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+    vec4 _result = vec4(0.0);
+    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+    vec4 _g4_out;
+    _g4_out = node_perlin(uv, node_params[pc.param_ring_idx].v[44], node_params[pc.param_ring_idx].v[45], node_params[pc.param_ring_idx].v[46], node_params[pc.param_ring_idx].v[47], node_params[pc.param_ring_idx].v[48], node_params[pc.param_ring_idx].v[49]);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g4_out);
+}
+
+
+=== Group 5 ===
+  Nodes: Worley (Cellular).001(10) Invert.001(11)
+  GLSL main:
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+    vec4 _result = vec4(0.0);
+    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+    vec4 _n0;
+    _n0 = node_worley(uv, node_params[pc.param_ring_idx].v[50], node_params[pc.param_ring_idx].v[51], node_params[pc.param_ring_idx].v[52], node_params[pc.param_ring_idx].v[53], node_params[pc.param_ring_idx].v[54], node_params[pc.param_ring_idx].v[55], node_params[pc.param_ring_idx].v[56]);
+    vec4 _g5_out;
+    _g5_out = node_invert(uv, node_params[pc.param_ring_idx].v[57], _n0);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g5_out);
+}
+
+
+=== Group 6 ===
+  Nodes: Warp(4) Warp.001(7) Invert.002(12) Blend(9)
+  External inputs:
+    slot 0: Invert(3) output0 -> Warp(4) input1
+    slot 1: Levels(5) output0 -> Warp(4) input0
+    slot 2: Perlin Noise(6) output0 -> Warp.001(7) input1
+    slot 3: Invert.001(11) output0 -> Warp.001(7) input0
+
+  FULL SHADER:
+#version 460
+
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform texture2D u_sampled[];
+layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D u_storage[];
+
+layout(set = 0, binding = 2) uniform sampler samp_repeat;
+layout(set = 0, binding = 3) uniform sampler samp_clamp;
+layout(set = 0, binding = 4) uniform sampler samp_mirror;
+layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } node_params[];
+layout(constant_id = 0) const uint ts_pass_index = 0u;
+layout(push_constant, std430) uniform PC {
+    uint resolution_x, resolution_y, seed;
+    float time;
+    uint out_storage_slots[4];
+    uint param_base_slot;
+    uint input_count;
+    uint param_ring_idx;
+    uint in_sampled_slots[8];
+    uint pass_index;
+} pc;
+
+struct TSTexture { int slot; vec2 inv_size; };
+
+vec4 ts_sample(int local, vec2 uv) {
+    return texture(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv);
+}
+vec4 ts_sample_lod(int local, vec2 uv, float lod) {
+    return textureLod(sampler2D(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], samp_repeat), uv, lod);
+}
+ivec2 ts_size(int local) {
+    return textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[local])], 0);
+}
+vec4  Sample      (TSTexture t, vec2 uv)            { return ts_sample(t.slot, uv); }
+vec4  SampleLevel (TSTexture t, vec2 uv, float lod) { return ts_sample_lod(t.slot, uv, lod); }
+ivec2 GetSize     (TSTexture t)                     { return ts_size(t.slot); }
+vec2  GetTexelSize(TSTexture t)                     { return t.inv_size; }
+
+
+
+
+vec4 _fmt_mono(vec4 v) { return vec4(v.x, 0.0, 0.0, 1.0); }
+vec4 _fmt_uv(vec4 v) { return vec4(v.xy, 0.0, 1.0); }
+vec4 _fmt_rgb(vec4 v) { return vec4(v.rgb, 1.0); }
+vec4 _fmt_rgba(vec4 v) { return v; }
+
+
+vec4 node_warp(vec2 uv, TSTexture image, TSTexture gradient) { return vec4(0.0); }
+
+vec4 node_invert(vec2 uv, float mask, vec4 color) { return vec4(0.0); }
+
+vec4 node_blend(vec2 uv, float mask, vec4 a, vec4 b) { return vec4(0.0); }
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+    vec4 _result = vec4(0.0);
+    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+    vec4 _n0;
+    _n0 = node_warp(uv, TSTexture(1, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[1])], 0))), TSTexture(0, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], 0))), node_params[pc.param_ring_idx].v[40], node_params[pc.param_ring_idx].v[41], node_params[pc.param_ring_idx].v[42], node_params[pc.param_ring_idx].v[43]);
+    vec4 _n1;
+    _n1 = node_warp(uv, TSTexture(3, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[3])], 0))), TSTexture(2, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[2])], 0))), node_params[pc.param_ring_idx].v[58], node_params[pc.param_ring_idx].v[59], node_params[pc.param_ring_idx].v[60], node_params[pc.param_ring_idx].v[61]);
+    vec4 _n2;
+    _n2 = node_invert(uv, node_params[pc.param_ring_idx].v[62], _n1);
+    vec4 _g6_out;
+    _g6_out = node_blend(uv, node_params[pc.param_ring_idx].v[64], _n2, _n0, node_params[pc.param_ring_idx].v[63]);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g6_out);
+}
+
+  GLSL main:
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv;
+    uv.x = float(coord.x) / float(max(pc.resolution_x, 1u));
+    uv.y = float(coord.y) / float(max(pc.resolution_y, 1u));
+    vec4 _result = vec4(0.0);
+    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;
+    vec4 _n0;
+    _n0 = node_warp(uv, TSTexture(1, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[1])], 0))), TSTexture(0, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[0])], 0))), node_params[pc.param_ring_idx].v[40], node_params[pc.param_ring_idx].v[41], node_params[pc.param_ring_idx].v[42], node_params[pc.param_ring_idx].v[43]);
+    vec4 _n1;
+    _n1 = node_warp(uv, TSTexture(3, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[3])], 0))), TSTexture(2, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(pc.in_sampled_slots[2])], 0))), node_params[pc.param_ring_idx].v[58], node_params[pc.param_ring_idx].v[59], node_params[pc.param_ring_idx].v[60], node_params[pc.param_ring_idx].v[61]);
+    vec4 _n2;
+    _n2 = node_invert(uv, node_params[pc.param_ring_idx].v[62], _n1);
+    vec4 _g6_out;
+    _g6_out = node_blend(uv, node_params[pc.param_ring_idx].v[64], _n2, _n0, node_params[pc.param_ring_idx].v[63]);
+    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, _g6_out);
+}
+
+[       OK ] FusionGroupTest.EmitGroupsProducesGLSL (113 ms)
+[----------] 1 test from FusionGroupTest (113 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (113 ms total)
+[  PASSED  ] 1 test.

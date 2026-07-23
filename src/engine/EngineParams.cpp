@@ -18,15 +18,15 @@ void Engine::seed_param_ssbo_defaults_() {
         auto* dst = static_cast<float*>(param_mapped_[ring]);
         if (!dst) continue;
 
-        for (NodeId nid : current_ir_.eval_order) {
-            auto bit = param_base_slot_.find(nid);
+        for (NodeId node_id : current_ir_.eval_order) {
+            auto bit = param_base_slot_.find(node_id);
             if (bit == param_base_slot_.end()) continue;
 
-            auto vn_it = current_ir_.node_index.find(nid);
-            if (vn_it == current_ir_.node_index.end()) continue;
-            const auto& vn = current_ir_.nodes[vn_it->second];
+            auto validated_node_it = current_ir_.node_index.find(node_id);
+            if (validated_node_it == current_ir_.node_index.end()) continue;
+            const auto& validated_node = current_ir_.nodes[validated_node_it->second];
 
-            const auto* type = node_lib_.find(vn.type_id);
+            const auto* type = node_lib_.find(validated_node.type_id);
             if (!type) continue;
 
             const int base = bit->second;
@@ -108,15 +108,15 @@ void Engine::update_node_params_by_name(NodeId node_id,
     }
     const int base = it->second;
 
-    const auto* vn = current_ir_.find(node_id);
-    if (!vn) {
+    const auto* validated_node = current_ir_.find(node_id);
+    if (!validated_node) {
         log_warn("update_node_params_by_name: node " + std::to_string(node_id)
                + " not in current IR");
         return;
     }
-    const auto* type = node_lib_.find(vn->type_id);
+    const auto* type = node_lib_.find(validated_node->type_id);
     if (!type) {
-        log_warn("update_node_params_by_name: unknown type '" + vn->type_id
+        log_warn("update_node_params_by_name: unknown type '" + validated_node->type_id
                + "' for node " + std::to_string(node_id));
         return;
     }

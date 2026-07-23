@@ -26,13 +26,13 @@ public:
 
         size_t head = 0;
         while (head < queue.size()) {
-            uint64_t cur = queue[head++];
-            auto it = downstream.find(cur);
+            uint64_t current = queue[head++];
+            auto it = downstream.find(current);
             if (it == downstream.end()) continue;
-            for (uint64_t nxt : it->second) {
-                if (visited.insert(nxt).second) {
-                    dirty_nodes_.insert(nxt);
-                    queue.push_back(nxt);
+            for (uint64_t next : it->second) {
+                if (visited.insert(next).second) {
+                    dirty_nodes_.insert(next);
+                    queue.push_back(next);
                 }
             }
         }

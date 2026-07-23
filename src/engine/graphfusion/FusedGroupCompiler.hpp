@@ -53,53 +53,53 @@ inline CompiledGroupBundle compile_groups(
     CompiledGroupBundle result;
     result.groups.reserve(bundle.groups.size());
 
-    for (size_t gi = 0; gi < bundle.groups.size(); ++gi) {
-        const auto& group = bundle.groups[gi];
-        CompiledGroup cg;
-        cg.nodes = group.nodes;
+    for (size_t group_idx = 0; group_idx < bundle.groups.size(); ++group_idx) {
+        const auto& group = bundle.groups[group_idx];
+        CompiledGroup compiled_group;
+        compiled_group.nodes = group.nodes;
 
         // emit GLSL
-        auto emitted = emit_group(group, ir, ctx, static_cast<uint32_t>(gi), lib);
+        auto emitted = emit_group(group, ir, ctx, static_cast<uint32_t>(group_idx), lib);
         if (!emitted.ok()) {
-            cg.error = "group " + std::to_string(gi) + ": " + emitted.error;
-            result.error = cg.error;
-            result.groups.push_back(std::move(cg));
+            compiled_group.error = "group " + std::to_string(group_idx) + ": " + emitted.error;
+            result.error = compiled_group.error;
+            result.groups.push_back(std::move(compiled_group));
             return result;
         }
-        cg.glsl = std::move(emitted.source);
+        compiled_group.glsl = std::move(emitted.source);
 
         // param layout from context (already computed in build_context)
         uint32_t min_slot = UINT32_MAX;
         uint32_t total = 0;
-        for (NodeId nid : group.nodes) {
-            auto it = ctx.param_base.find(nid);
+        for (NodeId node_id : group.nodes) {
+            auto it = ctx.param_base.find(node_id);
             if (it != ctx.param_base.end())
                 min_slot = std::min(min_slot, it->second);
-            auto fi = ctx.float_inputs.find(nid);
-            auto pc = ctx.param_count.find(nid);
+            auto fi = ctx.float_inputs.find(node_id);
+            auto pc = ctx.param_count.find(node_id);
             if (fi != ctx.float_inputs.end() && pc != ctx.param_count.end())
                 total += fi->second + pc->second;
         }
-        cg.param_base_slot = (min_slot == UINT32_MAX) ? 0 : min_slot;
-        cg.param_floats = total;
+        compiled_group.param_base_slot = (min_slot == UINT32_MAX) ? 0 : min_slot;
+        compiled_group.param_floats = total;
 
         // external inputs
-        cg.external_inputs.reserve(group.external_inputs.size());
+        compiled_group.external_inputs.reserve(group.external_inputs.size());
         for (const auto& ext : group.external_inputs)
-            cg.external_inputs.push_back({ext.slot, ext.src_node, ext.src_socket,
+            compiled_group.external_inputs.push_back({ext.slot, ext.src_node, ext.src_socket,
                                           ext.dst_node, ext.dst_socket});
 
         // output: tail node
         if (!group.nodes.empty()) {
-            cg.output_node = group.nodes.back();
-            cg.output_socket = 0;
+            compiled_group.output_node = group.nodes.back();
+            compiled_group.output_socket = 0;
         }
 
-        cg.pass_index         = group.pass_index;
-        cg.pass_count         = group.pass_count;
-        cg.intermediate_count = group.intermediate_count;
+        compiled_group.pass_index         = group.pass_index;
+        compiled_group.pass_count         = group.pass_count;
+        compiled_group.intermediate_count = group.intermediate_count;
 
-        result.groups.push_back(std::move(cg));
+        result.groups.push_back(std::move(compiled_group));
     }
 
     return result;

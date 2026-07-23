@@ -21,6 +21,7 @@ compatibility: opencode
 - Add comments only for non-obvious intent, constraints, or tradeoffs
 - Use consistent naming that a code learner can understand
 - Break overly-complex logic into helper functions
+- **No cryptic abbreviations in variable names.** Spell out what it is: `group_idx` not `gi`, `compiled_group` not `cg`, `validated_node` not `vn`. Single-letter loop variables (`i`, `j`) and short names in tight local scopes are acceptable. Variables with wider scope or appearing in generated output, logs, or errors must use full words.
 
 
 ## When to use me

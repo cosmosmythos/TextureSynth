@@ -54,10 +54,10 @@ inline FusionContext build_context(const GraphIR& ir, const NodeLibrary& lib) {
     FusionContext ctx;
 
     ctx.node_type.reserve(ir.nodes.size());
-    for (const auto& vn : ir.nodes) {
-        ctx.node_type[vn.id] = lib.find(vn.type_id);
-        if (vn.bypassed) {
-            ctx.bypassed_nodes.insert(vn.id);
+    for (const auto& validated_node : ir.nodes) {
+        ctx.node_type[validated_node.id] = lib.find(validated_node.type_id);
+        if (validated_node.bypassed) {
+            ctx.bypassed_nodes.insert(validated_node.id);
         }
     }
 
@@ -136,25 +136,25 @@ inline bool is_connected(NodeId source, NodeId dest, const FusionContext& ctx) {
     }
 
     for (size_t i = 0; i + 1 < expanded.size(); ++i) {
-        NodeId prev = expanded[i].node_id;
-        NodeId curr = expanded[i + 1].node_id;
-        uint32_t prev_pass = expanded[i].pass_index;
-        uint32_t curr_pass = expanded[i + 1].pass_index;
-        uint32_t prev_count = expanded[i].pass_count;
-        uint32_t curr_count = expanded[i + 1].pass_count;
+        NodeId previous = expanded[i].node_id;
+        NodeId current = expanded[i + 1].node_id;
+        uint32_t previous_pass = expanded[i].pass_index;
+        uint32_t current_pass = expanded[i + 1].pass_index;
+        uint32_t previous_count = expanded[i].pass_count;
+        uint32_t current_count = expanded[i + 1].pass_count;
 
-        bool conn = is_connected(prev, curr, ctx);
-        bool same_node = (prev == curr);
+        bool conn = is_connected(previous, current, ctx);
+        bool same_node = (previous == current);
 
         if (conn) {
-            current_group.nodes.push_back(curr);
+            current_group.nodes.push_back(current);
         } else {
             fused.groups.push_back(std::move(current_group));
             current_group = FusionGroup();
-            current_group.nodes.push_back(curr);
+            current_group.nodes.push_back(current);
             current_group.pass_index = expanded[i + 1].pass_index;
             current_group.pass_count = expanded[i + 1].pass_count;
-            auto it = ctx.node_type.find(curr);
+            auto it = ctx.node_type.find(current);
             if (it != ctx.node_type.end() && it->second)
                 current_group.intermediate_count = it->second->intermediate_count;
         }
@@ -223,6 +223,12 @@ inline void merge_groups(FusionGroupBundle& fused, const FusionContext& ctx) {
             if (target_group != fused.groups.size()) break;
         }
         if (target_group == fused.groups.size()) continue;
+
+        // Never merge multi-pass groups — they exist only to write/read
+        // intermediates for/from their own counterpart. A merged group loses
+        // the multi-pass metadata that populate_groups_ needs.
+        if (fused.groups[src_idx].pass_count > 1)
+            continue;
 
         bool sampler2d = false;
         for (NodeId src : fused.groups[src_idx].nodes) {

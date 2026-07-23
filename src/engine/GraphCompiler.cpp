@@ -61,41 +61,41 @@ static ShaderVariantKey build_variant_key(const NodeType& type,
 }
 
 
-std::string emit_node_shader(const ValidatedNode& vn,
+std::string emit_node_shader(const ValidatedNode& validated_node,
                                     const NodeType& type,
                                     const ShaderVariantKey& key,
                                     int param_base,
                                     uint32_t input_count,
                                     ChannelFormat format,
                                     const std::vector<ResourceUUID>& input_resources) {
-    (void)vn; (void)key; (void)param_base; (void)input_count;
-    std::ostringstream s;
+    (void)validated_node; (void)key; (void)param_base; (void)input_count;
+    std::ostringstream shader_out;
 
-    s << "#version 460\n";
+    shader_out << "#version 460\n";
     // TS_FORMAT is consumed by the per-node format post-process. The GLSL preprocessor
     // resolves the #if/#elif chain at parse time, so each cache key gets
     // its own dead-branch-stripped .spv.
-    s << "#define TS_FORMAT " << static_cast<uint32_t>(format) << "\n";
-    s << "#extension GL_EXT_nonuniform_qualifier : require\n";
-    s << "#extension GL_EXT_samplerless_texture_functions : require\n";
-    s << "layout(local_size_x = 8, local_size_y = 8) in;\n\n";
+    shader_out << "#define TS_FORMAT " << static_cast<uint32_t>(format) << "\n";
+    shader_out << "#extension GL_EXT_nonuniform_qualifier : require\n";
+    shader_out << "#extension GL_EXT_samplerless_texture_functions : require\n";
+    shader_out << "layout(local_size_x = 8, local_size_y = 8) in;\n\n";
 
     // ── Bindless set 0 (forever-bound) ─────────────────────────────
-    s << "layout(set = 0, binding = 0) uniform texture2D u_sampled[];\n";
+    shader_out << "layout(set = 0, binding = 0) uniform texture2D u_sampled[];\n";
     // Storage layout qualifier MUST match the VkFormat used by ResourceManager
     // to allocate this node's image (Vulkan validation requires exact match).
     // The resolved depth comes from SD-style inheritance (Auto/MatchInput/Absolute).
-    const StorageFormat node_sf{format, vn.resolved_depth};
-    s << "layout(set = 0, binding = 1, " << storage_format_glsl_qualifier(node_sf)
+    const StorageFormat node_sf{format, validated_node.resolved_depth};
+    shader_out << "layout(set = 0, binding = 1, " << storage_format_glsl_qualifier(node_sf)
       << ") writeonly uniform image2D u_storage[];\n";
-    s << "layout(set = 0, binding = 2) uniform sampler samp_repeat;\n";
-    s << "layout(set = 0, binding = 3) uniform sampler samp_clamp;\n";
-    s << "layout(set = 0, binding = 4) uniform sampler samp_mirror;\n";
-    s << "layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } "
+    shader_out << "layout(set = 0, binding = 2) uniform sampler samp_repeat;\n";
+    shader_out << "layout(set = 0, binding = 3) uniform sampler samp_clamp;\n";
+    shader_out << "layout(set = 0, binding = 4) uniform sampler samp_mirror;\n";
+    shader_out << "layout(set = 0, binding = 5, std430) readonly buffer NodeParams { float v[]; } "
     "node_params[" << BindlessTable::PARAM_RING_SIZE << "];\n\n";
 
     // ── Push constants ─────────────────────────────────────────────
-    s << "layout(push_constant, std430) uniform PC {\n"
+    shader_out << "layout(push_constant, std430) uniform PC {\n"
       << "    uint  resolution_x;\n"
       << "    uint  resolution_y;\n"
       << "    uint  seed;\n"
@@ -113,11 +113,11 @@ std::string emit_node_shader(const ValidatedNode& vn,
     // The GLSL compiler bakes this value into SPIR-V at pipeline creation,
     // enabling dead-code elimination of the inactive branch.
     if (type.pass_count > 1) {
-        s << "layout(constant_id = 0) const uint ts_pass_index = 0u;\n\n";
+        shader_out << "layout(constant_id = 0) const uint ts_pass_index = 0u;\n\n";
     }
 
     // ── Sampler2D helpers ──────────────────────────────────────────
-    s << "struct TSTexture { int slot; vec2 inv_size; };\n\n";
+    shader_out << "struct TSTexture { int slot; vec2 inv_size; };\n\n";
 
     // CRITICAL: the runtime packs input_resources[] in socket-index order:
     //   indices [0 .. type.inputs.size())              -> declared inputs (any SocketType)
@@ -132,7 +132,7 @@ std::string emit_node_shader(const ValidatedNode& vn,
         if (sock.type == SocketType::Sampler2D) { any_sampler = true; break; }
 
     if (any_sampler || inputs_n > 0) {
-        s << "vec4 ts_sample(int local, vec2 uv) {\n"
+        shader_out << "vec4 ts_sample(int local, vec2 uv) {\n"
           << "    uint gslot = pc.in_sampled_slots[local];\n"
           << "    return texture(sampler2D(u_sampled[nonuniformEXT(gslot)], samp_repeat), uv);\n"
           << "}\n"
@@ -152,7 +152,7 @@ std::string emit_node_shader(const ValidatedNode& vn,
         // Per-Sampler2D-input handle constructor, indexed by *socket position*.
         for (uint32_t i = 0; i < inputs_n; ++i) {
             if (type.inputs[i].type != SocketType::Sampler2D) continue;
-            s << "TSTexture ts_input_" << type.inputs[i].name << "() {\n"
+            shader_out << "TSTexture ts_input_" << type.inputs[i].name << "() {\n"
               << "    int li = " << i << ";\n"
               << "    uint gslot = pc.in_sampled_slots[li];\n"
               << "    return TSTexture(li, 1.0 / vec2(textureSize(u_sampled[nonuniformEXT(gslot)], 0)));\n"
@@ -161,9 +161,9 @@ std::string emit_node_shader(const ValidatedNode& vn,
     }
 
     // ── Node body ──────────────────────────────────────────────────
-    s << type.glsl_function << "\n\n";
+    shader_out << type.glsl_function << "\n\n";
 
-    s << "void main() {\n"
+    shader_out << "void main() {\n"
       << "    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);\n"
       << "    if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;\n"
       << "    vec2 uv;\n"
@@ -181,20 +181,20 @@ std::string emit_node_shader(const ValidatedNode& vn,
             uint32_t float_ssbo_idx = (uint32_t)type.params.size() + float_input_idx;
             bool connected = (i < input_resources.size() && input_resources[i].node_id != 0);
             if (connected) {
-                s << "    float in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
+                shader_out << "    float in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
                   << i << "])], coord, 0).r;\n";
             } else {
-                s << "    float in" << i << " = node_params[pc.param_ring_idx].v[pc.param_base_slot + "
+                shader_out << "    float in" << i << " = node_params[pc.param_ring_idx].v[pc.param_base_slot + "
                   << float_ssbo_idx << "];\n";
             }
             ++float_input_idx;
         } else {
             bool connected = (i < input_resources.size() && input_resources[i].node_id != 0);
             if (connected) {
-                s << "    vec4 in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
+                shader_out << "    vec4 in" << i << " = texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
                   << i << "])], coord, 0);\n";
             } else {
-                s << "    vec4 in" << i << " = vec4("
+                shader_out << "    vec4 in" << i << " = vec4("
                   << sock.default_vec4[0] << ", " << sock.default_vec4[1] << ", "
                   << sock.default_vec4[2] << ", " << sock.default_vec4[3] << ");\n";
             }
@@ -203,50 +203,50 @@ std::string emit_node_shader(const ValidatedNode& vn,
 
     // Call node function: node_<id>(uv, inputs..., params...)
     if (multi_output) {
-        s << "    vec4 out0, out1, out2, out3;\n";
-        s << "    node_" << type.id << "(uv";
+        shader_out << "    vec4 out0, out1, out2, out3;\n";
+        shader_out << "    node_" << type.id << "(uv";
     }
     else {
-        s << "    vec4 result = node_" << type.id << "(uv";
+        shader_out << "    vec4 result = node_" << type.id << "(uv";
     }
 
     for (uint32_t i = 0; i < inputs_n; ++i) {
-        s << ", ";
+        shader_out << ", ";
         if (type.inputs[i].type == SocketType::Sampler2D)
-            s << "ts_input_" << type.inputs[i].name << "()";
+            shader_out << "ts_input_" << type.inputs[i].name << "()";
         else
-            s << "in" << i;
+            shader_out << "in" << i;
     }
 
     // Params: socket-driven ones live in in_sampled_slots[inputs_n + k] in the order they appear in type.params (matching GraphCompiler::compile()).
     uint32_t param_socket_local = inputs_n;
     for (size_t i = 0; i < type.params.size(); ++i) {
-        s << ", ";
+        shader_out << ", ";
         if (type.params[i].as_socket) {
             // Hybrid: slider (SSBO) when unconnected (bindless slot < 6 = Mono dummy),
             // texture (.r) when connected (bindless slot >= 6 = real image).
-            s << "(pc.in_sampled_slots[" << param_socket_local << "] < 6u"
+            shader_out << "(pc.in_sampled_slots[" << param_socket_local << "] < 6u"
               << " ? node_params[pc.param_ring_idx].v[pc.param_base_slot + " << i << "]"
               << " : texelFetch(u_sampled[nonuniformEXT(pc.in_sampled_slots["
               << param_socket_local << "])], coord, 0).r)";
             ++param_socket_local;
         } else {
-            s << "node_params[pc.param_ring_idx].v[pc.param_base_slot + " << i << "]";
+            shader_out << "node_params[pc.param_ring_idx].v[pc.param_base_slot + " << i << "]";
         }
     }
     if (multi_output) {
         for (uint32_t i = 0; i < outputs_n; ++i) {
-            s << ", out" << i;
+            shader_out << ", out" << i;
         }
     }
-    s << ");\n";
+    shader_out << ");\n";
 
     // ── Format post-process (unconditional) ────────────────────────
     // Fold the node's raw output into the requested channel format.
     // The GLSL preprocessor resolves these #if branches at parse time, so
     // each ChannelFormat gets its own dead-stripped .spv in ShaderCache.
     if (!multi_output) {
-        s << "    // Format post-process\n"
+        shader_out << "    // Format post-process\n"
           << "#if TS_FORMAT == 0\n"        // Mono
           << "    result = vec4(result.r, 0.0, 0.0, 1.0);\n"
           << "#elif TS_FORMAT == 1\n"      // UV
@@ -262,14 +262,14 @@ std::string emit_node_shader(const ValidatedNode& vn,
 
     if (multi_output) {
         for (uint32_t i = 0; i < outputs_n; ++i)
-            s << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots["
+            shader_out << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots["
             << i << "])], coord, out" << i << ");\n";
     }
     else {
-        s << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, result);\n";
+        shader_out << "    imageStore(u_storage[nonuniformEXT(pc.out_storage_slots[0])], coord, result);\n";
     }
-    s << "}\n";  // close main()
-    return s.str();
+    shader_out << "}\n";  // close main()
+    return shader_out.str();
 }
 
 

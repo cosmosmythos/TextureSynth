@@ -10,11 +10,11 @@
 namespace te {
 
 
-StorageFormat resolve_node_storage(const ValidatedNode& vn,
+StorageFormat resolve_node_storage(const ValidatedNode& validated_node,
                                    const NodeLibrary& lib,
                                    uint32_t output_index) {
-    ChannelFormat ch = vn.format_override;
-    auto* type = lib.find(vn.type_id);
+    ChannelFormat ch = validated_node.format_override;
+    auto* type = lib.find(validated_node.type_id);
     if (type && output_index < type->outputs.size()
         && type->outputs[output_index].format != ChannelFormat::RGBA) {
         ch = type->outputs[output_index].format;
@@ -23,7 +23,7 @@ StorageFormat resolve_node_storage(const ValidatedNode& vn,
             ch = type->outputs[0].format;
         }
     }
-    return StorageFormat{ch, vn.resolved_depth};
+    return StorageFormat{ch, validated_node.resolved_depth};
 }
 
 
@@ -245,14 +245,14 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     std::vector<Connection> rewired_conns = graph.connections;
     for (const auto& n : graph.nodes) {
         if (!n.muted) continue;
-        auto eff = resolve_muted_source(n.id, graph.nodes, graph.connections);
+        auto effective_source = resolve_muted_source(n.id, graph.nodes, graph.connections);
         for (auto& c : rewired_conns) {
             if (c.src_node != n.id) continue;
-            if (eff.first == SEVERED) {
+            if (effective_source.first == SEVERED) {
                 c.src_node = SEVERED;
             } else {
-                c.src_node   = eff.first;
-                c.src_socket = eff.second;
+                c.src_node   = effective_source.first;
+                c.src_socket = effective_source.second;
             }
         }
     }
@@ -263,20 +263,20 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     GraphIR& ir = result.ir;
     for (const auto& n : graph.nodes) {
         if (n.muted) continue;
-        ValidatedNode vn;
-        vn.id       = n.id;
-        vn.type_id  = n.type_id;
-        vn.format_override = n.format_override;
-        vn.depth_mode      = n.depth_mode;
-        vn.absolute_depth  = n.absolute_depth;
-        vn.debug_name = n.debug_name.empty()
+        ValidatedNode validated_node;
+        validated_node.id       = n.id;
+        validated_node.type_id  = n.type_id;
+        validated_node.format_override = n.format_override;
+        validated_node.depth_mode      = n.depth_mode;
+        validated_node.absolute_depth  = n.absolute_depth;
+        validated_node.debug_name = n.debug_name.empty()
                       ? (n.type_id + "_" + std::to_string(n.id))
                       : n.debug_name;
-        vn.muted    = false;
-        vn.bypassed = n.bypassed;
+        validated_node.muted    = false;
+        validated_node.bypassed = n.bypassed;
         if (auto* nt = lib.find(n.type_id))
-            vn.pass_kind = nt->pass_kind;
-        ir.nodes.push_back(vn);
+            validated_node.pass_kind = nt->pass_kind;
+        ir.nodes.push_back(validated_node);
     }
 
     // Build node_index for connection filtering — both endpoints must exist.
@@ -296,9 +296,9 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
     {
         NodeId on = graph.output_node;
         while (is_muted(graph.nodes, on)) {
-            auto eff = resolve_muted_source(on, graph.nodes, graph.connections);
-            if (eff.first == SEVERED) break;
-            on = eff.first;
+            auto effective_source = resolve_muted_source(on, graph.nodes, graph.connections);
+            if (effective_source.first == SEVERED) break;
+            on = effective_source.first;
         }
         if (!ir.node_index.empty() && !ir.node_index.count(on)) {
             on = ir.nodes.front().id;
@@ -330,28 +330,28 @@ GraphIRResult validate_graph(const Graph& graph, const NodeLibrary& lib) {
 // Resolve BitDepth inheritance in eval_order.
 // Called after graph_default_depth is set.
 void resolve_node_depths(GraphIR& ir) {
-    for (NodeId nid : ir.eval_order) {
-        auto it = ir.node_index.find(nid);
+    for (NodeId node_id : ir.eval_order) {
+        auto it = ir.node_index.find(node_id);
         if (it == ir.node_index.end()) continue;
-        ValidatedNode& vn = ir.nodes[it->second];
-        switch (vn.depth_mode) {
+        ValidatedNode& validated_node = ir.nodes[it->second];
+        switch (validated_node.depth_mode) {
             case DepthMode::Absolute:
-                vn.resolved_depth = vn.absolute_depth;
+                validated_node.resolved_depth = validated_node.absolute_depth;
                 break;
             case DepthMode::MatchInput: {
                 BitDepth picked = ir.graph_default_depth;
                 for (const auto& c : ir.connections) {
-                    if (c.dst_node != nid) continue;
+                    if (c.dst_node != node_id) continue;
                     if (auto* src = ir.find(c.src_node))
                         picked = src->resolved_depth;
                     break;
                 }
-                vn.resolved_depth = picked;
+                validated_node.resolved_depth = picked;
                 break;
             }
             case DepthMode::Auto:
             default:
-                vn.resolved_depth = ir.graph_default_depth;
+                validated_node.resolved_depth = ir.graph_default_depth;
                 break;
         }
     }

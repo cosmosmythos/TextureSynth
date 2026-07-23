@@ -47,11 +47,11 @@ constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
         return call;                                                             \
     }
 
-inline const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& vk,
+inline const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& variant_key,
                                                    VkSpecializationMapEntry (&out_entries)[8],
                                                    VkSpecializationInfo&   out_info) {
-    if (vk.specialization_count == 0) return nullptr;
-    const uint32_t n = vk.specialization_count > 8 ? 8 : vk.specialization_count;
+    if (variant_key.specialization_count == 0) return nullptr;
+    const uint32_t n = variant_key.specialization_count > 8 ? 8 : variant_key.specialization_count;
     for (uint32_t i = 0; i < n; ++i) {
         out_entries[i].constantID = i;
         out_entries[i].offset     = i * sizeof(uint32_t);
@@ -60,7 +60,7 @@ inline const VkSpecializationInfo* build_spec_info(const ShaderVariantKey& vk,
     out_info.mapEntryCount = n;
     out_info.pMapEntries   = out_entries;
     out_info.dataSize      = n * sizeof(uint32_t);
-    out_info.pData         = vk.specialization.data();
+    out_info.pData         = variant_key.specialization.data();
     return &out_info;
 }
 

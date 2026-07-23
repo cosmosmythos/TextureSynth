@@ -118,14 +118,14 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
     // (we can't determine their format) but still rejects the graph as a
     // whole.
     size_t total = 0;
-    for (const auto& vn : ir.nodes) {
-        const auto* type = lib.find(vn.type_id);
+    for (const auto& validated_node : ir.nodes) {
+        const auto* type = lib.find(validated_node.type_id);
         const uint32_t num_outputs = type ? std::max(1u, (uint32_t)type->outputs.size()) : 1;
         for (uint32_t output_id = 0; output_id < num_outputs; ++output_id) {
-            ResourceUUID rid{vn.id, output_id};
-            if (active_resources && !active_resources->count(rid)) continue;
+            ResourceUUID resource_id{validated_node.id, output_id};
+            if (active_resources && !active_resources->count(resource_id)) continue;
             total += (size_t)width * height
-                   * storage_format_bytes(resolve_node_storage(vn, lib, output_id));
+                   * storage_format_bytes(resolve_node_storage(validated_node, lib, output_id));
         }
     }
     if (total > budget_bytes_) {
@@ -139,30 +139,30 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
 
     // Build the allocation list (only nodes whose type is in the library).
     struct ResInfo {
-        ResourceUUID rid;
+        ResourceUUID resource_id;
         uint32_t color = 0;
         VkFormat format = VK_FORMAT_UNDEFINED;
         std::string debug_name;
     };
     std::vector<ResInfo> all_res;
     std::unordered_map<uint32_t, std::vector<size_t>> color_to_indices;
-    for (const auto& vn : ir.nodes) {
-        const auto* type = lib.find(vn.type_id);
+    for (const auto& validated_node : ir.nodes) {
+        const auto* type = lib.find(validated_node.type_id);
         if (!type) continue;
         const uint32_t num_outputs = std::max(1u, (uint32_t)type->outputs.size());
         for (uint32_t output_id = 0; output_id < num_outputs; ++output_id) {
-            ResourceUUID rid{vn.id, output_id};
-            if (active_resources && !active_resources->count(rid)) continue;
-            const StorageFormat sf = resolve_node_storage(vn, lib, output_id);
+            ResourceUUID resource_id{validated_node.id, output_id};
+            if (active_resources && !active_resources->count(resource_id)) continue;
+            const StorageFormat sf = resolve_node_storage(validated_node, lib, output_id);
             const VkFormat fmt = storage_format_to_vk(sf);
-            uint32_t cc = 0;
+            uint32_t color_class = 0;
             if (color_classes) {
-                auto cit = color_classes->find(rid);
-                if (cit != color_classes->end()) cc = cit->second;
+                auto cit = color_classes->find(resource_id);
+                if (cit != color_classes->end()) color_class = cit->second;
             }
             size_t idx = all_res.size();
-            all_res.push_back({rid, cc, fmt, vn.debug_name + "_out" + std::to_string(output_id)});
-            color_to_indices[cc].push_back(idx);
+            all_res.push_back({resource_id, color_class, fmt, validated_node.debug_name + "_out" + std::to_string(output_id)});
+            color_to_indices[color_class].push_back(idx);
         }
     }
 
@@ -183,15 +183,15 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         if (in_alias_group) continue;
 
         NodeResource r;
-        r.node_id = info.rid.node_id;
-        r.output_index = info.rid.output_index;
+        r.node_id = info.resource_id.node_id;
+        r.output_index = info.resource_id.output_index;
         r.format = info.format;
         r.alias_group_id = 0;
         if (!create_image_(ctx, r, width, height, info.debug_name)) {
             if (error) *error = "image allocation failed for " + info.debug_name;
             return false;
         }
-        live_[info.rid] = std::move(r);
+        live_[info.resource_id] = std::move(r);
         current_bytes_ += (size_t)width * height * pixel_bytes_(info.format);
     }
 
@@ -208,18 +208,18 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         if (color == 0 || indices.size() < 2) continue;
 
         const ResInfo& first_info = all_res[indices[0]];
-        size_t N = indices.size();
+        size_t num_resources = indices.size();
 
         // C.1: create every VkImage up front (no VMA binding yet).
-        std::vector<VkImage>              images(N, VK_NULL_HANDLE);
-        std::vector<VkMemoryRequirements> reqs(N);
-        std::vector<NodeResource>         resources(N);
+        std::vector<VkImage>              images(num_resources, VK_NULL_HANDLE);
+        std::vector<VkMemoryRequirements> reqs(num_resources);
+        std::vector<NodeResource>         resources(num_resources);
         bool any_failed = false;
-        for (size_t k = 0; k < N && !any_failed; ++k) {
+        for (size_t k = 0; k < num_resources && !any_failed; ++k) {
             const auto& info = all_res[indices[k]];
             NodeResource& r = resources[k];
-            r.node_id      = info.rid.node_id;
-            r.output_index = info.rid.output_index;
+            r.node_id      = info.resource_id.node_id;
+            r.output_index = info.resource_id.output_index;
             r.format       = info.format;
             r.debug_name   = info.debug_name;
             r.extent       = {width, height, 1};
@@ -269,7 +269,7 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         combined.size           = reqs[0].size;
         combined.alignment      = reqs[0].alignment;
         combined.memoryTypeBits = reqs[0].memoryTypeBits;
-        for (size_t k = 1; k < N; ++k) {
+        for (size_t k = 1; k < num_resources; ++k) {
             combined.size           = std::max(combined.size, reqs[k].size);
             combined.alignment      = std::max(combined.alignment, reqs[k].alignment);
             combined.memoryTypeBits &= reqs[k].memoryTypeBits;
@@ -282,7 +282,7 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
             return false;
         }
         log_info("Aliasing: color=" + std::to_string(color)
-                 + " N=" + std::to_string(N)
+                 + " N=" + std::to_string(num_resources)
                  + " size=" + std::to_string(combined.size)
                  + " alignment=" + std::to_string(combined.alignment)
                  + " memTypeBits=" + std::to_string(combined.memoryTypeBits));
@@ -308,7 +308,7 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
 
         // C.4: bind every image to the shared allocation.
         bool bind_failed = false;
-        for (size_t k = 0; k < N; ++k) {
+        for (size_t k = 0; k < num_resources; ++k) {
             if (vmaBindImageMemory(ctx.allocator(), shared_alloc, images[k]) != VK_SUCCESS) {
                 log_error("Aliasing: vmaBindImageMemory failed for " + all_res[indices[k]].debug_name);
                 if (error) *error = "vmaBindImageMemory failed for " + all_res[indices[k]].debug_name;
@@ -328,11 +328,11 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
         // the underlying VkDeviceMemory.
         uint32_t group_id = (uint32_t)(alias_pools_.size() + 1);
         alias_pools_.push_back({color, first_info.format, {width, height, 1},
-                                first_info.rid, 1});
+                                first_info.resource_id, 1});
         vmaSetAllocationName(ctx.allocator(), shared_alloc,
                              (first_info.debug_name + "_alias").c_str());
 
-        for (size_t k = 0; k < N; ++k) {
+        for (size_t k = 0; k < num_resources; ++k) {
             NodeResource& r = resources[k];
             r.image = images[k];
             r.alloc = (k == 0) ? shared_alloc : nullptr;  // primary owns alloc
@@ -354,7 +354,7 @@ bool ResourceManager::allocate_for_graph(VulkanContext& ctx,
                                r.debug_name + "_view");
 
             const auto& info = all_res[indices[k]];
-            live_[info.rid] = std::move(r);
+            live_[info.resource_id] = std::move(r);
             current_bytes_ += (size_t)width * height * pixel_bytes_(info.format);
         }
     }
@@ -375,11 +375,11 @@ bool ResourceManager::allocate_for_preview(VulkanContext& ctx,
     retire_all(ctx);
     alias_pools_.clear();
 
-    const auto* vn = ir.find(output_rid.node_id);
-    const auto* type = vn ? lib.find(vn->type_id) : nullptr;
+    const auto* validated_node = ir.find(output_rid.node_id);
+    const auto* type = validated_node ? lib.find(validated_node->type_id) : nullptr;
     VkFormat fmt = default_format;
-    if (vn) {
-        const StorageFormat sf = resolve_node_storage(*vn, lib, output_rid.output_index);
+    if (validated_node) {
+        const StorageFormat sf = resolve_node_storage(*validated_node, lib, output_rid.output_index);
         fmt = storage_format_to_vk(sf);
     }
 
@@ -388,7 +388,7 @@ bool ResourceManager::allocate_for_preview(VulkanContext& ctx,
     r.output_index = output_rid.output_index;
     r.format = fmt;
     r.alias_group_id = 0;
-    std::string dbg = (vn ? vn->debug_name : "output") + "_out" + std::to_string(output_rid.output_index);
+    std::string dbg = (validated_node ? validated_node->debug_name : "output") + "_out" + std::to_string(output_rid.output_index);
     if (!create_image_(ctx, r, width, height, dbg)) {
         log_error("ResourceManager: preview image allocation failed for " + dbg);
         return false;

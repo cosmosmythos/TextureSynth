@@ -355,6 +355,13 @@ void Engine::shutdown_internal_() {
     }
     retired_passes_.clear();
 
+    for (auto& group_exec : group_execs_) {
+        if (group_exec.pipeline) group_exec.pipeline->destroy(ctx_);
+        if (group_exec.output_image) group_exec.output_image->destroy(ctx_);
+    }
+    group_execs_.clear();
+    use_groups_ = false;
+
     if (final_copy_pipeline_) {
         final_copy_pipeline_->destroy(ctx_);
         final_copy_pipeline_.reset();
@@ -498,6 +505,22 @@ uint64_t Engine::set_graph(const Graph& graph) {
     fusion::merge_groups(bundle, ctx);
     fusion::compute_external_inputs(bundle, ctx);
     auto compiled = fusion::compile_groups(bundle, current_ir_, ctx, node_lib_);
+    // DEBUG: dump compiled groups (raw fusion output)
+    log_info("DEBUG compiled groups: " + std::to_string(compiled.groups.size()) + " groups");
+    for (size_t dgi = 0; dgi < compiled.groups.size(); ++dgi) {
+        auto& dg = compiled.groups[dgi];
+        std::string nodes_str;
+        for (size_t ni = 0; ni < dg.nodes.size(); ++ni) {
+            if (ni > 0) nodes_str += ",";
+            nodes_str += std::to_string(dg.nodes[ni]);
+        }
+        log_info("DEBUG   group " + std::to_string(dgi) + ": nodes=[" + nodes_str
+            + "] pass=" + std::to_string(dg.pass_index) + "/" + std::to_string(dg.pass_count)
+            + " output=" + std::to_string(dg.output_node)
+            + " ext=" + std::to_string(dg.external_inputs.size())
+            + " inter=" + std::to_string(dg.intermediate_count));
+    }
+
     if (!compiled.ok() || compiled.groups.empty()) {
         set_error_(EngineErrorCode::GraphCompile,
                    compiled.ok() ? "empty fusion groups" : compiled.error,
@@ -527,10 +550,10 @@ uint64_t Engine::set_graph(const Graph& graph) {
     auto old_param_base_slot = std::move(param_base_slot_);
     param_base_slot_.clear();
     total_param_floats_ = 0;
-    for (auto& [nid, base] : ctx.param_base) {
-        param_base_slot_[nid] = static_cast<int>(base);
-        auto fi = ctx.float_inputs.find(nid);
-        auto pc = ctx.param_count.find(nid);
+    for (auto& [node_id, base] : ctx.param_base) {
+        param_base_slot_[node_id] = static_cast<int>(base);
+        auto fi = ctx.float_inputs.find(node_id);
+        auto pc = ctx.param_count.find(node_id);
         if (fi != ctx.float_inputs.end() && pc != ctx.param_count.end()) {
             uint32_t end = base + fi->second + pc->second;
             if (end > static_cast<uint32_t>(total_param_floats_))
@@ -647,8 +670,8 @@ std::vector<Engine::BakedImage> Engine::bake() {
         return out;
     }
 
-    struct T { NodeId node; uint32_t socket; std::string name; };
-    std::vector<T> targets;
+    struct BakeTarget { NodeId node; uint32_t socket; std::string name; };
+    std::vector<BakeTarget> targets;
     if (current_graph_.output_targets.empty()) {
         targets.push_back({current_graph_.output_node, current_graph_.output_socket, "output"});
     } else {
@@ -686,8 +709,8 @@ std::vector<Engine::BakedImage> Engine::bake() {
 // rebuild_downstream_adj_ -- build adjacency list for dirty propagation
 void Engine::rebuild_downstream_adj_() {
     downstream_adj_.clear();
-    for (const auto& vn : current_ir_.nodes) {
-        downstream_adj_[vn.id];   // ensure key exists even for sinks
+    for (const auto& validated_node : current_ir_.nodes) {
+        downstream_adj_[validated_node.id];   // ensure key exists even for sinks
     }
     for (const auto& c : current_ir_.connections) {
         downstream_adj_[c.src_node].push_back(c.dst_node);
@@ -856,15 +879,15 @@ void Engine::mark_downstream_dirty_(NodeId root) {
     dirty.insert(root);
     size_t head = 0;
     while (head < q.size()) {
-        NodeId cur = q[head++];
-        auto it = downstream_adj_.find(cur);
+        NodeId current_node = q[head++];
+        auto it = downstream_adj_.find(current_node);
         if (it == downstream_adj_.end()) continue;
-        for (NodeId nxt : it->second) {
-            if (dirty.insert(nxt).second) q.push_back(nxt);
+        for (NodeId next_node : it->second) {
+            if (dirty.insert(next_node).second) q.push_back(next_node);
         }
     }
-    for (NodeId nid : dirty) {
-        if (auto* r = resources_.get({nid, 0})) r->is_dirty = true;
+    for (NodeId node_id : dirty) {
+        if (auto* r = resources_.get({node_id, 0})) r->is_dirty = true;
     }
 }
 

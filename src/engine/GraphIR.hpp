@@ -52,7 +52,7 @@ struct GraphIRResult {
 };
 
 // Resolve output StorageFormat for a validated node.
-[[nodiscard]] StorageFormat resolve_node_storage(const ValidatedNode& vn,
+[[nodiscard]] StorageFormat resolve_node_storage(const ValidatedNode& validated_node,
                                                  const NodeLibrary& lib,
                                                  uint32_t output_index = 0);
 

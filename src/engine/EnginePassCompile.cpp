@@ -39,11 +39,11 @@ void Engine::poll_completed_uploads_() {
                  + " vkimg=" + std::to_string((uint64_t)(img ? img->image() : VK_NULL_HANDLE)));
 
         // Patch any group ext_inputs that reference this node (stale snapshot fix).
-        for (auto& ge : group_execs_) {
-            for (auto& ei : ge.ext_inputs) {
-                if (ei.node_id == c.node_id) {
-                    ei.sampled_slot  = slot;
-                    ei.sampled_image = img ? img->image() : VK_NULL_HANDLE;
+        for (auto& group_exec : group_execs_) {
+            for (auto& ext_input : group_exec.ext_inputs) {
+                if (ext_input.node_id == c.node_id) {
+                    ext_input.sampled_slot  = slot;
+                    ext_input.sampled_image = img ? img->image() : VK_NULL_HANDLE;
                 }
             }
         }
@@ -55,16 +55,16 @@ void Engine::poll_completed_uploads_() {
 
 void Engine::retire_all_passes_() {
     // Retire group exec pipelines and output images.
-    for (auto& ge : group_execs_) {
-        if (ge.pipeline) {
+    for (auto& group_exec : group_execs_) {
+        if (group_exec.pipeline) {
             retired_passes_.push_back({
-                std::move(ge.pipeline),
+                std::move(group_exec.pipeline),
                 MAX_FRAMES_IN_FLIGHT + 2
             });
         }
-        if (ge.output_image) {
+        if (group_exec.output_image) {
             RetiredImage ri;
-            ri.img = std::move(ge.output_image);
+            ri.img = std::move(group_exec.output_image);
             ri.frames_remaining = MAX_FRAMES_IN_FLIGHT + 2;
             retired_images_.push_back(std::move(ri));
         }

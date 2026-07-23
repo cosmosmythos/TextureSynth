@@ -109,13 +109,13 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
         if (entry.path().stem().extension() != ".node") continue;
 
         try {
-            json m = json::parse(slurp(entry.path()));
+            json manifest = json::parse(slurp(entry.path()));
             NodeType n;
-            n.id = m.at("id").get<std::string>();
-            n.display_name = m.value("display_name", n.id);
-            n.description  = m.value("description", "");
+            n.id = manifest.at("id").get<std::string>();
+            n.display_name = manifest.value("display_name", n.id);
+            n.description  = manifest.value("description", "");
 
-            for (auto& p : m.value("params", json::array())) {
+            for (auto& p : manifest.value("params", json::array())) {
                 NodeParam np;
                 np.name          = p.at("name").get<std::string>();
                 np.display_name  = p.value("display_name", np.name);
@@ -130,7 +130,7 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                 np.as_socket      = p.value("as_socket", false);
                 n.params.push_back(std::move(np));
             }           
-            for (auto& s : m.value("inputs", json::array())) {
+            for (auto& s : manifest.value("inputs", json::array())) {
                 if (!s.contains("name")) { log_error("Input missing name in " + n.id); continue; }
                 Socket socket;
                 socket.name   = s.at("name").get<std::string>();
@@ -150,7 +150,7 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                 }
                 n.inputs.push_back(std::move(socket));
             }
-            for (auto& s : m.value("outputs", json::array())) {
+            for (auto& s : manifest.value("outputs", json::array())) {
                 if (!s.contains("name")) { log_error("Output missing name in " + n.id); continue; }
                 Socket socket;
                 socket.name = s.at("name").get<std::string>();
@@ -159,21 +159,21 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                 n.outputs.push_back(std::move(socket));
             }
 
-            for (auto& f : m.value("variant_flags", json::array())) {
+            for (auto& f : manifest.value("variant_flags", json::array())) {
                 n.variant_flags.push_back(f.get<std::string>());
             }
 
             // Stage 2: how this node participates in chain fusion (7-kind reference: shader_assets/nodes/README.md).
-            n.pass_kind = parse_pass_kind(m.value("pass_kind", "pure_pixel"));
+            n.pass_kind = parse_pass_kind(manifest.value("pass_kind", "pure_pixel"));
 
             // Multi-pass: how many compute dispatches this node needs.
-            n.pass_count         = m.value("pass_count", 1);
-            n.intermediate_count = m.value("intermediate_count", 0);
+            n.pass_count         = manifest.value("pass_count", 1);
+            n.intermediate_count = manifest.value("intermediate_count", 0);
 
-            auto shader_file = m.at("shader").get<std::string>();
+            auto shader_file = manifest.at("shader").get<std::string>();
             std::unordered_set<std::string> loaded;
             n.glsl_function = assemble_glsl(
-                m, fs::path(nodes_dir) / shader_file, glsl_dir, loaded);
+                manifest, fs::path(nodes_dir) / shader_file, glsl_dir, loaded);
 
             lib.add_public(std::move(n));
             ++count;

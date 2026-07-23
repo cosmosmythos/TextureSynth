@@ -21,7 +21,7 @@ public:
                                       const NodeLibrary& lib);
 };
 
-std::string emit_node_shader(const ValidatedNode& vn,
+std::string emit_node_shader(const ValidatedNode& validated_node,
                              const NodeType& type,
                              const ShaderVariantKey& key,
                              int param_base,

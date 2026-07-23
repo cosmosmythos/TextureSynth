@@ -43,8 +43,8 @@ inline GroupEmitResult emit_group(
 
     // Resolve output format from tail node so GLSL storage qualifier matches VkImage.
     const NodeId output_node = group.nodes.back();
-    const auto* vn = ir.find(output_node);
-    const StorageFormat out_sf = vn ? resolve_node_storage(*vn, lib)
+    const auto* validated_node = ir.find(output_node);
+    const StorageFormat out_sf = validated_node ? resolve_node_storage(*validated_node, lib)
                                     : StorageFormat{ChannelFormat::RGBA, BitDepth::F32};
 
     glsl::GlslBuilder builder;
@@ -56,14 +56,14 @@ inline GroupEmitResult emit_group(
     builder.main_begin();
     builder.statement("if (coord.x >= int(pc.resolution_x) || coord.y >= int(pc.resolution_y)) return;");
 
-    std::string tail_var = "_g" + std::to_string(group_index) + "_out";
+    std::string tail_var = "_group" + std::to_string(group_index) + "_out";
 
     for (size_t i = 0; i < group.nodes.size(); ++i) {
-        NodeId nid = group.nodes[i];
-        auto it = ctx.node_type.find(nid);
+        NodeId node_id = group.nodes[i];
+        auto it = ctx.node_type.find(node_id);
         const auto* type = (it != ctx.node_type.end()) ? it->second : nullptr;
         if (!type) {
-            result.error = "node " + std::to_string(nid) + " not found";
+            result.error = "node " + std::to_string(node_id) + " not found";
             return result;
         }
 
@@ -71,7 +71,7 @@ inline GroupEmitResult emit_group(
 
         std::string out_var = (i == group.nodes.size() - 1)
             ? tail_var
-            : "_n" + std::to_string(i);
+            : "_node" + std::to_string(i);
 
         if (is_multi_output) {
             for (uint32_t o = 0; o < type->outputs.size(); ++o)
@@ -80,7 +80,7 @@ inline GroupEmitResult emit_group(
             builder.declare_local(out_var);
         }
 
-        bool is_bypassed = ctx.bypassed_nodes.count(nid) > 0;
+        bool is_bypassed = ctx.bypassed_nodes.count(node_id) > 0;
 
         if (is_bypassed) {
             if (is_multi_output) {
@@ -99,7 +99,7 @@ inline GroupEmitResult emit_group(
         args.push_back("uv");
 
         uint32_t float_input_idx = 0;
-        auto dst_conns = ctx.conns_by_dst.find(nid);
+        auto dst_conns = ctx.conns_by_dst.find(node_id);
 
         // Resolve the external slot for a given destination socket.
         auto find_ext_slot = [&](NodeId dst, uint32_t dst_socket) -> uint32_t {
@@ -123,7 +123,7 @@ inline GroupEmitResult emit_group(
 
             // Case 1: source is another node in this group → use its local variable.
             if (src != 0 && node_index.count(src)) {
-                std::string src_var = "_n" + std::to_string(node_index.at(src));
+                std::string src_var = "_node" + std::to_string(node_index.at(src));
                 const auto* src_type = ctx.node_type.count(src) ? ctx.node_type.at(src) : nullptr;
                 if (src_type && src_type->outputs.size() > 1) {
                     // Multi-output node: find which output socket connects here.
@@ -146,7 +146,7 @@ inline GroupEmitResult emit_group(
 
             // Case 2: cross-group connection or unconnected sampler2D → use external slot.
             if (src != 0 || is_sampler) {
-                uint32_t slot = find_ext_slot(nid, s);
+                uint32_t slot = find_ext_slot(node_id, s);
                 if (is_sampler) {
                     args.push_back("TSTexture(" + std::to_string(slot) +
                         ", 1.0 / vec2(textureSize(u_sampled[nonuniformEXT("
@@ -163,7 +163,7 @@ inline GroupEmitResult emit_group(
             // Case 3: unconnected non-sampler → default value from SSBO or literal.
             if (is_float) {
                 args.push_back("node_params[pc.param_ring_idx].v[" +
-                               std::to_string(ctx.param_base.at(nid) + ctx.param_count.at(nid) + float_input_idx) + "]");
+                               std::to_string(ctx.param_base.at(node_id) + ctx.param_count.at(node_id) + float_input_idx) + "]");
                 ++float_input_idx;
             } else {
                 const auto& d = type->inputs[s].default_vec4;
@@ -175,7 +175,7 @@ inline GroupEmitResult emit_group(
 
         for (uint32_t p = 0; p < type->params.size(); ++p) {
             args.push_back("node_params[pc.param_ring_idx].v[" +
-                           std::to_string(ctx.param_base.at(nid) + p) + "]");
+                           std::to_string(ctx.param_base.at(node_id) + p) + "]");
         }
 
         if (is_multi_output) {
@@ -186,9 +186,8 @@ inline GroupEmitResult emit_group(
             builder.call_and_assign(out_var, "node_" + type->id, args);
 
             // Format post-process: strip channels to match node's resolved format.
-            const auto* vn = ir.find(nid);
-            if (vn) {
-                const StorageFormat node_sf = resolve_node_storage(*vn, lib);
+            if (const auto* node_info = ir.find(node_id)) {
+                const StorageFormat node_sf = resolve_node_storage(*node_info, lib);
                 ChannelFormat ch = node_sf.channels;
                 if (ch == ChannelFormat::Mono) {
                     builder.statement(out_var + " = _fmt_mono(" + out_var + ");");

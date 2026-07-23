@@ -74,20 +74,20 @@ void Engine::record_dispatch(VkCommandBuffer cmd, const PushConstants& pc) {
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     bindless_.pipeline_layout(), 0, 1, &set, 0, nullptr);
 
-            PassPushConstants ppc{};
-            ppc.global = pc;
-            ppc.global.resolution_x = output_w_;
-            ppc.global.resolution_y = output_h_;
-            ppc.out_storage_slots[0] = output_storage_slot_;
-            ppc.input_count = 1;
-            ppc.in_sampled_slots[0] = sampled;
+            PassPushConstants pass_push_constants{};
+            pass_push_constants.global = pc;
+            pass_push_constants.global.resolution_x = output_w_;
+            pass_push_constants.global.resolution_y = output_h_;
+            pass_push_constants.out_storage_slots[0] = output_storage_slot_;
+            pass_push_constants.input_count = 1;
+            pass_push_constants.in_sampled_slots[0] = sampled;
             for (uint32_t k = 1; k < MAX_PASS_INPUTS; ++k)
-                ppc.in_sampled_slots[k] = dummy_slot_;
-            ppc.param_ring_idx = param_write_idx_;
+                pass_push_constants.in_sampled_slots[k] = dummy_slot_;
+            pass_push_constants.param_ring_idx = param_write_idx_;
 
             vkCmdPushConstants(cmd, bindless_.pipeline_layout(),
                                VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(PassPushConstants), &ppc);
+                               0, sizeof(PassPushConstants), &pass_push_constants);
             vkCmdDispatch(cmd, (output_w_ + 7) / 8, (output_h_ + 7) / 8, 1);
 
             bindless_.free_sampled_slot(sampled);
