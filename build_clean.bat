@@ -18,3 +18,4 @@ cmake --build build --config Release
 
 echo.
 echo Done!
+
