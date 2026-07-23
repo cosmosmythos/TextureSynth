@@ -164,7 +164,7 @@ private:
         // this group. Stored so destruction walks siblings-then-primary in the
         // right order (vmaDestroyImage on the primary frees the shared alloc).
         ResourceUUID primary{};
-        uint64_t   current_gen = 1;       // incremented each time any member is written
+        uint64_t   current_gen = 1; // incremented each time any member is written
     };
     std::vector<AliasGroup> alias_pools_;
 
