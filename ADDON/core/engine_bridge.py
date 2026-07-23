@@ -68,9 +68,9 @@ def _build_id_maps(tree):
     name_to_id = {}
     id_to_name = {}
     for node in tree.nodes:
-        sid = _node_stable_id(node)
-        name_to_id[node.name] = sid
-        id_to_name[sid] = node.name
+        stable_id = _node_stable_id(node)
+        name_to_id[node.name] = stable_id
+        id_to_name[stable_id] = node.name
     return name_to_id, id_to_name
 
 
@@ -136,31 +136,31 @@ def _get_active_subgraph_topo_order(tree, output_node, name_to_id):
     for link in tree.links:
         if not link.is_valid:
             continue
-        src = link.from_node
-        dst = link.to_node
-        if src is None or dst is None:
+        source_node = link.from_node
+        dest_node = link.to_node
+        if source_node is None or dest_node is None:
             continue
-        s_name = src.name
-        d_name = dst.name
-        if s_name not in name_to_id or d_name not in name_to_id:
+        source_name = source_node.name
+        dest_name = dest_node.name
+        if source_name not in name_to_id or dest_name not in name_to_id:
             continue
-        s_id = name_to_id[s_name]
-        d_id = name_to_id[d_name]
-        if s_id not in reachable_ids or d_id not in reachable_ids:
+        source_id = name_to_id[source_name]
+        dest_id = name_to_id[dest_name]
+        if source_id not in reachable_ids or dest_id not in reachable_ids:
             continue
-        adj[s_id].append(d_id)
-        in_degree[d_id] += 1
+        adj[source_id].append(dest_id)
+        in_degree[dest_id] += 1
 
-    q = sorted([nid for nid, deg in in_degree.items() if deg == 0])
+    queue = sorted([nid for nid, deg in in_degree.items() if deg == 0])
     order = []
-    while q:
-        cur = q.pop(0)
-        order.append(cur)
-        for nxt in sorted(adj[cur]):
-            in_degree[nxt] -= 1
-            if in_degree[nxt] == 0:
-                q.append(nxt)
-                q.sort()
+    while queue:
+        current = queue.pop(0)
+        order.append(current)
+        for next_id in sorted(adj[current]):
+            in_degree[next_id] -= 1
+            if in_degree[next_id] == 0:
+                queue.append(next_id)
+                queue.sort()
 
     return order, reachable_ids
 
@@ -171,8 +171,8 @@ def _get_node_as_socket_names(node):
     names = getattr(node, '_as_socket_names', None)
     if names and isinstance(names, frozenset):
         return names
-    sv = getattr(node, 'sv_type', None)
-    if sv is None:
+    sv_type = getattr(node, 'sv_type', None)
+    if sv_type is None:
         return frozenset()
     core = cpp_module.get_core()
     if core is not None:
@@ -180,23 +180,23 @@ def _get_node_as_socket_names(node):
         if engine is not None:
             try:
                 lib = engine.node_library()
-                nt = lib.all().get(sv)
-                if nt is not None:
+                node_type = lib.all().get(sv_type)
+                if node_type is not None:
                     return frozenset(
-                        p.name for p in nt.params
-                        if getattr(p, 'as_socket', False)
+                        param.name for param in node_type.params
+                        if getattr(param, 'as_socket', False)
                     )
             except Exception:
                 pass
     try:
         addon_root = os.path.dirname(os.path.dirname(__file__))
-        manifest_path = os.path.join(addon_root, 'shader_assets', 'nodes', f'{sv}.node.json')
+        manifest_path = os.path.join(addon_root, 'shader_assets', 'nodes', f'{sv_type}.node.json')
         if os.path.isfile(manifest_path):
             with open(manifest_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             return frozenset(
-                p['name'] for p in data.get('params', [])
-                if p.get('as_socket', False)
+                param['name'] for param in data.get('params', [])
+                if param.get('as_socket', False)
             )
     except Exception:
         pass
@@ -209,12 +209,12 @@ def _build_graph_and_params(tree):
         return None, None, None
 
     graph = core.Graph()
-    res = _get_resolution()
-    pc = core.PushConstants()
-    pc.resolution_x = res
-    pc.resolution_y = res
-    pc.seed = 42
-    pc.time = 0.0
+    resolution = _get_resolution()
+    push_constants = core.PushConstants()
+    push_constants.resolution_x = resolution
+    push_constants.resolution_y = resolution
+    push_constants.seed = 42
+    push_constants.time = 0.0
 
     root, name_to_id, id_to_name, order, reachable_ids = _resolve_preview_root(tree)
     if root is None or not order:
@@ -257,11 +257,11 @@ def _build_graph_and_params(tree):
         visited = set()
         queue = [root]
         while queue and output_src_id is None:
-            cur = queue.pop(0)
-            if cur.name in visited:
+            current = queue.pop(0)
+            if current.name in visited:
                 continue
-            visited.add(cur.name)
-            for inp in cur.inputs:
+            visited.add(current.name)
+            for inp in current.inputs:
                 if not inp.is_linked:
                     continue
                 for link in inp.links:
@@ -282,8 +282,8 @@ def _build_graph_and_params(tree):
 
     # Add ALL nodes (not just the active subgraph) so set_active_node can switch to
     # any node without recompiling the graph.
-    for nname, nid in name_to_id.items():
-        node = _node_by_name(tree, nname)
+    for node_name, node_id in name_to_id.items():
+        node = _node_by_name(tree, node_name)
         if node is None:
             continue
         if node.bl_idname == 'TS_Output_Node':
@@ -300,15 +300,15 @@ def _build_graph_and_params(tree):
             depth_kwargs['absolute_depth'] = abs_depth
 
         graph.add_node(
-            nid, node.sv_type, fmt_override, node.name,
+            node_id, node.sv_type, fmt_override, node.name,
             muted=bool(getattr(node, 'mute', False)),
             bypassed=False,
             **depth_kwargs,
         )
 
     node_params = []
-    for nname, nid in name_to_id.items():
-        node = _node_by_name(tree, nname)
+    for node_name, node_id in name_to_id.items():
+        node = _node_by_name(tree, node_name)
         if node is None:
             continue
         if getattr(node, 'sv_type', None) is None:
@@ -334,39 +334,39 @@ def _build_graph_and_params(tree):
     for link in tree.links:
         if not link.is_valid:
             continue
-        src = link.from_node
-        dst = link.to_node
-        if src is None or dst is None:
+        src_node = link.from_node
+        dst_node = link.to_node
+        if src_node is None or dst_node is None:
             continue
-        s_name = src.name
-        d_name = dst.name
-        if s_name not in name_to_id or d_name not in name_to_id:
+        src_name = src_node.name
+        dst_name = dst_node.name
+        if src_name not in name_to_id or dst_name not in name_to_id:
             continue
-        if output_node is not None and (d_name == output_node.name or s_name == output_node.name):
+        if output_node is not None and (dst_name == output_node.name or src_name == output_node.name):
             continue
-        s_id = name_to_id[s_name]
-        d_id = name_to_id[d_name]
+        source_id = name_to_id[src_name]
+        dest_id = name_to_id[dst_name]
         try:
-            src_idx = list(src.outputs).index(link.from_socket)
+            src_out_idx = list(src_node.outputs).index(link.from_socket)
         except ValueError:
             continue
-        as_names = _get_node_as_socket_names(dst)
-        dst_idx = 0
-        for sock in dst.inputs:
+        as_names = _get_node_as_socket_names(dst_node)
+        dst_in_idx = 0
+        for sock in dst_node.inputs:
             if sock == link.to_socket:
                 break
             if sock.name not in as_names:
-                dst_idx += 1
+                dst_in_idx += 1
         if link.to_socket.name in as_names:
-            reg_count = sum(1 for s in dst.inputs if s.name not in as_names)
-            dst_inputs = list(dst.inputs)
+            reg_count = sum(1 for s in dst_node.inputs if s.name not in as_names)
+            dst_inputs = list(dst_node.inputs)
             as_before = sum(1 for s in dst_inputs
                             if s.name in as_names
                             and dst_inputs.index(s) < dst_inputs.index(link.to_socket))
-            dst_idx = reg_count + as_before
-        graph.add_connection(s_id, src_idx, d_id, dst_idx)
+            dst_in_idx = reg_count + as_before
+        graph.add_connection(source_id, src_out_idx, dest_id, dst_in_idx)
 
-    return graph, pc, node_params
+    return graph, push_constants, node_params
 
 
 def _build_push_constants(tree):
@@ -374,29 +374,29 @@ def _build_push_constants(tree):
     if core is None:
         return None, []
 
-    res = _get_resolution()
-    pc = core.PushConstants()
-    pc.resolution_x = res
-    pc.resolution_y = res
-    pc.seed = 42
-    pc.time = 0.0
+    resolution = _get_resolution()
+    push_constants = core.PushConstants()
+    push_constants.resolution_x = resolution
+    push_constants.resolution_y = resolution
+    push_constants.seed = 42
+    push_constants.time = 0.0
 
     root, name_to_id, id_to_name, order, _ = _resolve_preview_root(tree)
     if root is None or not order:
         return None, []
 
     node_params = []
-    for nid in order:
-        nname = id_to_name.get(nid)
-        if nname is None:
+    for node_id in order:
+        node_name = id_to_name.get(node_id)
+        if node_name is None:
             continue
-        node = _node_by_name(tree, nname)
+        node = _node_by_name(tree, node_name)
         if node is None or getattr(node, 'sv_type', None) is None:
             continue
         if hasattr(node, 'get_parameters'):
             node_params.extend(node.get_parameters())
 
-    return pc, node_params
+    return push_constants, node_params
 
 
 def _get_resolution():
@@ -449,24 +449,24 @@ def _params_signature(tree):
     if root is None or not order:
         return None
     parts = []
-    for nid in order:
-        nname = id_to_name.get(nid)
-        if not nname:
+    for node_id in order:
+        node_name = id_to_name.get(node_id)
+        if not node_name:
             continue
-        node = _node_by_name(tree, nname)
+        node = _node_by_name(tree, node_name)
         if node is None or getattr(node, 'sv_type', None) is None:
             continue
         content = node.get_content_signature()
         if hasattr(node, 'get_named_parameters'):
             try:
-                kv = node.get_named_parameters()
-                if kv is not None:
-                    parts.append((nid, tuple(sorted(kv.items())), content))
+                named_params = node.get_named_parameters()
+                if named_params is not None:
+                    parts.append((node_id, tuple(sorted(named_params.items())), content))
                     continue
             except Exception:
                 pass
         if hasattr(node, 'get_parameters'):
-            parts.append((nid, tuple(node.get_parameters()), content))
+            parts.append((node_id, tuple(node.get_parameters()), content))
     return tuple(parts)
 
 
@@ -489,18 +489,18 @@ def _active_subgraph_fingerprint(tree):
             continue
         if link.from_node is None or link.to_node is None:
             continue
-        sn, dn = link.from_node.name, link.to_node.name
-        if sn not in name_to_id or dn not in name_to_id:
+        src_name, dst_name = link.from_node.name, link.to_node.name
+        if src_name not in name_to_id or dst_name not in name_to_id:
             continue
-        sid, did = name_to_id[sn], name_to_id[dn]
-        if sid not in reachable or did not in reachable:
+        source_id, dest_id = name_to_id[src_name], name_to_id[dst_name]
+        if source_id not in reachable or dest_id not in reachable:
             continue
         try:
-            so = list(link.from_node.outputs).index(link.from_socket)
-            di = list(link.to_node.inputs).index(link.to_socket)
+            src_out_idx = list(link.from_node.outputs).index(link.from_socket)
+            dst_in_idx = list(link.to_node.inputs).index(link.to_socket)
         except ValueError:
             continue
-        link_part.append((sid, so, did, di))
+        link_part.append((source_id, src_out_idx, dest_id, dst_in_idx))
     link_part.sort()
 
     if root.bl_idname == 'TS_Output_Node':
@@ -616,7 +616,7 @@ def submit_graph():
 
     _apply_sidebar_precision(engine)
 
-    graph, pc, _ = _build_graph_and_params(tree)
+    graph, push_constants, _ = _build_graph_and_params(tree)
     if graph is None:
         # Transient invalid state (e.g. missing Output node).
         _last_active_fingerprint = None
@@ -625,29 +625,29 @@ def submit_graph():
 
     # B3: drain pending ring-full retries from previous ticks.
     if _pending_image_uploads:
-        for nid, (img, rw, rh) in list(_pending_image_uploads.items()):
+        for nid, (img, queued_w, queued_h) in list(_pending_image_uploads.items()):
             if img is None or not img.name:
                 _pending_image_uploads.pop(nid, None)
                 continue
-            cw, ch = img.size
-            if cw != rw or ch != rh:
+            current_w, current_h = img.size
+            if current_w != queued_w or current_h != queued_h:
                 _pending_image_uploads.pop(nid, None)
                 continue
-            pixels = np.empty(cw * ch * 4, dtype=np.float32)
+            pixels = np.empty(current_w * current_h * 4, dtype=np.float32)
             img.pixels.foreach_get(pixels)
-            pixels = pixels.reshape((ch, cw, 4))
-            if engine.upload_image(nid, pixels, cw, ch):
+            pixels = pixels.reshape((current_h, current_w, 4))
+            if engine.upload_image(nid, pixels, current_w, current_h):
                 _pending_image_uploads.pop(nid, None)
-                sig = (img.as_pointer(), cw, ch, img.source, bool(img.is_dirty))
+                sig = (img.as_pointer(), current_w, current_h, img.source, bool(img.is_dirty))
                 _image_cache[nid] = (sig, _image_content_hash(img))
 
     # Pre-upload images from active image nodes.
     root, name_to_id, id_to_name, order, _ = _resolve_preview_root(tree)
     if root and order:
-        for nid in order:
-            nname = id_to_name.get(nid)
-            if nname:
-                node = _node_by_name(tree, nname)
+        for node_id in order:
+            node_name = id_to_name.get(node_id)
+            if node_name:
+                node = _node_by_name(tree, node_name)
                 if node and node.bl_idname == 'TS_Image_Node':
                     upload_node_image(node)
 
@@ -694,8 +694,8 @@ def update_params_only(force_submit: bool = False):
         request_topology_update()
         return 'invalid'
 
-    fp = _active_subgraph_fingerprint(tree)
-    if fp != _last_active_fingerprint:
+    fingerprint = _active_subgraph_fingerprint(tree)
+    if fingerprint != _last_active_fingerprint:
         from .evaluation import request_topology_update
         request_topology_update()
         return 'invalid'
@@ -704,8 +704,8 @@ def update_params_only(force_submit: bool = False):
     engine.set_resolution(res, res)
     _apply_sidebar_precision(engine)
 
-    pc, _ = _build_push_constants(tree)
-    if pc is None:
+    push_constants, _ = _build_push_constants(tree)
+    if push_constants is None:
         return 'invalid'
 
     try:
@@ -719,7 +719,7 @@ def update_params_only(force_submit: bool = False):
         _push_params_using_stable_ids(tree, engine)
         _last_pushed_param_hash = sig
 
-        ticket = engine.submit_render(pc, _submitted_generation)
+        ticket = engine.submit_render(push_constants, _submitted_generation)
         landed = _poll_and_blit(engine)
         if landed == 'landed':
             return 'landed'
@@ -744,14 +744,14 @@ def _check_active_node_change(tree, engine):
     if new_id == _last_active_node_id:
         return False
     try:
-        gen = int(engine.set_active_node(new_id))
+        generation = int(engine.set_active_node(new_id))
     except Exception as e:
         _tslog.error(f"set_active_node({new_id}) failed: {e}")
         return False
-    if not gen:
+    if not generation:
         return False
     _last_active_node_id = new_id
-    _submitted_generation = gen
+    _submitted_generation = generation
     _last_pushed_param_hash = None
     _last_active_fingerprint = _active_subgraph_fingerprint(tree)
     return True
@@ -769,15 +769,15 @@ def _poll_and_blit(engine):
     if result is None:
         return 'idle'
 
-    pixels, gen = result
+    pixels, generation = result
 
     # Stale generation guard: ignore old frames.
-    if gen != 0 and gen < _last_applied_generation:
+    if generation != 0 and generation < _last_applied_generation:
         return 'idle'
 
     height, width = pixels.shape[:2]
     _blit_to_image(pixels, width, height)
-    _last_applied_generation = gen
+    _last_applied_generation = generation
     return 'landed'
 
 
@@ -791,11 +791,11 @@ def sync_node_errors(tree):
     if engine is None:
         return
 
-    fid = engine.failed_node()
+    failed_node_id = engine.failed_node()
     last_err = engine.last_error()
 
     name_to_id, id_to_name = _build_id_maps(tree)
-    failed_node_name = id_to_name.get(fid) if fid != 0 else None
+    failed_node_name = id_to_name.get(failed_node_id) if failed_node_id != 0 else None
 
     for node in tree.nodes:
         if getattr(node, 'sv_type', None) is None and node.bl_idname != 'TS_Output_Node':
@@ -826,9 +826,9 @@ def _push_params_using_stable_ids(tree, engine):
 
         if hasattr(node, 'get_named_parameters'):
             try:
-                kv = node.get_named_parameters()
-                if kv is not None:
-                    engine.update_node_params_by_name(nid, kv)
+                named_params = node.get_named_parameters()
+                if named_params is not None:
+                    engine.update_node_params_by_name(nid, named_params)
                     continue
             except Exception:
                 pass

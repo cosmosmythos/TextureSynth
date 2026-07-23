@@ -128,6 +128,10 @@ int NodeRegistryLoader::load_from_directory(NodeLibrary& lib,
                 np.step           = p.value("step", 0.0f);
                 np.is_integer     = p.value("integer", false);
                 np.as_socket      = p.value("as_socket", false);
+                if (p.contains("enum")) {
+                    for (auto& e : p["enum"])
+                        np.enum_values.push_back(e.get<std::string>());
+                }
                 n.params.push_back(std::move(np));
             }           
             for (auto& s : manifest.value("inputs", json::array())) {

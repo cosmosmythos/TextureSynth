@@ -1,9 +1,9 @@
-vec4 node_blur(vec2 uv, TSTexture tex, float intensity) {
+vec4 node_blur(vec2 uv, TSTexture tex, float intensity, uint pass_index) {
     if (intensity < 1e-5) return Sample(tex, uv);
 
     float sigma = max(intensity * 50.0, 0.1);
     vec2 inv_res = 1.0 / vec2(GetSize(tex));
-    vec2 dir = (ts_pass_index == 0u) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    vec2 dir = (pass_index == 0u) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
 
     int radius = clamp(int(ceil(sigma * 3.0)), 1, 32);
     bool use_integrated = sigma < 0.7;

@@ -140,10 +140,7 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
             if (slot == BindlessTable::INVALID_SLOT)
                 slot = dummy_slot_;
 
-            // Multi-pass pass 1: override ext_input[0] to use intermediate.
-            // This MUST happen before the connected/unconnected branching because
-            // the blur node's sampler2D input IS connected (cross-group to image node),
-            // but pass 1 needs to read from the intermediate, not the original image.
+            // Multi-pass pass 1: override ext to use intermediate (must fire before cross-group scan).
             if (compiled_group.pass_count > 1 && compiled_group.pass_index == 1) {
                 auto intermediate_it = intermediates.find(ext.dst_node);
                 log_info("INTERMEDIATE OVERRIDE: group " + std::to_string(gi)
@@ -151,6 +148,23 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
                     + " found=" + (intermediate_it != intermediates.end() ? "YES" : "NO")
                     + " ext.src_node=" + std::to_string(ext.src_node)
                     + " inter_count=" + std::to_string(intermediates.size()));
+                if (intermediate_it != intermediates.end()) {
+                    bindless_.write_sampled(ctx_, intermediate_it->second.sampled_slot,
+                                            intermediate_it->second.view, VK_IMAGE_LAYOUT_GENERAL);
+                    input.sampled_slot  = intermediate_it->second.sampled_slot;
+                    input.sampled_image = intermediate_it->second.vk_image;
+                    input.node_id       = ext.dst_node;
+                    continue;
+                }
+            }
+
+            // Fused multi-pass node (pass_index > 0): read intermediate, not original source.
+            auto pass_info_it = compiled_group.node_pass_map.find(ext.dst_node);
+            if (pass_info_it != compiled_group.node_pass_map.end() && pass_info_it->second.pass_index > 0) {
+                auto intermediate_it = intermediates.find(ext.dst_node);
+                log_info("FUSED INTERMEDIATE OVERRIDE: group " + std::to_string(gi)
+                    + " ei=" + std::to_string(ei) + " ext.dst_node=" + std::to_string(ext.dst_node)
+                    + " found=" + (intermediate_it != intermediates.end() ? "YES" : "NO"));
                 if (intermediate_it != intermediates.end()) {
                     bindless_.write_sampled(ctx_, intermediate_it->second.sampled_slot,
                                             intermediate_it->second.view, VK_IMAGE_LAYOUT_GENERAL);
@@ -201,10 +215,13 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
                 view  = entry->second->view();
                 image = entry->second->image();
             } else {
-                for (auto& prev : group_execs_) {
-                    if (prev.output_node == ext.src_node) {
-                        view  = prev.output_image->view();
-                        image = prev.output_image->image();
+                // Scan from the end: the LAST group with this output_node
+                // has the final result (multi-pass writes intermediate first,
+                // final pass produces the real output).
+                for (auto it = group_execs_.rbegin(); it != group_execs_.rend(); ++it) {
+                    if (it->output_node == ext.src_node) {
+                        view  = it->output_image->view();
+                        image = it->output_image->image();
                         break;
                     }
                 }
@@ -280,6 +297,44 @@ bool Engine::record_group_dispatches_(VkCommandBuffer cmd, const PushConstants& 
     }
 
     return true;
+}
+
+void Engine::debug_dump_groups() const {
+    if (!use_groups_ || group_execs_.empty()) {
+        log_info("=== Group Execs: no groups in use ===");
+        return;
+    }
+    log_info("=== Group Execs Dump ===");
+    log_info("  count=" + std::to_string(group_execs_.size()));
+    for (size_t gi = 0; gi < group_execs_.size(); ++gi) {
+        auto& ge = group_execs_[gi];
+        std::string nodes;
+        for (size_t ni = 0; ni < ge.nodes.size(); ++ni) {
+            if (ni) nodes += ", ";
+            auto* vn = current_ir_.find(ge.nodes[ni]);
+            nodes += (vn ? vn->debug_name : "?") + "(" + std::to_string(ge.nodes[ni]) + ")";
+        }
+        log_info("  [" + std::to_string(gi) + "] nodes=[" + nodes + "]"
+            + " pass=" + std::to_string(ge.pass_index) + "/" + std::to_string(ge.pass_count)
+            + " output_node=" + std::to_string(ge.output_node)
+            + " out_slot=" + std::to_string(ge.out_storage_slot));
+        for (size_t ei = 0; ei < ge.ext_inputs.size(); ++ei) {
+            auto& ext = ge.ext_inputs[ei];
+            std::string src_name = "?";
+            auto* svn = current_ir_.find(ext.node_id);
+            if (svn) src_name = svn->debug_name;
+            log_info("    ext[" + std::to_string(ei) + "]: "
+                + "sampled_slot=" + std::to_string(ext.sampled_slot)
+                + " resource=(" + std::to_string(ext.resource.node_id) + "," + std::to_string(ext.resource.output_index) + ")"
+                + " sampled_image=" + (ext.sampled_image ? "0x" + std::to_string((uint64_t)(void*)ext.sampled_image) : "NULL")
+                + " node_id=" + std::to_string(ext.node_id) + "(" + src_name + ")");
+        }
+        if (ge.pass_count > 1 && ge.pass_index == 0)
+            log_info("    => WRITES INTERMEDIATE (pass 0/" + std::to_string(ge.pass_count) + ")");
+        if (ge.pass_count > 1 && ge.pass_index == (ge.pass_count - 1))
+            log_info("    => READS INTERMEDIATE (final pass " + std::to_string(ge.pass_index) + "/" + std::to_string(ge.pass_count) + ")");
+    }
+    log_info("=== End Group Execs ===");
 }
 
 } // namespace te

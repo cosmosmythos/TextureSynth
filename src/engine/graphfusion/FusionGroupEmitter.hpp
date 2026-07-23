@@ -178,6 +178,12 @@ inline GroupEmitResult emit_group(
                            std::to_string(ctx.param_base.at(node_id) + p) + "]");
         }
 
+        // Pass original pass_index so multi-pass nodes inside fused groups use the correct sub-pass.
+        auto pass_it = group.node_pass_map.find(node_id);
+        if (pass_it != group.node_pass_map.end() && pass_it->second.pass_count > 1) {
+            args.push_back(std::to_string(pass_it->second.pass_index) + "u");
+        }
+
         if (is_multi_output) {
             for (uint32_t o = 0; o < type->outputs.size(); ++o)
                 args.push_back(out_var + "_out" + std::to_string(o));

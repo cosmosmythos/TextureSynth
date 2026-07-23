@@ -234,6 +234,10 @@ std::string emit_node_shader(const ValidatedNode& validated_node,
             shader_out << "node_params[pc.param_ring_idx].v[pc.param_base_slot + " << i << "]";
         }
     }
+    // Multi-pass: append ts_pass_index for the node's sub-pass selection.
+    if (type.pass_count > 1) {
+        shader_out << ", ts_pass_index";
+    }
     if (multi_output) {
         for (uint32_t i = 0; i < outputs_n; ++i) {
             shader_out << ", out" << i;

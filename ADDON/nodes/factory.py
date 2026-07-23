@@ -11,35 +11,35 @@ from ..utils.rna import register_class, unregister_class
 _cf = None
 
 
-def _fmt_to_str(fmt):
+def _format_to_string(format_value):
     """Normalize a socket format to a lowercase string.
 
     Handles both C++ ChannelFormat enums (ChannelFormat.Mono) and
     JSON fallback strings ('float', 'vec4', etc.).
     """
-    if hasattr(fmt, 'name'):
-        return fmt.name.lower()
-    return str(fmt).lower()
+    if hasattr(format_value, 'name'):
+        return format_value.name.lower()
+    return str(format_value).lower()
 
 
-def _socket_default(sock):
+def _socket_default(socket_info):
     """Get the default value from a socket, handling both C++ (default_value) and JSON (default)."""
-    v = getattr(sock, 'default_value', None)
-    if v is not None:
-        return v
-    return getattr(sock, 'default', None)
+    value = getattr(socket_info, 'default_value', None)
+    if value is not None:
+        return value
+    return getattr(socket_info, 'default', None)
 
 
-def _is_float_input(sock):
+def _is_float_input(socket_info):
     """True when a socket carries a scalar float (manifest float input).
 
     Handles C++ Socket objects (SocketType.Float + ChannelFormat.Mono) and
     JSON fallback _JSONSocket objects (format='float' string).
     """
-    st = getattr(sock, 'type', None)
-    if hasattr(st, 'name') and st.name == 'Float':
+    socket_type = getattr(socket_info, 'type', None)
+    if hasattr(socket_type, 'name') and socket_type.name == 'Float':
         return True
-    return _fmt_to_str(getattr(sock, 'format', '')) == 'float'
+    return _format_to_string(getattr(socket_info, 'format', '')) == 'float'
 
 
 _FORMAT_NAME_TO_OVERRIDE = {
@@ -53,17 +53,17 @@ _FORMAT_NAME_TO_OVERRIDE = {
 }
 
 
-def _channel_format_to_override(cf):
+def _channel_format_to_override(channel_format):
     """Map a ChannelFormat enum value to a format_override string."""
     global _cf
     if _cf is None:
         from ..core import cpp_module
         _cf = cpp_module.get_core().ChannelFormat
-    if cf == _cf.Mono:
+    if channel_format == _cf.Mono:
         return 'MONO'
-    if cf == _cf.UV:
+    if channel_format == _cf.UV:
         return 'UV'
-    if cf == _cf.RGB:
+    if channel_format == _cf.RGB:
         return 'RGB'
     return 'DEFAULT'
 
@@ -72,37 +72,38 @@ class _JSONParam:
     __slots__ = ('name', 'display_name', 'description',
                  'default_value', 'min_value', 'max_value',
                  'soft_min_value', 'soft_max_value',
-                 'step', 'is_integer', 'as_socket')
-    def __init__(self, d):
-        self.name        = d['name']
-        self.display_name = d.get('display_name', self.name.replace('_', ' ').title())
-        self.description = d.get('description', '')
-        self.default_value = float(d.get('default', 0.0))
-        self.min_value   = float(d.get('min', 0.0))
-        self.max_value   = float(d.get('max', 1.0))
-        self.soft_min_value = float(d.get('soft_min', self.min_value))
-        self.soft_max_value = float(d.get('soft_max', self.max_value))
-        self.step        = float(d.get('step', 0.0))
-        self.is_integer  = bool(d.get('integer', False))
-        self.as_socket   = bool(d.get('as_socket', False))
+                 'step', 'is_integer', 'as_socket', 'enum_values')
+    def __init__(self, param_data):
+        self.name        = param_data['name']
+        self.display_name = param_data.get('display_name', self.name.replace('_', ' ').title())
+        self.description = param_data.get('description', '')
+        self.default_value = float(param_data.get('default', 0.0))
+        self.min_value   = float(param_data.get('min', 0.0))
+        self.max_value   = float(param_data.get('max', 1.0))
+        self.soft_min_value = float(param_data.get('soft_min', self.min_value))
+        self.soft_max_value = float(param_data.get('soft_max', self.max_value))
+        self.step        = float(param_data.get('step', 0.0))
+        self.is_integer  = bool(param_data.get('integer', False))
+        self.as_socket   = bool(param_data.get('as_socket', False))
+        self.enum_values = param_data.get('enum', [])
 
 
 class _JSONSocket:
     __slots__ = ('name', 'format', 'default')
-    def __init__(self, d):
-        self.name   = d['name']
-        self.format = d.get('type', 'vec4')
-        self.default = d.get('default', None)
+    def __init__(self, socket_data):
+        self.name   = socket_data['name']
+        self.format = socket_data.get('type', 'vec4')
+        self.default = socket_data.get('default', None)
 
 
 class _JSONNodeType:
     __slots__ = ('id', 'display_name', 'params', 'inputs', 'outputs')
-    def __init__(self, d):
-        self.id           = d['id']
-        self.display_name = d.get('display_name', self.id.capitalize())
-        self.params       = [_JSONParam(p) for p in d.get('params', [])]
-        self.inputs       = [_JSONSocket(s) for s in d.get('inputs', [])]
-        self.outputs      = [_JSONSocket(s) for s in d.get('outputs', [])]
+    def __init__(self, node_data):
+        self.id           = node_data['id']
+        self.display_name = node_data.get('display_name', self.id.capitalize())
+        self.params       = [_JSONParam(param_dict) for param_dict in node_data.get('params', [])]
+        self.inputs       = [_JSONSocket(socket_data) for socket_data in node_data.get('inputs', [])]
+        self.outputs      = [_JSONSocket(socket_data) for socket_data in node_data.get('outputs', [])]
 
 
 def _load_manifest_fallback():
@@ -111,18 +112,18 @@ def _load_manifest_fallback():
     nodes_dir = os.path.join(addon_root, 'shader_assets', 'nodes')
     if not os.path.isdir(nodes_dir):
         return {}
-    out = {}
-    for fname in sorted(os.listdir(nodes_dir)):
-        if not fname.endswith('.node.json'):
+    node_types = {}
+    for file_name in sorted(os.listdir(nodes_dir)):
+        if not file_name.endswith('.node.json'):
             continue
-        path = os.path.join(nodes_dir, fname)
+        file_path = os.path.join(nodes_dir, file_name)
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                d = json.load(f)
-            out[d['id']] = _JSONNodeType(d)
+            with open(file_path, 'r', encoding='utf-8') as file_handle:
+                manifest_data = json.load(file_handle)
+            node_types[manifest_data['id']] = _JSONNodeType(manifest_data)
         except Exception:
             pass
-    return out
+    return node_types
 
 
 def _format_name_to_override(name):
@@ -205,7 +206,7 @@ def generate_node_classes(core_module):
 
         class_name = f"TS_{type_id.capitalize()}_Node"
         as_socket_set = frozenset(
-            p.name for p in node_type.params if getattr(p, 'as_socket', False)
+            param.name for param in node_type.params if getattr(param, 'as_socket', False)
         )
         class_dict = {
             'bl_idname': class_name,
@@ -218,6 +219,7 @@ def generate_node_classes(core_module):
         }
 
         param_names = []
+        dynamic_enum_index = {}
 
         for param in node_type.params:
             param_names.append(param.name)
@@ -228,7 +230,18 @@ def generate_node_classes(core_module):
                 label = param.name.replace('_', ' ').title()
             desc   = getattr(param, "description", "")
 
-            if param.name in _ENUM_PARAMS:
+            enum_values = getattr(param, 'enum_values', None) or []
+            if enum_values:
+                items = [(str(i), name, "") for i, name in enumerate(enum_values)]
+                default_key = str(int(round(param.default_value)))
+                dynamic_enum_index[param.name] = {str(i): i for i in range(len(enum_values))}
+                prop = bpy.props.EnumProperty(
+                    name=label, description=desc,
+                    items=items,
+                    default=default_key,
+                    update=_update_param,
+                )
+            elif param.name in _ENUM_PARAMS:
                 items = _ENUM_PARAMS[param.name]
                 default_key = items[int(round(param.default_value))][0]
                 prop = bpy.props.EnumProperty(
@@ -282,16 +295,16 @@ def generate_node_classes(core_module):
                 self.ts_category = _CATEGORY_BY_SVTYPE.get(self.sv_type, 'FILTER')
                 super(type(self), self).init(context)
                 single_in = len(node_type_ref.inputs) == 1 and not any(
-                    getattr(p, 'as_socket', False) for p in node_type_ref.params)
+                    getattr(param, 'as_socket', False) for param in node_type_ref.params)
                 allow_format_override = getattr(type(self), 'supports_format_override', False)
 
                 as_set = set()
-                for p in node_type_ref.params:
-                    if getattr(p, 'as_socket', False):
-                        s = self.inputs.new('TS_DefaultSocketType',
-                                            getattr(p, 'display_name', None) or p.name)
-                        s.name = p.name
-                        as_set.add(p.name)
+                for param in node_type_ref.params:
+                    if getattr(param, 'as_socket', False):
+                        new_socket = self.inputs.new('TS_DefaultSocketType',
+                                                     getattr(param, 'display_name', None) or param.name)
+                        new_socket.name = param.name
+                        as_set.add(param.name)
                 self._as_socket_names = frozenset(as_set)
                 for sock in node_type_ref.inputs:
                     display_label = "" if single_in else sock.name.replace('_', ' ').title()
@@ -343,7 +356,7 @@ def generate_node_classes(core_module):
                         continue  # socket draw() handles inline slider
                     layout.prop(self, p_name)
             return draw_buttons_func
-        p_as_socket = [getattr(p, 'as_socket', False) for p in node_type.params]
+        p_as_socket = [getattr(param, 'as_socket', False) for param in node_type.params]
         class_dict['draw_buttons'] = make_draw_buttons(param_names, p_as_socket)
 
         # Float input names+defaults for SSBO layout alignment with the fused emitter.
@@ -356,17 +369,18 @@ def generate_node_classes(core_module):
         def make_get_parameters(p_names, float_specs, enum_indices):
             def get_parameters_func(self):
                 result = []
-                for p in p_names:
-                    val = getattr(self, p)
-                    if p in enum_indices:
-                        result.append(float(enum_indices[p].get(val, 0)))
+                for param_name in p_names:
+                    value = getattr(self, param_name)
+                    if param_name in enum_indices:
+                        result.append(float(enum_indices[param_name].get(value, 0)))
                     else:
-                        result.append(float(val))
+                        result.append(float(value))
                 for name, default in float_specs:
                     result.append(float(getattr(self, name, default)))
                 return result
             return get_parameters_func
-        class_dict['get_parameters'] = make_get_parameters(param_names, float_input_specs, _ENUM_INDEX)
+        merged_enum_index = {**_ENUM_INDEX, **dynamic_enum_index}
+        class_dict['get_parameters'] = make_get_parameters(param_names, float_input_specs, merged_enum_index)
 
         # get_named_parameters returns None when float inputs exist, so _push_params_using_stable_ids
         # falls through to get_parameters() which writes both manifest params AND float-input slots.
@@ -374,7 +388,7 @@ def generate_node_classes(core_module):
             def get_named_parameters_func(self):
                 if has_float_inputs:
                     return None
-                return {p: float(getattr(self, p)) for p in p_names}
+                return {param_name: float(getattr(self, param_name)) for param_name in p_names}
             return get_named_parameters_func
         class_dict['get_named_parameters'] = make_get_named_parameters(param_names, bool(float_input_specs))
 

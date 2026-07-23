@@ -11,15 +11,7 @@
         { "name": "color", "type": "vec4" }
     ],
     "params": [
-        {
-            "name": "mode",
-            "display_name": "Mode",
-            "default": 0.0,
-            "min": 0.0,
-            "max": 3.0,
-            "step": 1.0,
-            "integer": true
-        }
+        { "name": "mode", "display_name": "Mode", "default": 0.0, "min": 0.0, "max": 3.0, "step": 1.0, "integer": true }
     ],
     "shader": "grayscale.glsl",
     "entry": "node_grayscale"

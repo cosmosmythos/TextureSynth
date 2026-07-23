@@ -95,8 +95,8 @@ class TEXTURESYNTH_OT_bake(Operator):
             except Exception as e:
                 self.report({"ERROR"}, f"bake failed: {e}")
                 return {"CANCELLED"}
-            for b in bakes:
-                bakes_by_name[b["name"]] = b
+            for bake_result in bakes:
+                bakes_by_name[bake_result["name"]] = bake_result
 
         # Write pixel buffers back to Blender images.
         w, h = _bake_resolution()
@@ -104,9 +104,9 @@ class TEXTURESYNTH_OT_bake(Operator):
         empty = 0
         for src_id, name, sock in targets:
             if src_id is not None and name in bakes_by_name:
-                b = bakes_by_name[name]
-                bw, bh = int(b["width"]), int(b["height"])
-                arr = np.asarray(b["pixels"], dtype=np.float32).reshape(bh, bw, 4)
+                bake_data = bakes_by_name[name]
+                bw, bh = int(bake_data["width"]), int(bake_data["height"])
+                pixels_array = np.asarray(bake_data["pixels"], dtype=np.float32).reshape(bh, bw, 4)
                 existing = bpy.data.images.get(name)
                 if existing is not None and (existing.size[0] != bw or existing.size[1] != bh):
                     bpy.data.images.remove(existing)
@@ -115,7 +115,7 @@ class TEXTURESYNTH_OT_bake(Operator):
                     img = bpy.data.images.new(name, bw, bh, alpha=True, float_buffer=True)
                 else:
                     img = existing
-                img.pixels.foreach_set(arr.astype(np.float32, copy=False).ravel())
+                img.pixels.foreach_set(pixels_array.astype(np.float32, copy=False).ravel())
                 img.update()
                 written += 1
             else:

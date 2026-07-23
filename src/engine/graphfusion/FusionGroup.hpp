@@ -12,8 +12,14 @@
 
 namespace te::fusion {
 
+struct NodePassInfo {
+    uint32_t pass_index = 0;
+    uint32_t pass_count = 1;
+};
+
 struct FusionGroup {
     std::vector<NodeId> nodes;
+    std::unordered_map<NodeId, NodePassInfo> node_pass_map;
     uint32_t pass_index = 0;
     uint32_t pass_count = 1;
     uint32_t intermediate_count = 0;
@@ -127,6 +133,7 @@ inline bool is_connected(NodeId source, NodeId dest, const FusionContext& ctx) {
 
     FusionGroup current_group;
     current_group.nodes.push_back(expanded[0].node_id);
+    current_group.node_pass_map[expanded[0].node_id] = {expanded[0].pass_index, expanded[0].pass_count};
     current_group.pass_index = expanded[0].pass_index;
     current_group.pass_count = expanded[0].pass_count;
     {
@@ -138,20 +145,19 @@ inline bool is_connected(NodeId source, NodeId dest, const FusionContext& ctx) {
     for (size_t i = 0; i + 1 < expanded.size(); ++i) {
         NodeId previous = expanded[i].node_id;
         NodeId current = expanded[i + 1].node_id;
-        uint32_t previous_pass = expanded[i].pass_index;
         uint32_t current_pass = expanded[i + 1].pass_index;
-        uint32_t previous_count = expanded[i].pass_count;
         uint32_t current_count = expanded[i + 1].pass_count;
 
         bool conn = is_connected(previous, current, ctx);
-        bool same_node = (previous == current);
 
         if (conn) {
             current_group.nodes.push_back(current);
+            current_group.node_pass_map[current] = {current_pass, current_count};
         } else {
             fused.groups.push_back(std::move(current_group));
             current_group = FusionGroup();
             current_group.nodes.push_back(current);
+            current_group.node_pass_map[current] = {current_pass, current_count};
             current_group.pass_index = expanded[i + 1].pass_index;
             current_group.pass_count = expanded[i + 1].pass_count;
             auto it = ctx.node_type.find(current);
@@ -204,19 +210,21 @@ inline void split_at_sampler2d_sources(FusionGroupBundle& fused, const FusionCon
 }
 
 inline void merge_groups(FusionGroupBundle& fused, const FusionContext& ctx) {
-    for (size_t src_idx = 0; src_idx < fused.groups.size(); ++src_idx) {
-        if (fused.groups[src_idx].nodes.empty()) continue;
+    if (fused.groups.empty()) return;
+    for (size_t index = fused.groups.size(); index > 0; --index) {
+        size_t group_index = index - 1;
+        if (fused.groups[group_index].nodes.empty()) continue;
 
-        NodeId src_tail = fused.groups[src_idx].nodes.back();
+        NodeId tail_node = fused.groups[group_index].nodes.back();
 
         size_t target_group = fused.groups.size();
-        for (size_t dst_idx = 0; dst_idx < fused.groups.size(); ++dst_idx) {
-            if (dst_idx == src_idx || fused.groups[dst_idx].nodes.empty()) continue;
-            if (group_contains(fused.groups[dst_idx], src_tail)) continue;
+        for (size_t dest_index = 0; dest_index < fused.groups.size(); ++dest_index) {
+            if (dest_index == group_index || fused.groups[dest_index].nodes.empty()) continue;
+            if (group_contains(fused.groups[dest_index], tail_node)) continue;
 
-            for (NodeId n : fused.groups[dst_idx].nodes) {
-                if (get_connection_type(src_tail, n, ctx).has_value()) {
-                    target_group = dst_idx;
+            for (NodeId node_in_dest : fused.groups[dest_index].nodes) {
+                if (get_connection_type(tail_node, node_in_dest, ctx).has_value()) {
+                    target_group = dest_index;
                     break;
                 }
             }
@@ -224,18 +232,12 @@ inline void merge_groups(FusionGroupBundle& fused, const FusionContext& ctx) {
         }
         if (target_group == fused.groups.size()) continue;
 
-        // Never merge multi-pass groups — they exist only to write/read
-        // intermediates for/from their own counterpart. A merged group loses
-        // the multi-pass metadata that populate_groups_ needs.
-        if (fused.groups[src_idx].pass_count > 1)
-            continue;
-
         bool sampler2d = false;
-        for (NodeId src : fused.groups[src_idx].nodes) {
-            auto source_it = ctx.conns_by_src.find(src);
+        for (NodeId src_node : fused.groups[group_index].nodes) {
+            auto source_it = ctx.conns_by_src.find(src_node);
             if (source_it == ctx.conns_by_src.end()) continue;
             for (const auto& [dest_node, dest_socket, src_socket] : source_it->second) {
-                if (group_contains(fused.groups[src_idx], dest_node)) continue;
+                if (group_contains(fused.groups[group_index], dest_node)) continue;
                 auto type_it = ctx.node_type.find(dest_node);
                 if (type_it == ctx.node_type.end()) continue;
                 if (type_it->second->inputs[dest_socket].type == SocketType::Sampler2D) {
@@ -249,10 +251,14 @@ inline void merge_groups(FusionGroupBundle& fused, const FusionContext& ctx) {
 
         fused.groups[target_group].nodes.insert(
             fused.groups[target_group].nodes.begin(),
-            fused.groups[src_idx].nodes.begin(), fused.groups[src_idx].nodes.end());
-        size_t erase_at = (target_group <= src_idx) ? src_idx + 1 : src_idx;
+            fused.groups[group_index].nodes.begin(), fused.groups[group_index].nodes.end());
+        for (const auto& [node_id, pass_info] : fused.groups[group_index].node_pass_map)
+            fused.groups[target_group].node_pass_map[node_id] = pass_info;
+
+        size_t erase_at = (target_group <= group_index) ? group_index + 1 : group_index;
         fused.groups.erase(fused.groups.begin() + erase_at);
-        if (erase_at <= src_idx) --src_idx;
+        // Reverse loop: ++index offsets the decrement when erased group shifts elements left.
+        if (erase_at <= group_index) ++index;
     }
 }
 

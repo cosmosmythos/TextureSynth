@@ -1,0 +1,19 @@
+{
+    "id": "height_to_normal",
+    "display_name": "Height to Normal",
+    "description": "",
+    "includes": [],
+    "inputs": [
+        { "name": "height", "type": "sampler2D" }
+    ],
+    "outputs": [
+        { "name": "color", "type": "vec4" }
+    ],
+    "params": [
+        { "name": "intensity", "display_name": "Intensity", "default": 1.0, "min": 0.0, "max": 100.0, "soft_min": 0.0, "soft_max": 1.0, "step": 0.01 },
+        { "name": "mode", "display_name": "Mode", "default": 2, "enum": ["Central", "Sobel", "Scharr"] },
+        { "name": "normaltype", "display_name": "Normal Type", "default": 1.0, "min": 0.0, "max": 1.0, "step": 1.0, "integer": true }
+    ],
+    "shader": "height_to_normal.glsl",
+    "entry": "node_height_to_normal"
+}

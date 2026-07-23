@@ -119,6 +119,7 @@ struct NodeParam {
     float step           = 0.0f;
     bool  is_integer     = false;
     bool  as_socket      = false;
+    std::vector<std::string> enum_values;
 };
 
 

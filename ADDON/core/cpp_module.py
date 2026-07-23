@@ -9,16 +9,16 @@ _core = None      # texturesynth_core pyd module
 _engine = None    # Engine instance
 
 
-def _cpp_log_sink(level, message):
+def _cpp_log_sink(raw_level, message):
     """Log filter callback filtering C++ logs by addon preferences."""
-    lvl = level.strip().strip("[]").strip().upper()
-    if lvl == "INFO" and not _tslog.is_enabled_for("INFO"):
+    normalized_level = raw_level.strip().strip("[]").strip().upper()
+    if normalized_level == "INFO" and not _tslog.is_enabled_for("INFO"):
         return
-    if lvl == "WARN" and not _tslog.is_enabled_for("WARNING"):
+    if normalized_level == "WARN" and not _tslog.is_enabled_for("WARNING"):
         return
-    if lvl == "ERROR" and not _tslog.is_enabled_for("ERROR"):
+    if normalized_level == "ERROR" and not _tslog.is_enabled_for("ERROR"):
         return
-    print(f"[TextureSynth] {level.strip()} {message}")
+    print(f"[TextureSynth] {raw_level.strip()} {message}")
 
 
 def load():
@@ -54,7 +54,7 @@ def load():
 
     # Instantiate engine.
     try:
-        eng = _core.Engine()
+        engine = _core.Engine()
     except Exception as e:
         _tslog.error(f"Engine() constructor exception: {e}")
         _core = None
@@ -71,9 +71,9 @@ def load():
             shutil.rmtree(cache_dir, ignore_errors=True)
         os.makedirs(cache_dir, exist_ok=True)
 
-        ok = eng.init(enable_validation=False, cache_dir=cache_dir, nodes_dir=nodes_dir, glsl_dir=glsl_dir)
-        if not ok:
-            _tslog.error(f"Engine.init() failed: {eng.last_error()}")
+        success = engine.init(enable_validation=False, cache_dir=cache_dir, nodes_dir=nodes_dir, glsl_dir=glsl_dir)
+        if not success:
+            _tslog.error(f"Engine.init() failed: {engine.last_error()}")
             _core = None
             return False
     except Exception as e:
@@ -81,7 +81,7 @@ def load():
         _core = None
         return False
 
-    _engine = eng
+    _engine = engine
     return True
 
 

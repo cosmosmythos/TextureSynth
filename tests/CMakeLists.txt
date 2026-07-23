@@ -10,6 +10,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(engine_tests
     main.cpp
     test_fusion_group.cpp
+    test_diagnostic_blur.cpp
 )
 
 target_link_libraries(engine_tests PRIVATE

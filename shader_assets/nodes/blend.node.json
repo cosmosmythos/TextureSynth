@@ -11,9 +11,7 @@
         { "name": "color", "type": "vec4" }
     ],
     "params": [
-        { "name": "mode", "display_name": "Blend Mode",
-          "description": "Combiner mode. A = Foreground (shown at mask=1), B = Background (shown at mask=0). See blend.py for the enum mapping.",
-          "default": 0.0, "min": 0.0, "max": 15.0, "step": 1.0, "integer": true }
+        { "name": "mode", "display_name": "Blend Mode", "description": "Combiner mode. A = Foreground (shown at mask=1), B = Background (shown at mask=0). See blend.py for the enum mapping.", "default": 0.0, "min": 0.0, "max": 15.0, "step": 1.0, "integer": true }
     ],
     "shader": "blend.glsl",
     "entry": "node_blend"

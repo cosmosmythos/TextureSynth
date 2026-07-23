@@ -138,8 +138,8 @@ def _evaluation_timer():
     # Topology fingerprint catches link changes missed by tree.update().
     try:
         if tree is not None and engine_bridge._submitted_generation:
-            fp = engine_bridge._active_subgraph_fingerprint(tree)
-            if fp != engine_bridge._last_active_fingerprint:
+            fingerprint = engine_bridge._active_subgraph_fingerprint(tree)
+            if fingerprint != engine_bridge._last_active_fingerprint:
                 _tslog.debug("fingerprint changed, requesting topology rebuild")
                 request_topology_update()
     except Exception as e:

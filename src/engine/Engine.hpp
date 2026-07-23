@@ -255,6 +255,8 @@ public:
 
     ResourceUUID final_output_resource() const { return final_output_resource_; }
 
+    void debug_dump_groups() const;
+
     bool upload_image(uint64_t node_id, const float* pixels, uint32_t width, uint32_t height);
     bool release_image(uint64_t node_id);
 

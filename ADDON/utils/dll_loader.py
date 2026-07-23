@@ -44,14 +44,14 @@ def add_wheel_dll_dirs(module_stem: str) -> None:
     if add_dir is None:
         return
 
-    for d in _candidate_lib_dirs(module_stem):
-        if not d.is_dir():
+    for candidate_dir in _candidate_lib_dirs(module_stem):
+        if not candidate_dir.is_dir():
             continue
-        d_str = str(d)
-        if any(str(x) == d_str for x in _added_dirs):
+        dir_str = str(candidate_dir)
+        if any(str(x) == dir_str for x in _added_dirs):
             continue
         try:
-            add_dir(d_str)
-            _added_dirs.append(d)
+            add_dir(dir_str)
+            _added_dirs.append(candidate_dir)
         except OSError:
             continue

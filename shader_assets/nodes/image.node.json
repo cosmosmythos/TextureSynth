@@ -12,8 +12,8 @@
     "params": [
         { "name": "u_offset", "display_name": "U Offset", "default": 0.0, "min": -10.0, "max": 10.0, "step": 0.001 },
         { "name": "v_offset", "display_name": "V Offset", "default": 0.0, "min": -10.0, "max": 10.0, "step": 0.001 },
-        { "name": "u_scale",  "display_name": "U Scale",  "default": 1.0, "min": 0.001, "max": 10.0, "step": 0.001 },
-        { "name": "v_scale",  "display_name": "V Scale",  "default": 1.0, "min": 0.001, "max": 10.0, "step": 0.001 }
+        { "name": "u_scale", "display_name": "U Scale", "default": 1.0, "min": 0.001, "max": 10.0, "step": 0.001 },
+        { "name": "v_scale", "display_name": "V Scale", "default": 1.0, "min": 0.001, "max": 10.0, "step": 0.001 }
     ],
     "shader": "image.glsl",
     "entry": "node_image"

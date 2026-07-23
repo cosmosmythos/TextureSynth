@@ -30,6 +30,8 @@ struct CompiledGroup {
     NodeId   output_node   = 0;
     uint32_t output_socket = 0;
 
+    std::unordered_map<NodeId, fusion::NodePassInfo> node_pass_map;
+
     uint32_t pass_index         = 0;
     uint32_t pass_count         = 1;
     uint32_t intermediate_count = 0;
@@ -57,6 +59,7 @@ inline CompiledGroupBundle compile_groups(
         const auto& group = bundle.groups[group_idx];
         CompiledGroup compiled_group;
         compiled_group.nodes = group.nodes;
+        compiled_group.node_pass_map = group.node_pass_map;
 
         // emit GLSL
         auto emitted = emit_group(group, ir, ctx, static_cast<uint32_t>(group_idx), lib);

@@ -21,8 +21,8 @@ def _prefs_level() -> str:
         addon = bpy.context.preferences.addons.get(__package__ or "texturesynth")
         if addon is None:
             return "ERROR"
-        lvl = getattr(addon.preferences, "log_level", "ERROR")
-        return lvl if lvl in _LEVELS else "ERROR"
+        prefs_level = getattr(addon.preferences, "log_level", "ERROR")
+        return prefs_level if prefs_level in _LEVELS else "ERROR"
     except Exception:
         return "ERROR"
 
@@ -34,9 +34,9 @@ def update_level():
 
 def is_enabled_for(level_name: str) -> bool:
     """Check if a log level is enabled to avoid formatting overhead."""
-    cur = getattr(logging, _prefs_level(), logging.ERROR)
-    want = getattr(logging, level_name, logging.DEBUG)
-    return want >= cur
+    current_level = getattr(logging, _prefs_level(), logging.ERROR)
+    wanted_level = getattr(logging, level_name, logging.DEBUG)
+    return wanted_level >= current_level
 
 
 def debug(msg, *args, **kwargs):

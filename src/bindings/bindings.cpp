@@ -266,7 +266,8 @@ NB_MODULE(texturesynth_core, m) {
         .def_rw("soft_max_value", &NodeParam::soft_max_value)
         .def_rw("step",           &NodeParam::step)
         .def_rw("is_integer",     &NodeParam::is_integer)
-        .def_rw("as_socket",      &NodeParam::as_socket);
+        .def_rw("as_socket",      &NodeParam::as_socket)
+        .def_rw("enum_values",   &NodeParam::enum_values);
 
     nb::class_<NodeType>(m, "NodeType")
         .def(nb::init<>())
