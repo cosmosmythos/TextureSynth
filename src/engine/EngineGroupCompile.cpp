@@ -37,7 +37,7 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
             std::vector<uint32_t> spirv;
             bool cache_hit = false;
 
-            if (cache_) {
+            if (cache_ && shader_cache_enabled_) {
                 auto cached = cache_->load(cg.fused_key);
                 if (cached.has_value()) {
                     spirv = std::move(*cached);
@@ -56,7 +56,7 @@ bool Engine::populate_groups_(const fusion::CompiledGroupBundle& compiled,
                     return false;
                 }
                 spirv = std::move(r.spirv);
-                if (cache_)
+                if (cache_ && shader_cache_enabled_)
                     cache_->store(cg.fused_key, spirv);
             }
 

@@ -154,6 +154,7 @@ On bash-capable systems, the `blender-addon` OpenCode skill (`.opencode/skills/b
 | Multi-pass bindless sampler constraint | GLSL bindless sampler constructors (`sampler2D(u_sampled[...], samp)`) MUST appear at the point of use in `texture()` calls — they CANNOT be assigned to local variables or passed as function arguments. Multi-pass node GLSL (e.g. `blur.glsl`) must inline texture reads or use macros to construct the sampler at each `texture()` call site. |
 | Multi-pass variant key | `ShaderVariantKey::specialization[0]` holds the sub-pass index (0=H, 1=V for blur) when `pass_count > 1`. `specialization_count` is set to 1. Each sub-pass gets its own pipeline variant. The GLSL specialization constant `ts_pass_index` (`layout(constant_id = 0)`) is baked into SPIR-V at pipeline creation, enabling dead-code elimination of the inactive branch. |
 | NodeRegistryLoader multi-pass fields | `NodeRegistryLoader` parses `pass_count` (default 1) and `intermediate_count` (default 0) from `.node.json`. These flow into `NodeType::pass_count` / `intermediate_count`. The GraphCompiler and FusedGraphCompiler check these to create singleton chains with sub-pass GLSL. |
+| ShaderCache bypass for debugging | Set `engine.enable_shader_cache = False` to force recompile every fused chain shader from GLSL, bypassing disk cache. Useful to test whether cache key collisions cause corrupted images. Default `True`. |
 
 ---
 

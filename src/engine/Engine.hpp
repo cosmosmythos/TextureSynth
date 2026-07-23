@@ -136,6 +136,9 @@ public:
     const std::unordered_map<NodeId,int>& param_layout() const { return param_base_slot_; }
     int total_param_floats() const { return total_param_floats_; }
 
+    void set_enable_shader_cache(bool enabled) { shader_cache_enabled_ = enabled; }
+    bool shader_cache_enabled() const { return shader_cache_enabled_; }
+
     void set_precision(int mode) {
         if (mode == 0) { texture_format_ = VK_FORMAT_R8G8B8A8_UNORM;  graph_default_depth_ = BitDepth::F8;  }
         else if (mode == 1) { texture_format_ = VK_FORMAT_R16G16B16A16_SFLOAT; graph_default_depth_ = BitDepth::F16; }
@@ -297,6 +300,7 @@ private:
     VulkanContext   ctx_;
     ShaderCompiler  compiler_;
     std::unique_ptr<ShaderCache> cache_;
+    bool shader_cache_enabled_ = true;
     NodeLibrary     node_lib_;
     Graph           current_graph_;
     GraphIR         current_ir_;
