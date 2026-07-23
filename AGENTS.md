@@ -159,6 +159,8 @@ On bash-capable systems, the `blender-addon` OpenCode skill (`.opencode/skills/b
 
 **🚫 NEVER deploy .pyd/.so binaries manually.** GitHub CI builds and zips the addon. Edit source files in `ADDON/` and `src/`, let CI produce the distributable. **When C++ changes are needed: ask user for approval first, then commit and push.**
 
+**❌ NEVER `git commit --amend`. Always create a new commit on top.** Amending rewrites history (changes the commit hash), which breaks pull workflows for anyone who already fetched the previous version. If a fix is needed after a push, commit on top and let the merge resolve — don't rewrite. This applies to all agents and human contributors.
+
 **🔍 Before Writing Code:**
 1. `ls` the directory (know what exists).
 2. `grep` for the concept (avoid duplicates). **Always search `src/` and `ADDON/` and `shader_assets/` separately** — a term not in the repo root doesn't mean it's absent from engine code.
