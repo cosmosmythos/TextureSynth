@@ -437,8 +437,8 @@ NB_MODULE(texturesynth_core, m) {
         .def("precision", &Engine::precision)
         .def("set_graph_default_depth", &Engine::set_graph_default_depth)
         .def("graph_default_depth", &Engine::graph_default_depth)
-        .def_pro_rw("enable_shader_cache", &Engine::shader_cache_enabled,
-                     &Engine::set_enable_shader_cache)
+        .def_prop_rw("enable_shader_cache", &Engine::shader_cache_enabled,
+                      &Engine::set_enable_shader_cache)
         .def("set_resolution", [](Engine& e, uint32_t w, uint32_t h) {
             std::lock_guard<std::recursive_mutex> lk(e.entry_mutex());
             check_engine_ready(e, EnginePhase::Idle);
